@@ -27,8 +27,6 @@ import {
   toLogical,
   getTileValue,
   findTileById,
-  inferAndUpdateJokers,
-  updateJokerLogical,
 } from './tiles';
 import { isValidGroup, isValidRun, isValidGroupTiles, validateBoard } from './validate';
 import { calculateInitialMeldScore, calculateRackValue, buildGameResult, findLowestScorePlayer } from './scoring';
@@ -170,6 +168,25 @@ export class RummikubEngine {
   }
 
   /**
+   * 调整自己牌架中某张牌的顺序（理牌）。
+   * 纯牌架内整理，不改变手牌内容、不消耗动作、不影响回合状态。
+   */
+  reorderRackTile(tileId: number, toIndex: number): void {
+    this.assertPhase(TurnPhase.PLAY);
+    const player = this.getCurrentPlayer();
+    const fromIndex = player.rack.findIndex(t => t.id === tileId);
+    if (fromIndex < 0) throw new Error(`牌架中找不到牌 ${tileId}`);
+
+    const rack = [...player.rack];
+    const [moved] = rack.splice(fromIndex, 1);
+    const insertAt = Math.max(0, Math.min(toIndex, rack.length));
+    rack.splice(insertAt, 0, moved);
+    player.rack = rack;
+
+    this.emit('boardManipulated', { action: 'reorderRack', tileId, fromIndex, toIndex: insertAt });
+  }
+
+  /**
    * 将牌从牌架放到桌面已有牌组。
    */
   placeTilesOnBoard(tileIds: number[], groupId: string, position: number = -1): void {
@@ -206,9 +223,7 @@ export class RummikubEngine {
       newTiles.splice(position, 0, ...logicalTiles);
     }
 
-    // 推断并更新 Joker 逻辑表示
-    newTiles = inferAndUpdateJokers(newTiles, group.type);
-
+    // Joker 保持为通配牌（不写死代表值），提交时由验证器按“是否存在合法赋值”动态校验。
     this.replaceGroup({ ...group, tiles: newTiles });
 
     recordRackTilesPlaced(ctx, tiles);
@@ -245,8 +260,7 @@ export class RummikubEngine {
     player.rack = player.rack.filter(t => !idSet.has(t.id));
 
     const groupId = nextGroupId();
-    let logicalTiles = tiles.map(toLogical);
-    logicalTiles = inferAndUpdateJokers(logicalTiles, groupType);
+    const logicalTiles = tiles.map(toLogical);
 
     const newGroup: TileGroup = {
       id: groupId,
@@ -288,9 +302,8 @@ export class RummikubEngine {
     if (remaining.length === 0) {
       this.state.board = this.state.board.filter(g => g.id !== groupId);
     } else {
-      let updatedRemaining = [...remaining];
-      updatedRemaining = inferAndUpdateJokers(updatedRemaining, group.type);
-      this.replaceGroup({ ...group, tiles: updatedRemaining });
+      // Joker 保持通配，移除后无需重新推断代表值。
+      this.replaceGroup({ ...group, tiles: remaining });
     }
 
     const physicalTiles = removed.map(lt => lt.originalTile);
@@ -302,6 +315,8 @@ export class RummikubEngine {
 
   /**
    * 替换桌面上的 Joker。
+   * Joker 是通配牌，替换只需保证「用真实牌替换后牌组仍然合法」，
+   * 因此动态校验替换结果，而非比对某个写死的代表值。
    */
   replaceJokerOnBoard(groupId: string, jokerPosition: number, realTile: Tile): void {
     this.assertPhase(TurnPhase.PLAY);
@@ -314,20 +329,18 @@ export class RummikubEngine {
       throw new Error(`位置 ${jokerPosition} 不是 Joker`);
     }
 
-    // 验证替换牌与 Joker 代表的牌一致
-    if (jokerLT.logicalColor !== 'joker' && jokerLT.logicalColor !== realTile.color) {
-      throw new Error(
-        `替换牌颜色 ${realTile.color} 与 Joker 代表的 ${jokerLT.logicalColor} 不一致`
-      );
-    }
-    if (jokerLT.logicalNumber !== 0 && jokerLT.logicalNumber !== realTile.number) {
-      throw new Error(
-        `替换牌数字 ${realTile.number} 与 Joker 代表的 ${jokerLT.logicalNumber} 不一致`
-      );
-    }
-
     const rackTile = findTileById(player.rack, realTile.id);
     if (!rackTile) throw new Error(`牌架中找不到牌 ${realTile.id}`);
+
+    const newTiles = [...group.tiles];
+    newTiles[jokerPosition] = toLogical(realTile);
+
+    // 真实牌必须是该 Joker 可以代表的牌之一：替换后牌组需保持合法。
+    const isValid =
+      group.type === 'run' ? isValidRun(newTiles) : isValidGroupTiles(newTiles);
+    if (!isValid) {
+      throw new Error(`牌 ${realTile.color}${realTile.number} 无法替换该 Joker`);
+    }
 
     // 检查是否是本回合刚摸到的牌
     const ctx = this.getTurnContext();
@@ -335,12 +348,7 @@ export class RummikubEngine {
       markDrawnTilePlaced(ctx);
     }
 
-    const newTiles = [...group.tiles];
-    newTiles[jokerPosition] = toLogical(realTile);
-
-    // 重新推断剩余 Joker 的逻辑表示
-    const updatedTiles = inferAndUpdateJokers(newTiles, group.type);
-    this.replaceGroup({ ...group, tiles: updatedTiles });
+    this.replaceGroup({ ...group, tiles: newTiles });
 
     player.rack = player.rack.filter(t => t.id !== realTile.id);
 
@@ -365,6 +373,29 @@ export class RummikubEngine {
   }
 
   /**
+   * 在同一牌组内调整某张牌的顺序（拖拽重排）。
+   * 不改变牌组内的牌集合，仅改变展示顺序；Joker 的代表值由渲染层按位置动态推断，
+   * 提交时仍按「是否存在合法赋值」动态校验。
+   */
+  moveTileWithinGroup(groupId: string, tileId: number, toIndex: number): void {
+    this.assertPhase(TurnPhase.PLAY);
+    const group = this.findGroup(groupId);
+    if (!group) throw new Error(`牌组 ${groupId} 不存在`);
+
+    const fromIndex = group.tiles.findIndex(lt => lt.originalTile.id === tileId);
+    if (fromIndex < 0) throw new Error(`牌组中找不到牌 ${tileId}`);
+
+    const tiles = [...group.tiles];
+    const [moved] = tiles.splice(fromIndex, 1);
+    // 目标牌的原下标即拖拽牌应落到的位置；移除后数组长度 -1，故上界为当前长度。
+    const insertAt = Math.max(0, Math.min(toIndex, tiles.length));
+    tiles.splice(insertAt, 0, moved);
+
+    this.replaceGroup({ ...group, tiles });
+    this.emit('boardManipulated', { action: 'reorder', groupId, tileId, fromIndex, toIndex: insertAt });
+  }
+
+  /**
    * 将工作区的牌放回桌面牌组。
    */
   placeWorkingAreaTilesOnBoard(tileIds: number[], groupId: string, position: number = -1): void {
@@ -386,7 +417,7 @@ export class RummikubEngine {
       newTiles.splice(position, 0, ...logicalTiles);
     }
 
-    newTiles = inferAndUpdateJokers(newTiles, group.type);
+    // Joker 保持通配（logicalColor='joker'），提交时由校验器按“是否存在合法赋值”动态判断。
     this.replaceGroup({ ...group, tiles: newTiles });
 
     this.emit('boardManipulated', { action: 'placeFromWorkingArea', groupId, tileIds });
@@ -403,8 +434,8 @@ export class RummikubEngine {
     removeFromWorkingArea(ctx, tileIds);
 
     const groupId = nextGroupId();
-    let logicalTiles = tiles.map(toLogical);
-    logicalTiles = inferAndUpdateJokers(logicalTiles, groupType);
+    // Joker 保持通配（logicalColor='joker'），提交时由校验器按“是否存在合法赋值”动态判断。
+    const logicalTiles = tiles.map(toLogical);
 
     const newGroup: TileGroup = {
       id: groupId,

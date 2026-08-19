@@ -16,11 +16,11 @@ function makeTile(id: number, color: TileColor | 'joker', number: number): Logic
   };
 }
 
-function makeJoker(id: number, repColor: TileColor, repNumber: number): LogicalTile {
+function makeJoker(id: number): LogicalTile {
   return {
     originalTile: { id, color: 'joker', number: 0 },
-    logicalColor: repColor,
-    logicalNumber: repNumber,
+    logicalColor: 'joker',
+    logicalNumber: 0,
   };
 }
 
@@ -80,7 +80,7 @@ describe('isValidRun', () => {
   it('Joker可以填补中间空缺', () => {
     const tiles = [
       makeTile(0, 'red', 1),
-      makeJoker(104, 'red', 2),
+      makeJoker(104),
       makeTile(2, 'red', 3),
     ];
     expect(isValidRun(tiles)).toBe(true);
@@ -88,17 +88,26 @@ describe('isValidRun', () => {
 
   it('Joker可以延伸两端', () => {
     const tiles = [
-      makeJoker(104, 'red', 1),
+      makeJoker(104),
       makeTile(0, 'red', 2),
       makeTile(1, 'red', 3),
     ];
     expect(isValidRun(tiles)).toBe(true);
   });
 
+  it('Joker在顺子中可动态代表多个值 (7-8-joker 可为 6 或 9)', () => {
+    const tiles = [
+      makeTile(0, 'red', 7),
+      makeTile(1, 'red', 8),
+      makeJoker(104),
+    ];
+    expect(isValidRun(tiles)).toBe(true);
+  });
+
   it('多个Joker填补+延伸', () => {
     const tiles = [
-      makeJoker(104, 'red', 4),
-      makeJoker(105, 'red', 5),
+      makeJoker(104),
+      makeJoker(105),
       makeTile(0, 'red', 6),
       makeTile(1, 'red', 7),
       makeTile(2, 'red', 8),
@@ -108,8 +117,8 @@ describe('isValidRun', () => {
 
   it('纯Joker不能构成顺子', () => {
     const tiles = [
-      makeJoker(104, 'red', 5),
-      makeJoker(105, 'red', 6),
+      makeJoker(104),
+      makeJoker(105),
     ];
     expect(isValidRun(tiles)).toBe(false);
   });
@@ -182,7 +191,7 @@ describe('isValidGroupTiles', () => {
     const tiles = [
       makeTile(0, 'red', 5),
       makeTile(1, 'blue', 5),
-      makeJoker(104, 'yellow', 5),
+      makeJoker(104),
     ];
     expect(isValidGroupTiles(tiles)).toBe(true);
   });
@@ -190,8 +199,8 @@ describe('isValidGroupTiles', () => {
   it('Joker数量不能超过缺失颜色数', () => {
     const tiles = [
       makeTile(0, 'red', 5),
-      makeJoker(104, 'blue', 5),
-      makeJoker(105, 'yellow', 5),
+      makeJoker(104),
+      makeJoker(105),
     ];
     expect(isValidGroupTiles(tiles)).toBe(true);
   });

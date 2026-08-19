@@ -36,10 +36,6 @@ export {
   toLogical,
   findTileById,
   findLogicalByOriginalId,
-  inferJokerInRun,
-  inferJokerInGroup,
-  updateJokerLogical,
-  inferAndUpdateJokers,
 } from './tiles';
 
 // 校验

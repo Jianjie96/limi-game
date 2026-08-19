@@ -142,6 +142,53 @@ describe('RummikubEngine', () => {
     });
   });
 
+  describe('moveTileWithinGroup', () => {
+    it('同组内重排：把 Joker 从尾部拖到最前', () => {
+      engine.startGame(['P1', 'P2']);
+      const p = engine.getCurrentPlayer();
+      const red7: Tile = { id: 9001, color: 'red', number: 7 };
+      const red8: Tile = { id: 9002, color: 'red', number: 8 };
+      const joker: Tile = { id: 9003, color: 'joker', number: 0 };
+      p.rack = [red7, red8, joker];
+
+      const groupId = engine.createNewGroupOnBoard([red7, red8, joker], 'run');
+      let group = engine.getState().board.find(g => g.id === groupId)!;
+      expect(group.tiles.map(t => t.originalTile.id)).toEqual([9001, 9002, 9003]);
+
+      engine.moveTileWithinGroup(groupId, joker.id, 0);
+      group = engine.getState().board.find(g => g.id === groupId)!;
+      expect(group.tiles.map(t => t.originalTile.id)).toEqual([9003, 9001, 9002]);
+    });
+
+    it('同组内重排：向前移动时修正下标', () => {
+      engine.startGame(['P1', 'P2']);
+      const p = engine.getCurrentPlayer();
+      const a: Tile = { id: 9101, color: 'red', number: 4 };
+      const b: Tile = { id: 9102, color: 'red', number: 5 };
+      const c: Tile = { id: 9103, color: 'red', number: 6 };
+      p.rack = [a, b, c];
+
+      const groupId = engine.createNewGroupOnBoard([a, b, c], 'run');
+      engine.moveTileWithinGroup(groupId, a.id, 2);
+      const group = engine.getState().board.find(g => g.id === groupId)!;
+      expect(group.tiles.map(t => t.originalTile.id)).toEqual([9102, 9103, 9101]);
+    });
+  });
+
+  describe('reorderRackTile', () => {
+    it('重排牌架顺序且不改变手牌内容', () => {
+      engine.startGame(['P1', 'P2']);
+      const p = engine.getCurrentPlayer();
+      const before = p.rack.map(t => t.id);
+
+      engine.reorderRackTile(before[0], before.length - 1);
+
+      const after = p.rack.map(t => t.id);
+      expect(after).toEqual([...before.slice(1), before[0]]);
+      expect([...after].sort((a, b) => a - b)).toEqual([...before].sort((a, b) => a - b));
+    });
+  });
+
   describe('timeout', () => {
     it('超时后执行摸牌惩罚并结束回合', () => {
       engine.startGame(['P1', 'P2']);

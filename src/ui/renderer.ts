@@ -6,7 +6,8 @@
 // 命中检测（getTileBounds / hitTestTile）为纯计算，供 Rack/Board 布局模块复用。
 // ============================================================================
 
-import type { Tile, LogicalTile, TileColor } from '../game/types';
+import type { Tile, LogicalTile, TileColor, GroupType } from '../game/types';
+import { TILE_COLORS } from '../game/types';
 import {
   TILE_WIDTH,
   TILE_HEIGHT,
@@ -182,6 +183,88 @@ export function drawLogicalTile(ctx: CanvasRenderingContext2D, lt: LogicalTile, 
   if (isJoker) {
     const hasLogical = lt.logicalColor !== 'joker';
     drawJokerTile(ctx, opts, hasLogical, lt.logicalColor as TileColor, lt.logicalNumber);
+  } else {
+    drawNumberTile(ctx, lt.logicalColor as TileColor, lt.logicalNumber, opts);
+  }
+}
+
+/**
+ * 推断桌面牌组中某张 Joker 的「显示代表值」。
+ * 仅用于渲染：根据 Joker 在组内的位置动态计算，不改动逻辑牌本身。
+ * - 顺子：按存储顺序（显示顺序），左侧延伸取最小值、右侧延伸取最大值、中间取相邻填充值。
+ * - 刻子：取缺失颜色、与组内数字一致。
+ */
+function inferJokerDisplayValue(
+  groupType: GroupType,
+  tiles: readonly LogicalTile[],
+  jokerIndex: number,
+): { color: TileColor; number: number } | null {
+  const joker = tiles[jokerIndex];
+  if (!joker || joker.originalTile.color !== 'joker') return null;
+
+  const isJokerTile = (lt: LogicalTile) => lt.originalTile.color === 'joker';
+  const nonJokers = tiles.filter(t => !isJokerTile(t));
+  if (nonJokers.length === 0) return null;
+
+  if (groupType === 'group') {
+    const number = nonJokers[0].logicalNumber;
+    const used = new Set(nonJokers.map(t => t.logicalColor as TileColor));
+    for (const c of TILE_COLORS) {
+      if (!used.has(c)) return { color: c, number };
+    }
+    return null;
+  }
+
+  // Run：以存储顺序（显示顺序）推断，位置是决定代表值的唯一依据。
+  const color = nonJokers[0].logicalColor as TileColor;
+
+  let left: LogicalTile | null = null;
+  for (let i = jokerIndex - 1; i >= 0; i--) {
+    if (!isJokerTile(tiles[i])) {
+      left = tiles[i];
+      break;
+    }
+  }
+  let right: LogicalTile | null = null;
+  for (let i = jokerIndex + 1; i < tiles.length; i++) {
+    if (!isJokerTile(tiles[i])) {
+      right = tiles[i];
+      break;
+    }
+  }
+
+  if (left && right) {
+    return { color, number: left.logicalNumber + 1 };
+  }
+  if (right) {
+    let jokers = 0;
+    for (let i = jokerIndex; i < tiles.length && isJokerTile(tiles[i]); i++) jokers++;
+    return { color, number: right.logicalNumber - jokers };
+  }
+  if (left) {
+    let jokers = 0;
+    for (let i = jokerIndex; i >= 0 && isJokerTile(tiles[i]); i--) jokers++;
+    return { color, number: left.logicalNumber + jokers };
+  }
+  return null;
+}
+
+/** 绘制桌面牌组中的一张牌；Joker 按位置推断出的代表值显示（带星标）。 */
+export function drawBoardTile(
+  ctx: CanvasRenderingContext2D,
+  groupType: GroupType,
+  groupTiles: readonly LogicalTile[],
+  index: number,
+  opts: TileRenderOptions,
+): void {
+  const lt = groupTiles[index];
+  if (lt.originalTile.color === 'joker') {
+    const d = inferJokerDisplayValue(groupType, groupTiles, index);
+    if (d) {
+      drawJokerTile(ctx, opts, true, d.color, d.number);
+    } else {
+      drawJokerTile(ctx, opts, false);
+    }
   } else {
     drawNumberTile(ctx, lt.logicalColor as TileColor, lt.logicalNumber, opts);
   }

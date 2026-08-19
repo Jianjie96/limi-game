@@ -11,6 +11,7 @@ export {
   drawNumberTile,
   drawJokerTile,
   drawLogicalTile,
+  drawBoardTile,
   drawPhysicalTile,
 } from './renderer';
 export type { TileRenderOptions } from './renderer';

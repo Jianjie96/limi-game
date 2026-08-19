@@ -46,7 +46,7 @@ import {
 } from './Board';
 import { createButtonStates, hitTestButton, type ButtonState } from './Button';
 import {
-  drawLogicalTile,
+  drawBoardTile,
   drawPhysicalTile,
   roundRectPath,
   type TileRenderOptions,
@@ -459,8 +459,15 @@ export class GameScene {
     const onWorkingArea = !!workingHit || this.isInWorkingAreaRegion(x, y);
     const targetGroupId = boardTile?.groupId ?? boardGroupSlot?.groupId ?? null;
     const onBoardEmpty = this.isInBoardRegion(x, y) && !targetGroupId && !onWorkingArea;
+    const rackTarget = hitTestRack(x, y, this.rackSlots);
 
     try {
+      // 牌架 → 牌架：拖到另一张手牌上重排顺序（理牌）。
+      if (src.kind === 'rack' && rackTarget && !targetGroupId && !onWorkingArea) {
+        this.engine.reorderRackTile(src.tileId, rackTarget.index);
+        return;
+      }
+
       // 牌架 → 桌面：加到已有牌组 / 空白处成新组。
       if (src.kind === 'rack') {
         if (targetGroupId) {
@@ -499,7 +506,11 @@ export class GameScene {
         return;
       }
       const sourceGroupId = src.sourceGroupId!;
-      if (targetGroupId && targetGroupId !== sourceGroupId) {
+      if (boardTile && targetGroupId === sourceGroupId) {
+        // 同一牌组内拖到另一张牌上 → 仅重排顺序（Joker 显示值随位置变化）。
+        this.engine.moveTileWithinGroup(sourceGroupId, src.tileId, boardTile.index);
+        this.showMessage('已调整顺序');
+      } else if (targetGroupId && targetGroupId !== sourceGroupId) {
         this.engine.removeTilesFromBoard(sourceGroupId, [src.tileId]);
         this.engine.placeWorkingAreaTilesOnBoard([src.tileId], targetGroupId);
         this.showMessage('已移动');
@@ -846,7 +857,7 @@ export class GameScene {
 
       for (const tileSlot of slot.tileSlots) {
         if (this.isDraggingTile('board', tileSlot.logicalTile.originalTile.id)) continue;
-        drawLogicalTile(ctx, tileSlot.logicalTile, tileSlot.opts);
+        drawBoardTile(ctx, slot.group.type, slot.group.tiles, tileSlot.index, tileSlot.opts);
       }
     }
   }
