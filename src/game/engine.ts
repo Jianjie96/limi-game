@@ -1,0 +1,812 @@
+// ============================================================================
+// engine.ts — 游戏主引擎（状态机 + 动作分发）
+// ============================================================================
+
+import type {
+  Tile,
+  TileColor,
+  TileGroup,
+  LogicalTile,
+  GroupType,
+  GameState,
+  GameConfig,
+  GamePhase,
+  PlayerState,
+  TurnContext,
+  SubmitResult,
+  ValidationError,
+  GameEvent,
+  GameResult,
+} from './types';
+import { TurnPhase, GamePhase as GP } from './types';
+import { DEFAULT_CONFIG } from './types';
+import {
+  createFullSet,
+  shuffle,
+  isJoker,
+  toLogical,
+  getTileValue,
+  findTileById,
+  inferAndUpdateJokers,
+  updateJokerLogical,
+} from './tiles';
+import { isValidGroup, isValidRun, isValidGroupTiles, validateBoard } from './validate';
+import { calculateInitialMeldScore, calculateRackValue, buildGameResult, findLowestScorePlayer } from './scoring';
+import { snapshotBoard, snapshotPool, restoreBoard, restorePool, diffBoard, getAllTileIdsOnBoard } from './snapshot';
+import {
+  createTurnContext,
+  addToWorkingArea,
+  removeFromWorkingArea,
+  isWorkingAreaEmpty,
+  recordJokerReplacement,
+  recordRackTilesPlaced,
+  recordDraw,
+  setTurnPhase,
+  incrementPasses,
+  resetPasses,
+  hasPlacedFromRack as ctxHasPlacedFromRack,
+  markDrawnTilePlaced,
+  wasDrawnTilePlaced,
+} from './turn';
+
+// ---------------------------------------------------------------------------
+// 工具: 生成唯一 ID
+// ---------------------------------------------------------------------------
+
+let _groupIdCounter = 0;
+function nextGroupId(): string {
+  return `g${++_groupIdCounter}`;
+}
+
+// ---------------------------------------------------------------------------
+// RummikubEngine
+// ---------------------------------------------------------------------------
+
+export class RummikubEngine {
+  private state: GameState;
+  private listeners: Map<GameEvent, Set<(...args: any[]) => void>>;
+
+  constructor(config?: Partial<GameConfig>) {
+    this.listeners = new Map();
+    this.state = {
+      phase: GP.WAITING,
+      players: [],
+      currentPlayerIndex: 0,
+      board: [],
+      pool: [],
+      turnPhase: TurnPhase.DRAW,
+      turnContext: null,
+      turnNumber: 0,
+      config: { ...DEFAULT_CONFIG, ...config },
+      result: null,
+    };
+  }
+
+  // =========================================================================
+  // 游戏生命周期
+  // =========================================================================
+
+  startGame(playerNames: string[]): void {
+    const count = playerNames.length;
+    if (count < 2 || count > 4) {
+      throw new Error(`玩家数量必须为 2-4, 当前: ${count}`);
+    }
+
+    const allTiles = shuffle(createFullSet());
+
+    const players: PlayerState[] = [];
+    let dealIndex = 0;
+    for (let i = 0; i < count; i++) {
+      const rack = allTiles.splice(0, this.state.config.initialHandSize);
+      players.push({
+        id: i,
+        name: playerNames[i],
+        rack,
+        score: 0,
+        hasMadeInitialMeld: false,
+      });
+    }
+
+    const pool = allTiles;
+
+    _groupIdCounter = 0;
+    this.state = {
+      ...this.state,
+      phase: GP.PLAYING,
+      players,
+      currentPlayerIndex: 0,
+      board: [],
+      pool,
+      turnPhase: TurnPhase.DRAW,
+      turnNumber: 1,
+      result: null,
+    };
+
+    this.state.turnContext = createTurnContext(
+      this.state.board,
+      this.state.pool,
+      this.getCurrentPlayer().rack,
+      0,
+    );
+
+    this.emit('gameStart', { players, turnNumber: 1 });
+    this.emit('turnStart', { playerId: 0 });
+  }
+
+  newGame(): void {
+    _groupIdCounter = 0;
+    this.state = {
+      ...this.state,
+      phase: GP.WAITING,
+      players: [],
+      currentPlayerIndex: 0,
+      board: [],
+      pool: [],
+      turnPhase: TurnPhase.DRAW,
+      turnContext: null,
+      turnNumber: 0,
+      result: null,
+    };
+  }
+
+  // =========================================================================
+  // 回合动作
+  // =========================================================================
+
+  drawTile(): Tile | null {
+    this.assertPhase(TurnPhase.DRAW);
+    const ctx = this.getTurnContext();
+
+    if (this.state.pool.length === 0) {
+      setTurnPhase(ctx, TurnPhase.PLAY);
+      this.state.turnPhase = TurnPhase.PLAY;
+      return null;
+    }
+
+    const tile = this.state.pool.pop()!;
+    recordDraw(ctx, tile);
+    this.getCurrentPlayer().rack.push(tile);
+
+    setTurnPhase(ctx, TurnPhase.PLAY);
+    this.state.turnPhase = TurnPhase.PLAY;
+
+    this.emit('tileDrawn', { playerId: this.getCurrentPlayer().id, tile });
+    return tile;
+  }
+
+  /**
+   * 将牌从牌架放到桌面已有牌组。
+   */
+  placeTilesOnBoard(tileIds: number[], groupId: string, position: number = -1): void {
+    this.assertPhase(TurnPhase.PLAY);
+    const player = this.getCurrentPlayer();
+    const group = this.findGroup(groupId);
+    if (!group) throw new Error(`牌组 ${groupId} 不存在`);
+
+    const tiles: Tile[] = [];
+    for (const id of tileIds) {
+      const tile = findTileById(player.rack, id);
+      if (!tile) throw new Error(`牌架中找不到牌 ${id}`);
+      tiles.push(tile);
+    }
+
+    // 检查是否是本回合刚摸到的牌
+    const ctx = this.getTurnContext();
+    if (ctx.drawnTileId !== null) {
+      for (const tile of tiles) {
+        if (tile.id === ctx.drawnTileId) {
+          markDrawnTilePlaced(ctx);
+        }
+      }
+    }
+
+    const idSet = new Set(tileIds);
+    player.rack = player.rack.filter(t => !idSet.has(t.id));
+
+    const logicalTiles = tiles.map(toLogical);
+    let newTiles = [...group.tiles];
+    if (position < 0 || position >= newTiles.length) {
+      newTiles.push(...logicalTiles);
+    } else {
+      newTiles.splice(position, 0, ...logicalTiles);
+    }
+
+    // 推断并更新 Joker 逻辑表示
+    newTiles = inferAndUpdateJokers(newTiles, group.type);
+
+    this.replaceGroup({ ...group, tiles: newTiles });
+
+    recordRackTilesPlaced(ctx, tiles);
+    resetPasses(ctx);
+
+    this.emit('tilesPlaced', { playerId: player.id, tileIds, groupId });
+  }
+
+  /**
+   * 在桌面创建新牌组。
+   */
+  createNewGroupOnBoard(tiles: Tile[], groupType: GroupType): string {
+    this.assertPhase(TurnPhase.PLAY);
+    const player = this.getCurrentPlayer();
+    const ctx = this.getTurnContext();
+
+    const tileIds = tiles.map(t => t.id);
+    for (const id of tileIds) {
+      if (!findTileById(player.rack, id)) {
+        throw new Error(`牌 ${id} 不在牌架中`);
+      }
+    }
+
+    // 检查是否包含本回合刚摸到的牌
+    if (ctx.drawnTileId !== null) {
+      for (const tile of tiles) {
+        if (tile.id === ctx.drawnTileId) {
+          markDrawnTilePlaced(ctx);
+        }
+      }
+    }
+
+    const idSet = new Set(tileIds);
+    player.rack = player.rack.filter(t => !idSet.has(t.id));
+
+    const groupId = nextGroupId();
+    let logicalTiles = tiles.map(toLogical);
+    logicalTiles = inferAndUpdateJokers(logicalTiles, groupType);
+
+    const newGroup: TileGroup = {
+      id: groupId,
+      type: groupType,
+      tiles: logicalTiles,
+    };
+
+    this.state.board = [...this.state.board, newGroup];
+
+    recordRackTilesPlaced(ctx, tiles);
+    resetPasses(ctx);
+
+    this.emit('tilesPlaced', { playerId: player.id, tileIds, groupId, isNew: true });
+    return groupId;
+  }
+
+  /**
+   * 从桌面牌组移除牌 (放入工作区)。
+   */
+  removeTilesFromBoard(groupId: string, tileIds: number[]): Tile[] {
+    this.assertPhase(TurnPhase.PLAY);
+    const group = this.findGroup(groupId);
+    if (!group) throw new Error(`牌组 ${groupId} 不存在`);
+
+    const idSet = new Set(tileIds);
+    const removed: LogicalTile[] = [];
+    const remaining = group.tiles.filter(lt => {
+      if (idSet.has(lt.originalTile.id)) {
+        removed.push(lt);
+        return false;
+      }
+      return true;
+    });
+
+    if (removed.length !== tileIds.length) {
+      throw new Error('部分牌在牌组中不存在');
+    }
+
+    if (remaining.length === 0) {
+      this.state.board = this.state.board.filter(g => g.id !== groupId);
+    } else {
+      let updatedRemaining = [...remaining];
+      updatedRemaining = inferAndUpdateJokers(updatedRemaining, group.type);
+      this.replaceGroup({ ...group, tiles: updatedRemaining });
+    }
+
+    const physicalTiles = removed.map(lt => lt.originalTile);
+    addToWorkingArea(this.getTurnContext(), physicalTiles);
+
+    this.emit('boardManipulated', { action: 'remove', groupId, tileIds });
+    return physicalTiles;
+  }
+
+  /**
+   * 替换桌面上的 Joker。
+   */
+  replaceJokerOnBoard(groupId: string, jokerPosition: number, realTile: Tile): void {
+    this.assertPhase(TurnPhase.PLAY);
+    const player = this.getCurrentPlayer();
+    const group = this.findGroup(groupId);
+    if (!group) throw new Error(`牌组 ${groupId} 不存在`);
+
+    const jokerLT = group.tiles[jokerPosition];
+    if (!jokerLT || jokerLT.originalTile.color !== 'joker') {
+      throw new Error(`位置 ${jokerPosition} 不是 Joker`);
+    }
+
+    // 验证替换牌与 Joker 代表的牌一致
+    if (jokerLT.logicalColor !== 'joker' && jokerLT.logicalColor !== realTile.color) {
+      throw new Error(
+        `替换牌颜色 ${realTile.color} 与 Joker 代表的 ${jokerLT.logicalColor} 不一致`
+      );
+    }
+    if (jokerLT.logicalNumber !== 0 && jokerLT.logicalNumber !== realTile.number) {
+      throw new Error(
+        `替换牌数字 ${realTile.number} 与 Joker 代表的 ${jokerLT.logicalNumber} 不一致`
+      );
+    }
+
+    const rackTile = findTileById(player.rack, realTile.id);
+    if (!rackTile) throw new Error(`牌架中找不到牌 ${realTile.id}`);
+
+    // 检查是否是本回合刚摸到的牌
+    const ctx = this.getTurnContext();
+    if (ctx.drawnTileId !== null && realTile.id === ctx.drawnTileId) {
+      markDrawnTilePlaced(ctx);
+    }
+
+    const newTiles = [...group.tiles];
+    newTiles[jokerPosition] = toLogical(realTile);
+
+    // 重新推断剩余 Joker 的逻辑表示
+    const updatedTiles = inferAndUpdateJokers(newTiles, group.type);
+    this.replaceGroup({ ...group, tiles: updatedTiles });
+
+    player.rack = player.rack.filter(t => t.id !== realTile.id);
+
+    const jokerTile = jokerLT.originalTile;
+    addToWorkingArea(ctx, [jokerTile]);
+
+    recordJokerReplacement(ctx, jokerTile, groupId, realTile);
+    recordRackTilesPlaced(ctx, [realTile]);
+
+    this.emit('jokerReplaced', {
+      playerId: player.id,
+      groupId,
+      jokerPosition,
+      jokerTile,
+      realTile,
+    });
+  }
+
+  moveTilesToWorkingArea(groupId: string, tileIds: number[]): void {
+    this.assertPhase(TurnPhase.PLAY);
+    this.removeTilesFromBoard(groupId, tileIds);
+  }
+
+  /**
+   * 将工作区的牌放回桌面牌组。
+   */
+  placeWorkingAreaTilesOnBoard(tileIds: number[], groupId: string, position: number = -1): void {
+    this.assertPhase(TurnPhase.PLAY);
+    const ctx = this.getTurnContext();
+    const group = this.findGroup(groupId);
+    if (!group) throw new Error(`牌组 ${groupId} 不存在`);
+
+    const tiles = removeFromWorkingArea(ctx, tileIds);
+    if (tiles.length !== tileIds.length) {
+      throw new Error('部分牌在工作区中不存在');
+    }
+
+    const logicalTiles = tiles.map(toLogical);
+    let newTiles = [...group.tiles];
+    if (position < 0 || position >= newTiles.length) {
+      newTiles.push(...logicalTiles);
+    } else {
+      newTiles.splice(position, 0, ...logicalTiles);
+    }
+
+    newTiles = inferAndUpdateJokers(newTiles, group.type);
+    this.replaceGroup({ ...group, tiles: newTiles });
+
+    this.emit('boardManipulated', { action: 'placeFromWorkingArea', groupId, tileIds });
+  }
+
+  /**
+   * 用工作区的牌创建新牌组。
+   */
+  createNewGroupFromWorkingArea(tiles: Tile[], groupType: GroupType): string {
+    this.assertPhase(TurnPhase.PLAY);
+    const ctx = this.getTurnContext();
+
+    const tileIds = tiles.map(t => t.id);
+    removeFromWorkingArea(ctx, tileIds);
+
+    const groupId = nextGroupId();
+    let logicalTiles = tiles.map(toLogical);
+    logicalTiles = inferAndUpdateJokers(logicalTiles, groupType);
+
+    const newGroup: TileGroup = {
+      id: groupId,
+      type: groupType,
+      tiles: logicalTiles,
+    };
+
+    this.state.board = [...this.state.board, newGroup];
+
+    this.emit('boardManipulated', { action: 'createGroupFromWorkingArea', groupId });
+    return groupId;
+  }
+
+  /**
+   * Pass: 不出牌，摸 1 张牌保留在牌架上，结束回合。
+   */
+  pass(): void {
+    this.assertPlaying();
+    const ctx = this.getTurnContext();
+    const player = this.getCurrentPlayer();
+
+    // 如果还没摸牌且牌池非空，先摸牌
+    if (!ctx.hasDrawnFromPool && this.state.pool.length > 0) {
+      this.drawTile();
+    }
+
+    // 恢复桌面与牌架到回合开始时的状态
+    this.rollbackTurn(ctx);
+
+    incrementPasses(ctx);
+
+    this.emit('turnEnd', { playerId: player.id, reason: 'pass' });
+
+    // 进入下一位玩家
+    this.nextPlayer();
+  }
+
+  /**
+   * 提交回合: 验证并确认或回滚。
+   */
+  submitTurn(): SubmitResult {
+    this.assertPlaying();
+    const ctx = this.getTurnContext();
+    const player = this.getCurrentPlayer();
+
+    // 如果还没摸牌且牌池非空，自动摸牌
+    if (!ctx.hasDrawnFromPool && this.state.pool.length > 0) {
+      this.drawTile();
+    }
+
+    // 验证提交
+    const errors = this.validateSubmit();
+
+    if (errors.length > 0) {
+      // 验证失败（含破冰失败）→ 回滚桌面与牌架，保留已摸到的牌，
+      // 但不结束回合：玩家仍处于本回合，可修正后重新提交或选择 Pass。
+      this.rollbackTurn(ctx);
+      this.resetTurnForRetry(ctx);
+      this.emit('turnRollback', { playerId: player.id, errors });
+      return { valid: false, errors };
+    }
+
+    // 验证通过
+    return this.confirmTurn();
+  }
+
+  /**
+   * 超时处理: 回滚桌面，保留已摸到的牌作为惩罚，结束回合。
+   */
+  handleTimeout(): void {
+    if (this.state.phase !== GP.PLAYING) return;
+    const ctx = this.getTurnContext();
+    const player = this.getCurrentPlayer();
+
+    this.rollbackTurn(ctx);
+    incrementPasses(ctx);
+
+    this.emit('turnRollback', { playerId: player.id, reason: 'timeout' });
+    this.emit('turnEnd', { playerId: player.id, reason: 'timeout' });
+
+    this.nextPlayer();
+  }
+
+  // =========================================================================
+  // 提交验证 (核心校验逻辑)
+  // =========================================================================
+
+  private validateSubmit(): ValidationError[] {
+    const ctx = this.getTurnContext();
+    const player = this.getCurrentPlayer();
+    const errors: ValidationError[] = [];
+
+    // 1. 工作区必须为空
+    if (!isWorkingAreaEmpty(ctx)) {
+      errors.push({
+        code: 'WORKING_AREA_NOT_EMPTY',
+        message: '工作区还有牌未放置到桌面',
+      });
+    }
+
+    // 2. 桌面所有牌组必须合法
+    const boardValidation = validateBoard(this.state.board);
+    errors.push(...boardValidation.errors);
+
+    if (errors.length > 0) return errors;
+
+    // 3. 本回合刚摸到的牌不能在当前回合打出
+    if (wasDrawnTilePlaced(ctx)) {
+      errors.push({
+        code: 'DRAWN_TILE_PLACED',
+        message: '刚摸到的牌不能在当前回合立即打出',
+      });
+      return errors;
+    }
+
+    // 4. 非首次出牌: 至少从牌架放 1 张牌
+    if (player.hasMadeInitialMeld) {
+      if (!ctxHasPlacedFromRack(ctx)) {
+        errors.push({
+          code: 'NO_TILE_PLACED',
+          message: '本回合必须至少从牌架放 1 张牌到桌面',
+        });
+      }
+    } else {
+      // 5. 首次出牌: 校验 30 分 + 不能借用桌面牌 + 只能创建新牌组
+      const meldErrors = this.validateInitialMeld();
+      errors.push(...meldErrors);
+    }
+
+    // 6. Joker 替换后必须立即重组
+    if (ctx.replacedJokers.length > 0 && !isWorkingAreaEmpty(ctx)) {
+      errors.push({
+        code: 'JOKER_NOT_REUSED',
+        message: '替换的 Joker 必须在当前回合立即重新组成合法牌组',
+      });
+    }
+
+    return errors;
+  }
+
+  /** 首次出牌验证 */
+  private validateInitialMeld(): ValidationError[] {
+    const errors: ValidationError[] = [];
+    const ctx = this.getTurnContext();
+
+    // 首次出牌: 只能创建新牌组，不能修改已有牌组
+    const snapshotGroupIds = new Set(ctx.boardSnapshot.map(g => g.id));
+    const currentGroupIds = new Set(this.state.board.map(g => g.id));
+
+    // 检查是否修改了已有牌组
+    for (const snapGroup of ctx.boardSnapshot) {
+      if (!currentGroupIds.has(snapGroup.id)) {
+        errors.push({
+          code: 'INITIAL_MELD_MODIFIED_BOARD_GROUP',
+          message: `首次出牌不能删除或修改已有牌组 ${snapGroup.id}`,
+          groupId: snapGroup.id,
+        });
+        continue;
+      }
+      const curGroup = this.state.board.find(g => g.id === snapGroup.id);
+      if (curGroup && !this.groupsHaveSameTiles(snapGroup, curGroup)) {
+        errors.push({
+          code: 'INITIAL_MELD_MODIFIED_BOARD_GROUP',
+          message: `首次出牌不能修改已有牌组 ${snapGroup.id}`,
+          groupId: snapGroup.id,
+        });
+      }
+    }
+
+    // 检查新增的牌组中所有牌都来自牌架
+    const rackIds = new Set(ctx.rackAtTurnStart.map(t => t.id));
+    for (const group of this.state.board) {
+      if (!snapshotGroupIds.has(group.id)) {
+        for (const lt of group.tiles) {
+          if (!rackIds.has(lt.originalTile.id)) {
+            errors.push({
+              code: 'INITIAL_MELD_USED_BOARD_TILES',
+              message: `首次出牌不能借用桌面已有牌 (牌 ${lt.originalTile.id})`,
+              groupId: group.id,
+            });
+          }
+        }
+      }
+    }
+
+    if (errors.length > 0) return errors;
+
+    // 计算首次出牌总分 (仅计算新放到桌面的牌)
+    const diff = diffBoard(ctx.boardSnapshot, this.state.board);
+    const meldScore = calculateInitialMeldScore(diff.addedTiles);
+    if (meldScore < this.state.config.initialMeldMinScore) {
+      errors.push({
+        code: 'INITIAL_MELD_UNDER_30',
+        message: `首次出牌总分 ${meldScore} 未达到 ${this.state.config.initialMeldMinScore} 分`,
+      });
+    }
+
+    return errors;
+  }
+
+  private groupsHaveSameTiles(a: TileGroup, b: TileGroup): boolean {
+    if (a.tiles.length !== b.tiles.length) return false;
+    const aIds = new Set(a.tiles.map(t => t.originalTile.id));
+    return b.tiles.every(t => aIds.has(t.originalTile.id));
+  }
+
+  // =========================================================================
+  // 回滚 / 确认
+  // =========================================================================
+
+  /**
+   * 回滚到回合开始：恢复桌面与牌架。
+   * 本回合摸到的牌保留在牌架上（摸牌即使在失败回合也归玩家所有）。
+   */
+  private rollbackTurn(ctx: TurnContext): void {
+    this.state.board = restoreBoard(ctx.boardSnapshot);
+
+    const player = this.getCurrentPlayer();
+    const rack = ctx.rackAtTurnStart.map((t) => ({ ...t }));
+    if (ctx.drawnTile) rack.push(ctx.drawnTile);
+    player.rack = rack;
+  }
+
+  /**
+   * 提交失败重试前，清空回合内的瞬时状态（工作区、Joker 替换、已放置追踪），
+   * 但保留「本回合已摸牌」这一事实。
+   */
+  private resetTurnForRetry(ctx: TurnContext): void {
+    ctx.workingArea = [];
+    ctx.replacedJokers = [];
+    ctx.rackTilesPlacedThisTurn = [];
+    ctx.hasPlacedFromRack = false;
+    ctx.justDrawnTilePlaced = false;
+  }
+
+  /** 确认回合 (验证通过) */
+  private confirmTurn(): SubmitResult {
+    const player = this.getCurrentPlayer();
+    const ctx = this.getTurnContext();
+
+    // 标记首次出牌
+    if (!player.hasMadeInitialMeld && ctx.rackTilesPlacedThisTurn.length > 0) {
+      player.hasMadeInitialMeld = true;
+      this.emit('initialMeld', { playerId: player.id });
+    }
+
+    // 检查是否获胜 (牌架清空)
+    if (player.rack.length === 0) {
+      this.endGame(player.id, 'empty_rack');
+      return { valid: true, errors: [] };
+    }
+
+    // 检查死局
+    if (this.isDeadlock()) {
+      const winnerId = findLowestScorePlayer(this.state.players);
+      this.endGame(winnerId, 'lowest_score');
+      return { valid: true, errors: [] };
+    }
+
+    this.emit('turnEnd', { playerId: player.id, reason: 'submit' });
+    this.nextPlayer();
+    return { valid: true, errors: [] };
+  }
+
+  // =========================================================================
+  // 游戏结束
+  // =========================================================================
+
+  private endGame(winnerId: number, winReason: 'empty_rack' | 'lowest_score'): void {
+    const result = buildGameResult(this.state.players, winnerId, winReason);
+
+    for (const pr of result.playerResults) {
+      const player = this.state.players.find(p => p.id === pr.playerId)!;
+      player.score += pr.scoreDelta;
+    }
+
+    this.state.phase = GP.GAME_OVER;
+    this.state.result = result;
+
+    this.emit('gameOver', { result });
+  }
+
+  private isDeadlock(): boolean {
+    if (this.state.pool.length > 0) return false;
+    const ctx = this.getTurnContext();
+    return ctx.consecutivePasses >= this.state.players.length;
+  }
+
+  // =========================================================================
+  // 玩家轮转
+  // =========================================================================
+
+  private nextPlayer(): void {
+    const nextIndex = (this.state.currentPlayerIndex + 1) % this.state.players.length;
+    this.state.currentPlayerIndex = nextIndex;
+    this.state.turnNumber++;
+    this.state.turnPhase = TurnPhase.DRAW;
+
+    const nextPlayer = this.state.players[nextIndex];
+    this.state.turnContext = createTurnContext(
+      this.state.board,
+      this.state.pool,
+      nextPlayer.rack,
+      this.state.turnContext?.consecutivePasses ?? 0,
+    );
+
+    this.emit('turnStart', { playerId: nextIndex, turnNumber: this.state.turnNumber });
+  }
+
+  // =========================================================================
+  // 查询接口
+  // =========================================================================
+
+  getState(): Readonly<GameState> {
+    return this.state;
+  }
+
+  getCurrentPlayer(): PlayerState {
+    return this.state.players[this.state.currentPlayerIndex];
+  }
+
+  getTurnContext(): TurnContext {
+    if (!this.state.turnContext) throw new Error('回合上下文未初始化');
+    return this.state.turnContext;
+  }
+
+  canPlaceTile(tile: Tile, groupId: string): boolean {
+    const group = this.findGroup(groupId);
+    if (!group) return false;
+
+    const lt = toLogical(tile);
+    const testTiles = [...group.tiles, lt];
+
+    if (group.type === 'run') {
+      return isValidRun(testTiles);
+    } else {
+      return isValidGroupTiles(testTiles);
+    }
+  }
+
+  // =========================================================================
+  // 事件系统
+  // =========================================================================
+
+  on(event: GameEvent, callback: (...args: any[]) => void): void {
+    if (!this.listeners.has(event)) {
+      this.listeners.set(event, new Set());
+    }
+    this.listeners.get(event)!.add(callback);
+  }
+
+  off(event: GameEvent, callback: (...args: any[]) => void): void {
+    const cbs = this.listeners.get(event);
+    if (cbs) {
+      cbs.delete(callback);
+    }
+  }
+
+  private emit(event: GameEvent, data?: any): void {
+    const cbs = this.listeners.get(event);
+    if (cbs) {
+      for (const cb of cbs) {
+        try {
+          cb(data);
+        } catch (e) {
+          console.error(`Error in event listener for ${event}:`, e);
+        }
+      }
+    }
+  }
+
+  // =========================================================================
+  // 内部辅助
+  // =========================================================================
+
+  private findGroup(groupId: string): TileGroup | undefined {
+    return this.state.board.find(g => g.id === groupId);
+  }
+
+  private replaceGroup(newGroup: TileGroup): void {
+    this.state.board = this.state.board.map(g =>
+      g.id === newGroup.id ? newGroup : g,
+    );
+  }
+
+  private assertPhase(expected: TurnPhase): void {
+    if (this.state.phase !== GP.PLAYING) {
+      throw new Error(`游戏未在进行中, 当前: ${this.state.phase}`);
+    }
+    if (this.state.turnPhase !== expected) {
+      throw new Error(`回合阶段错误, 期望: ${expected}, 当前: ${this.state.turnPhase}`);
+    }
+  }
+
+  private assertPlaying(): void {
+    if (this.state.phase !== GP.PLAYING) {
+      throw new Error(`游戏未在进行中, 当前: ${this.state.phase}`);
+    }
+  }
+}

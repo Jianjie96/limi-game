@@ -1,0 +1,19 @@
+{
+  "name": "lami-rummikub",
+  "version": "1.0.0",
+  "description": "Rummikub (拉密牌) game engine with core rules implementation",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "dev": "esbuild src/game.ts --bundle --format=cjs --platform=node --target=es2019 --outfile=dist/game.js --watch",
+    "build": "tsc --noEmit && rm -rf dist && esbuild src/game.ts --bundle --format=cjs --platform=node --target=es2019 --outfile=dist/game.js",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "esbuild": "^0.21.5",
+    "typescript": "^5.4.0",
+    "vitest": "^1.6.0"
+  },
+  "dependencies": {}
+}
