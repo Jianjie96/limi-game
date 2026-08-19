@@ -23,7 +23,7 @@ export function createTurnContext(
   previousConsecutivePasses: number,
 ): TurnContext {
   return {
-    phase: 'DRAW' as TurnPhase,
+    phase: 'PLAY' as TurnPhase,
     boardSnapshot: snapshotBoard(board),
     poolSnapshot: snapshotPool(pool),
     rackAtTurnStart: rack.map(t => ({ ...t })),

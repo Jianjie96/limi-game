@@ -37,5 +37,5 @@ scene.showMessage('拉密 Rummikub', 3000);
 // 启动一局游戏。
 setTimeout(() => {
   scene.startGame(['玩家1', '玩家2', '玩家3', '玩家4']);
-  scene.showMessage('游戏开始! 请摸牌', 3000);
+  scene.showMessage('游戏开始! 可出牌或 Pass 摸牌', 3000);
 }, 1000);

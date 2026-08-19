@@ -9,8 +9,8 @@
 import type { Tile, GameState } from '../game/types';
 import { GamePhase, TurnPhase } from '../game/types';
 import { RummikubEngine } from '../game/engine';
-import { canFormMelds } from '../game/validate';
-import { detectGroupType } from '../game/tiles';
+import { canFormMelds, isValidRun, isValidGroupTiles } from '../game/validate';
+import { detectGroupType, toLogical } from '../game/tiles';
 import {
   LAYOUT,
   FONT_FAMILY,
@@ -122,9 +122,8 @@ export class GameScene {
 
   private setupButtons(): void {
     this.buttons = createButtonStates([
-      { id: 'draw', label: '摸牌', x: 0, y: 0, width: 0, variant: 'primary' },
       { id: 'submit', label: '出牌', x: 0, y: 0, width: 0, variant: 'primary' },
-      { id: 'pass', label: 'Pass', x: 0, y: 0, width: 0, variant: 'secondary' },
+      { id: 'pass', label: 'Pass 摸牌', x: 0, y: 0, width: 0, variant: 'secondary' },
     ]);
   }
 
@@ -162,7 +161,7 @@ export class GameScene {
     };
 
     const contentW = this.screenW - this.safeLeft - this.safeRight;
-    const btnW = (contentW - 40) / 3;
+    const btnW = (contentW - 40) / 2;
     const btnY = this.layoutY(LAYOUT.buttonAreaTop);
     for (let i = 0; i < this.buttons.length; i++) {
       this.buttons[i].config.x = this.safeLeft + 8 + i * (btnW + 8);
@@ -178,25 +177,10 @@ export class GameScene {
   }
 
   private updateButtonStates(): void {
-    const state = this.engine.getState();
-    const isMyTurn = state.phase === GamePhase.PLAYING;
-    const isDrawPhase = state.turnPhase === TurnPhase.DRAW;
-    const isPlayPhase = state.turnPhase === TurnPhase.PLAY;
-    const ctx = state.turnContext;
-    const hasDrawn = ctx?.hasDrawnFromPool ?? false;
-
+    const isMyTurn = this.engine.getState().phase === GamePhase.PLAYING;
+    // 回合即处于可操作阶段：玩家可随时「出牌」或选择「Pass 摸牌」。
     for (const btn of this.buttons) {
-      switch (btn.config.id) {
-        case 'draw':
-          btn.config.enabled = isMyTurn && isDrawPhase && state.pool.length > 0;
-          break;
-        case 'submit':
-          btn.config.enabled = isMyTurn && isPlayPhase && hasDrawn;
-          break;
-        case 'pass':
-          btn.config.enabled = isMyTurn && isPlayPhase;
-          break;
-      }
+      btn.config.enabled = isMyTurn;
     }
   }
 
@@ -321,15 +305,7 @@ export class GameScene {
   }
 
   private onButtonTap(buttonId: string): void {
-    const state = this.engine.getState();
-
     switch (buttonId) {
-      case 'draw':
-        if (state.turnPhase === TurnPhase.DRAW) {
-          this.engine.drawTile();
-        }
-        break;
-
       case 'submit': {
         // 若有选中的牌架牌，先把它们作为新牌组放到桌面。
         if (this.selectedRackIds.size > 0) {
@@ -376,7 +352,19 @@ export class GameScene {
     }
 
     this.selectedRackIds.add(id);
+
+    // 已选中一组完整合法的顺子/刻子时，给出「可以出牌」提示。
+    if (this.isCompleteMeld(rack.filter((t) => this.selectedRackIds.has(t.id)))) {
+      this.showMessage('已选好合法牌组，可点击「出牌」');
+    }
+
     this.markDirty();
+  }
+
+  /** 判断一组牌是否恰好构成一个完整的合法顺子或刻子。 */
+  private isCompleteMeld(tiles: Tile[]): boolean {
+    const logicals = tiles.map(toLogical);
+    return isValidRun(logicals) || isValidGroupTiles(logicals);
   }
 
   private onBoardTap(slot: BoardTileSlot): void {
@@ -544,7 +532,6 @@ export class GameScene {
     this.ctx.fillRect(0, y, this.screenW, PLAYER_INFO_HEIGHT);
 
     const player = this.engine.getCurrentPlayer();
-    const phaseText = state.turnPhase === TurnPhase.DRAW ? '摸牌阶段' : '操作阶段';
     const cy = y + PLAYER_INFO_HEIGHT / 2;
 
     this.drawText(this.safeLeft + 12, cy, `回合 ${state.turnNumber} | ${player.name} 的回合`, {
@@ -554,7 +541,7 @@ export class GameScene {
       align: 'left',
     });
 
-    this.drawText(this.screenW - this.safeRight - 12, cy, phaseText, {
+    this.drawText(this.screenW - this.safeRight - 12, cy, '出牌 或 Pass 摸牌', {
       size: FONT_SIZE_LABEL,
       color: PLAYER_INFO_TEXT,
       align: 'right',

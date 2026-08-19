@@ -41,7 +41,6 @@ import {
   recordJokerReplacement,
   recordRackTilesPlaced,
   recordDraw,
-  setTurnPhase,
   incrementPasses,
   resetPasses,
   hasPlacedFromRack as ctxHasPlacedFromRack,
@@ -74,7 +73,7 @@ export class RummikubEngine {
       currentPlayerIndex: 0,
       board: [],
       pool: [],
-      turnPhase: TurnPhase.DRAW,
+      turnPhase: TurnPhase.PLAY,
       turnContext: null,
       turnNumber: 0,
       config: { ...DEFAULT_CONFIG, ...config },
@@ -117,7 +116,7 @@ export class RummikubEngine {
       currentPlayerIndex: 0,
       board: [],
       pool,
-      turnPhase: TurnPhase.DRAW,
+      turnPhase: TurnPhase.PLAY,
       turnNumber: 1,
       result: null,
     };
@@ -142,7 +141,7 @@ export class RummikubEngine {
       currentPlayerIndex: 0,
       board: [],
       pool: [],
-      turnPhase: TurnPhase.DRAW,
+      turnPhase: TurnPhase.PLAY,
       turnContext: null,
       turnNumber: 0,
       result: null,
@@ -154,21 +153,17 @@ export class RummikubEngine {
   // =========================================================================
 
   drawTile(): Tile | null {
-    this.assertPhase(TurnPhase.DRAW);
+    this.assertPlaying();
     const ctx = this.getTurnContext();
 
-    if (this.state.pool.length === 0) {
-      setTurnPhase(ctx, TurnPhase.PLAY);
-      this.state.turnPhase = TurnPhase.PLAY;
+    // 每回合最多摸 1 张牌（首次出牌前无需摸牌；摸牌用于 Pass 或超时惩罚）。
+    if (ctx.hasDrawnFromPool || this.state.pool.length === 0) {
       return null;
     }
 
     const tile = this.state.pool.pop()!;
     recordDraw(ctx, tile);
     this.getCurrentPlayer().rack.push(tile);
-
-    setTurnPhase(ctx, TurnPhase.PLAY);
-    this.state.turnPhase = TurnPhase.PLAY;
 
     this.emit('tileDrawn', { playerId: this.getCurrentPlayer().id, tile });
     return tile;
@@ -455,11 +450,6 @@ export class RummikubEngine {
     const ctx = this.getTurnContext();
     const player = this.getCurrentPlayer();
 
-    // 如果还没摸牌且牌池非空，自动摸牌
-    if (!ctx.hasDrawnFromPool && this.state.pool.length > 0) {
-      this.drawTile();
-    }
-
     // 验证提交
     const errors = this.validateSubmit();
 
@@ -483,6 +473,11 @@ export class RummikubEngine {
     if (this.state.phase !== GP.PLAYING) return;
     const ctx = this.getTurnContext();
     const player = this.getCurrentPlayer();
+
+    // 执行摸牌惩罚：从牌池摸 1 张牌（若有）。
+    if (!ctx.hasDrawnFromPool && this.state.pool.length > 0) {
+      this.drawTile();
+    }
 
     this.rollbackTurn(ctx);
     incrementPasses(ctx);
@@ -706,7 +701,7 @@ export class RummikubEngine {
     const nextIndex = (this.state.currentPlayerIndex + 1) % this.state.players.length;
     this.state.currentPlayerIndex = nextIndex;
     this.state.turnNumber++;
-    this.state.turnPhase = TurnPhase.DRAW;
+    this.state.turnPhase = TurnPhase.PLAY;
 
     const nextPlayer = this.state.players[nextIndex];
     this.state.turnContext = createTurnContext(
