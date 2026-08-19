@@ -7,7 +7,7 @@
 // ============================================================================
 
 import type { Tile, GameState } from '../game/types';
-import { GamePhase, TurnPhase } from '../game/types';
+import { GamePhase } from '../game/types';
 import { RummikubEngine } from '../game/engine';
 import { canFormMelds, isValidRun, isValidGroupTiles } from '../game/validate';
 import { detectGroupType, toLogical } from '../game/tiles';
@@ -35,7 +35,15 @@ import {
   BUTTON_COLORS,
 } from './constants';
 import { layoutRack, hitTestRack, rackHeight, type RackConfig, type RackTileSlot } from './Rack';
-import { layoutBoard, hitTestBoard, type BoardConfig, type BoardGroupSlot, type BoardTileSlot } from './Board';
+import {
+  layoutBoard,
+  hitTestBoard,
+  hitTestBoardGroup,
+  boardContentHeight,
+  type BoardConfig,
+  type BoardGroupSlot,
+  type BoardTileSlot,
+} from './Board';
 import { createButtonStates, hitTestButton, type ButtonState } from './Button';
 import {
   drawLogicalTile,
@@ -44,6 +52,34 @@ import {
   type TileRenderOptions,
 } from './renderer';
 import { getScreenInfo, type ScreenInfo } from './screen';
+
+/** 工作区单张牌的位置信息（用于绘制与命中检测） */
+interface WorkingAreaSlot {
+  tile: Tile;
+  index: number;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+/** 拖拽来源 */
+type DragSourceKind = 'rack' | 'board' | 'working';
+
+/** 被拖拽牌的来源信息 */
+interface DragSource {
+  kind: DragSourceKind;
+  tile: Tile;
+  tileId: number;
+  sourceGroupId?: string;
+}
+
+/** 拖拽过程中的状态 */
+interface DragState {
+  source: DragSource;
+  curX: number;
+  curY: number;
+}
 
 /** 文本绘制选项 */
 interface TextOptions {
@@ -54,6 +90,9 @@ interface TextOptions {
   baseline?: CanvasTextBaseline;
   alpha?: number;
 }
+
+/** 拖拽触发阈值（逻辑像素）：移动超过该距离才进入拖拽状态。 */
+const DRAG_THRESHOLD = 8;
 
 export class GameScene {
   private ctx: CanvasRenderingContext2D;
@@ -71,13 +110,21 @@ export class GameScene {
   private boardConfig!: BoardConfig;
   private rackConfig!: RackConfig;
   private workingAreaY = 0;
+  private workingAreaHeight = WORKING_AREA_HEIGHT;
+  private boardBottom = 0;
 
   private rackSlots: RackTileSlot[] = [];
   private boardSlots: BoardGroupSlot[] = [];
-  private workingAreaSlots: Array<{ tile: Tile; index: number }> = [];
+  private workingAreaSlots: WorkingAreaSlot[] = [];
 
   private selectedRackIds: Set<number> = new Set();
   private highlightedGroupIds: Set<string> = new Set();
+
+  // 拖拽状态
+  private drag: DragState | null = null;
+  private pressSource: DragSource | null = null;
+  private pressX = 0;
+  private pressY = 0;
 
   private buttons: ButtonState[] = [];
   private orientationButton!: ButtonState;
@@ -191,7 +238,53 @@ export class GameScene {
   private bindTouch(): void {
     wx.onTouchStart((e) => {
       const t = e.touches?.[0];
+      if (!t) return;
+      this.pressX = t.clientX;
+      this.pressY = t.clientY;
+      // 仅记录潜在拖拽来源，不立即执行点击动作（区分点击与拖拽）。
+      this.pressSource = this.findTileSource(t.clientX, t.clientY);
+      this.markDirty();
+    });
+
+    wx.onTouchMove((e) => {
+      const t = e.touches?.[0];
+      if (!t || !this.pressSource) return;
+
+      const dx = t.clientX - this.pressX;
+      const dy = t.clientY - this.pressY;
+
+      if (!this.drag) {
+        // 超过阈值才进入拖拽，避免误触。
+        if (Math.hypot(dx, dy) > DRAG_THRESHOLD) {
+          this.drag = { source: this.pressSource, curX: t.clientX, curY: t.clientY };
+        }
+      } else {
+        this.drag.curX = t.clientX;
+        this.drag.curY = t.clientY;
+      }
+      this.markDirty();
+    });
+
+    wx.onTouchEnd((e) => {
+      const t = e.changedTouches?.[0];
+
+      if (this.drag) {
+        this.handleTileDrop(this.drag, this.drag.curX, this.drag.curY);
+        this.drag = null;
+        this.pressSource = null;
+        this.markDirty();
+        return;
+      }
+
+      // 未进入拖拽 → 视作点击，走原有命中的点击分发。
       if (t) this.onPointerDown(t.clientX, t.clientY);
+      this.pressSource = null;
+    });
+
+    wx.onTouchCancel(() => {
+      this.drag = null;
+      this.pressSource = null;
+      this.markDirty();
     });
   }
 
@@ -299,9 +392,141 @@ export class GameScene {
 
     const boardSlot = hitTestBoard(x, y, this.boardSlots);
     if (boardSlot) {
-      this.onBoardTap(boardSlot);
+      this.onBoardTileTap(boardSlot);
       return;
     }
+
+    const groupSlot = hitTestBoardGroup(x, y, this.boardSlots);
+    if (groupSlot) {
+      this.onBoardGroupTap(groupSlot);
+      return;
+    }
+  }
+
+  // =========================================================================
+  // 拖拽交互（破冰后自由拆牌 / 组合）
+  // =========================================================================
+
+  /** 命中某个可拖拽的牌（牌架 / 工作区 / 桌面），返回其来源。 */
+  private findTileSource(x: number, y: number): DragSource | null {
+    const rackSlot = hitTestRack(x, y, this.rackSlots);
+    if (rackSlot) {
+      return { kind: 'rack', tile: rackSlot.tile, tileId: rackSlot.tile.id };
+    }
+
+    const workingSlot = this.hitTestWorkingArea(x, y);
+    if (workingSlot) {
+      return { kind: 'working', tile: workingSlot.tile, tileId: workingSlot.tile.id };
+    }
+
+    const boardSlot = hitTestBoard(x, y, this.boardSlots);
+    if (boardSlot) {
+      return {
+        kind: 'board',
+        tile: boardSlot.logicalTile.originalTile,
+        tileId: boardSlot.logicalTile.originalTile.id,
+        sourceGroupId: boardSlot.groupId,
+      };
+    }
+
+    return null;
+  }
+
+  /** 判断点是否落在桌面区域（用于把牌拖到空白处成立新组）。 */
+  private isInBoardRegion(x: number, y: number): boolean {
+    return y >= this.boardConfig.topY && y <= this.boardBottom;
+  }
+
+  /** 判断点是否落在工作区（用于把桌面牌拆分到工作区）。 */
+  private isInWorkingAreaRegion(x: number, y: number): boolean {
+    const left = this.safeLeft + 8;
+    const right = this.screenW - this.safeRight - 8;
+    return x >= left && x <= right && y >= this.workingAreaY && y <= this.workingAreaY + this.workingAreaHeight;
+  }
+
+  /** 当前是否正在拖拽某来源的某张牌（用于在原位置隐藏该牌）。 */
+  private isDraggingTile(kind: DragSourceKind, tileId: number): boolean {
+    return !!this.drag && this.drag.source.kind === kind && this.drag.source.tileId === tileId;
+  }
+
+  /** 拖拽放下：根据来源与落点执行拆分/合并/加牌/成组。 */
+  private handleTileDrop(drag: DragState, x: number, y: number): void {
+    const src = drag.source;
+
+    const boardTile = hitTestBoard(x, y, this.boardSlots);
+    const boardGroupSlot = boardTile ? null : hitTestBoardGroup(x, y, this.boardSlots);
+    const workingHit = this.hitTestWorkingArea(x, y);
+    const onWorkingArea = !!workingHit || this.isInWorkingAreaRegion(x, y);
+    const targetGroupId = boardTile?.groupId ?? boardGroupSlot?.groupId ?? null;
+    const onBoardEmpty = this.isInBoardRegion(x, y) && !targetGroupId && !onWorkingArea;
+
+    try {
+      // 牌架 → 桌面：加到已有牌组 / 空白处成新组。
+      if (src.kind === 'rack') {
+        if (targetGroupId) {
+          if (!this.canManipulateBoard()) {
+            this.showMessage('破冰后才能给桌面牌组加牌');
+            return;
+          }
+          this.engine.placeTilesOnBoard([src.tileId], targetGroupId);
+          this.selectedRackIds.delete(src.tileId);
+          this.showMessage('已加入牌组');
+        } else if (onBoardEmpty) {
+          this.engine.createNewGroupOnBoard([src.tile], detectGroupType([src.tile]));
+          this.selectedRackIds.delete(src.tileId);
+        }
+        return;
+      }
+
+      // 工作区 → 桌面：合并到牌组 / 取出成组。
+      if (src.kind === 'working') {
+        if (!this.canManipulateBoard()) {
+          this.showMessage('破冰后才能操作桌面牌');
+          return;
+        }
+        if (targetGroupId) {
+          this.engine.placeWorkingAreaTilesOnBoard([src.tileId], targetGroupId);
+          this.showMessage('已合并到牌组');
+        } else if (onBoardEmpty) {
+          this.engine.createNewGroupFromWorkingArea([src.tile], detectGroupType([src.tile]));
+        }
+        return;
+      }
+
+      // 桌面 → 其它地方：拆分 / 移动 / 合并 / 成立新组。
+      if (!this.canManipulateBoard()) {
+        this.showMessage('破冰后才能操作桌面牌');
+        return;
+      }
+      const sourceGroupId = src.sourceGroupId!;
+      if (targetGroupId && targetGroupId !== sourceGroupId) {
+        this.engine.removeTilesFromBoard(sourceGroupId, [src.tileId]);
+        this.engine.placeWorkingAreaTilesOnBoard([src.tileId], targetGroupId);
+        this.showMessage('已移动');
+      } else if (onBoardEmpty) {
+        this.engine.removeTilesFromBoard(sourceGroupId, [src.tileId]);
+        this.engine.createNewGroupFromWorkingArea([src.tile], detectGroupType([src.tile]));
+      } else if (onWorkingArea) {
+        this.engine.removeTilesFromBoard(sourceGroupId, [src.tileId]);
+        this.showMessage('已拆分到工作区');
+      }
+      // 落回原牌组或无效位置 → 不操作（牌保持原位）。
+    } catch (err: any) {
+      this.showMessage(err.message || '操作失败');
+    }
+  }
+
+  /** 在拖拽位置绘制幽灵牌。 */
+  private drawDragGhost(): void {
+    if (!this.drag) return;
+    const scale = 1.05;
+    const w = TILE_WIDTH * scale;
+    const h = TILE_HEIGHT * scale;
+    drawPhysicalTile(this.ctx, this.drag.source.tile, {
+      x: this.drag.curX - w / 2,
+      y: this.drag.curY - h / 2,
+      scale,
+    });
   }
 
   private onButtonTap(buttonId: string): void {
@@ -367,19 +592,56 @@ export class GameScene {
     return isValidRun(logicals) || isValidGroupTiles(logicals);
   }
 
-  private onBoardTap(slot: BoardTileSlot): void {
+  /** 当前玩家是否已完成破冰（可自由操作桌面牌）。 */
+  private canManipulateBoard(): boolean {
+    const state = this.engine.getState();
+    return state.phase === GamePhase.PLAYING && this.engine.getCurrentPlayer().hasMadeInitialMeld;
+  }
+
+  /** 点击桌面上的某张牌：有选中牌架牌时加牌，否则拆分到工作区。 */
+  private onBoardTileTap(slot: BoardTileSlot): void {
+    if (!this.canManipulateBoard()) {
+      this.showMessage('破冰后才能操作桌面牌');
+      return;
+    }
+
+    // 有选中牌架牌 → 把它们加到这个牌组（给已有牌组加牌）。
+    if (this.selectedRackIds.size > 0) {
+      try {
+        const rack = this.engine.getCurrentPlayer().rack;
+        const tiles = rack.filter((t) => this.selectedRackIds.has(t.id));
+        this.engine.placeTilesOnBoard(tiles.map(t => t.id), slot.groupId);
+        this.selectedRackIds.clear();
+        this.showMessage('已加入牌组');
+      } catch (err: any) {
+        this.showMessage(err.message || '加牌失败');
+      }
+      this.markDirty();
+      return;
+    }
+
+    // 否则拆分：把这张牌移到工作区。
+    try {
+      const tileId = slot.logicalTile.originalTile.id;
+      this.engine.removeTilesFromBoard(slot.groupId, [tileId]);
+      this.showMessage('已拆分：牌移入工作区');
+    } catch (err: any) {
+      this.showMessage(err.message || '拆分失败');
+    }
+    this.markDirty();
+  }
+
+  /** 点击桌面牌组空白处：切换目标牌组高亮（用于把工作区牌合并进去）。 */
+  private onBoardGroupTap(slot: BoardGroupSlot): void {
     const groupId = slot.groupId;
     if (this.highlightedGroupIds.has(groupId)) this.highlightedGroupIds.delete(groupId);
     else this.highlightedGroupIds.add(groupId);
     this.markDirty();
   }
 
-  private onWorkingAreaTap(slot: { tile: Tile; index: number }): void {
+  private onWorkingAreaTap(slot: WorkingAreaSlot): void {
     const state = this.engine.getState();
-    if (state.turnPhase !== TurnPhase.PLAY) {
-      this.showMessage('当前不能操作工作区');
-      return;
-    }
+    if (state.phase !== GamePhase.PLAYING) return;
 
     try {
       const ctx = this.engine.getTurnContext();
@@ -389,18 +651,10 @@ export class GameScene {
       if (this.highlightedGroupIds.size > 0) {
         const groupId = [...this.highlightedGroupIds][0];
         this.engine.placeWorkingAreaTilesOnBoard([tile.id], groupId);
-        this.highlightedGroupIds.delete(groupId);
-        this.showMessage('牌已放回牌组');
+        this.showMessage('已合并到选中牌组');
       } else {
-        try {
-          const groupId = this.engine.createNewGroupFromWorkingArea([tile], 'run');
-          this.highlightedGroupIds.add(groupId);
-          this.showMessage('已创建新牌组 (顺子)');
-        } catch {
-          const groupId = this.engine.createNewGroupFromWorkingArea([tile], 'group');
-          this.highlightedGroupIds.add(groupId);
-          this.showMessage('已创建新牌组 (刻子)');
-        }
+        this.engine.createNewGroupFromWorkingArea([tile], detectGroupType([tile]));
+        this.showMessage('已从工作区取出');
       }
     } catch (err: any) {
       this.showMessage(err.message || '操作失败');
@@ -409,19 +663,11 @@ export class GameScene {
     this.markDirty();
   }
 
-  private hitTestWorkingArea(px: number, py: number): { tile: Tile; index: number } | null {
-    const turned = this.engine.getState().turnContext;
-    if (!turned) return null;
-
-    const tileY = this.workingAreaY + 16;
-    const scaledW = TILE_WIDTH * 0.7;
-    const scaledH = TILE_HEIGHT * 0.7;
-
-    for (let i = 0; i < this.workingAreaSlots.length; i++) {
+  private hitTestWorkingArea(px: number, py: number): WorkingAreaSlot | null {
+    for (let i = this.workingAreaSlots.length - 1; i >= 0; i--) {
       const slot = this.workingAreaSlots[i];
-      const x = this.safeLeft + 12 + i * (TILE_WIDTH + TILE_GAP);
-      if (px >= x && px <= x + scaledW && py >= tileY && py <= tileY + scaledH) {
-        return { tile: slot.tile, index: i };
+      if (px >= slot.x && px <= slot.x + slot.w && py >= slot.y && py <= slot.y + slot.h) {
+        return slot;
       }
     }
     return null;
@@ -464,8 +710,23 @@ export class GameScene {
     } else {
       this.buildTopBar(state);
       this.buildOpponents(state);
+
+      // 先布局桌面牌组，得到实际占用的内容高度，再据此下移工作区与牌架，
+      // 保证拆/合/重组产生大量牌组时仍能换行并全部可见。
       this.boardSlots = layoutBoard(state.board, this.boardConfig, this.highlightedGroupIds);
-      this.buildBoard(state);
+      const contentH = boardContentHeight(this.boardSlots, this.boardConfig.topY);
+      const minBoardH = 72; // 空桌面也保留一个最小高度，避免布局抖动。
+      const boardBottom = this.boardConfig.topY + Math.max(contentH, minBoardH);
+      this.boardBottom = boardBottom;
+      this.workingAreaY = boardBottom + 8;
+
+      const workingTiles = state.turnContext?.workingArea ?? [];
+      const wa = this.workingAreaLayout(workingTiles, this.workingAreaY);
+      this.workingAreaHeight = wa.height;
+      this.workingAreaSlots = wa.slots;
+      this.rackConfig.y = this.workingAreaY + wa.height + 8;
+
+      this.buildBoard(state, boardBottom);
       this.buildWorkingArea(state);
       this.rackSlots = layoutRack(
         this.engine.getCurrentPlayer().rack,
@@ -480,6 +741,9 @@ export class GameScene {
 
     // 切换方向按钮始终最后绘制，保证位于其他图层之上、不被桌面/牌架等遮挡。
     this.buildOrientationButton();
+
+    // 拖拽幽灵牌绘制在最上层。
+    this.drawDragGhost();
   }
 
   private buildWaiting(): void {
@@ -565,10 +829,10 @@ export class GameScene {
     }
   }
 
-  private buildBoard(state: GameState): void {
+  private buildBoard(state: GameState, boardBottom: number): void {
     const ctx = this.ctx;
     ctx.fillStyle = BOARD_BG;
-    ctx.fillRect(0, this.boardConfig.topY, this.screenW, this.boardConfig.bottomY - this.boardConfig.topY);
+    ctx.fillRect(0, this.boardConfig.topY, this.screenW, Math.max(0, boardBottom - this.boardConfig.topY));
 
     for (const slot of this.boardSlots) {
       const { x, y, w, h } = slot.bounds;
@@ -581,15 +845,54 @@ export class GameScene {
       ctx.stroke();
 
       for (const tileSlot of slot.tileSlots) {
+        if (this.isDraggingTile('board', tileSlot.logicalTile.originalTile.id)) continue;
         drawLogicalTile(ctx, tileSlot.logicalTile, tileSlot.opts);
       }
     }
   }
 
+  /** 计算工作区布局（自动换行），返回牌位与所需高度。 */
+  private workingAreaLayout(
+    tiles: Tile[],
+    baseY: number,
+  ): { slots: WorkingAreaSlot[]; height: number } {
+    const scale = 0.7;
+    const tw = TILE_WIDTH * scale;
+    const th = TILE_HEIGHT * scale;
+    const gapX = TILE_GAP + 2;
+    const gapY = 4;
+    const contentLeft = this.safeLeft + 12;
+    const contentRight = this.screenW - this.safeRight - 12;
+    const usableW = contentRight - contentLeft;
+    const perRow = Math.max(1, Math.floor((usableW + gapX) / (tw + gapX)));
+    const topOffset = 16; // 顶部留出标签高度
+
+    const slots: WorkingAreaSlot[] = tiles.map((tile, i) => {
+      const row = Math.floor(i / perRow);
+      const col = i % perRow;
+      return {
+        tile,
+        index: i,
+        x: contentLeft + col * (tw + gapX),
+        y: baseY + topOffset + row * (th + gapY),
+        w: tw,
+        h: th,
+      };
+    });
+
+    const rows = tiles.length === 0 ? 0 : Math.ceil(tiles.length / perRow);
+    const height =
+      tiles.length === 0
+        ? WORKING_AREA_HEIGHT
+        : Math.max(WORKING_AREA_HEIGHT, topOffset + rows * th + (rows - 1) * gapY + 6);
+
+    return { slots, height };
+  }
+
   private buildWorkingArea(state: GameState): void {
     const ctx = this.ctx;
     const y = this.workingAreaY;
-    const h = WORKING_AREA_HEIGHT;
+    const h = this.workingAreaHeight;
 
     ctx.fillStyle = WORKING_AREA_BG;
     ctx.strokeStyle = WORKING_AREA_BORDER;
@@ -605,23 +908,13 @@ export class GameScene {
       baseline: 'top',
     });
 
-    this.workingAreaSlots = [];
-    const turnCtx = state.turnContext;
-    if (turnCtx && turnCtx.workingArea.length > 0) {
-      const tiles = turnCtx.workingArea;
-      const startX = this.safeLeft + 12;
-      const tileY = y + 16;
-
-      for (let i = 0; i < tiles.length; i++) {
-        const tile = tiles[i];
-        const opts: TileRenderOptions = {
-          x: startX + i * (TILE_WIDTH + TILE_GAP),
-          y: tileY,
-          scale: 0.7,
-        };
-        drawPhysicalTile(ctx, tile, opts);
-        this.workingAreaSlots.push({ tile, index: i });
-      }
+    for (const slot of this.workingAreaSlots) {
+      if (this.isDraggingTile('working', slot.tile.id)) continue;
+      drawPhysicalTile(ctx, slot.tile, {
+        x: slot.x,
+        y: slot.y,
+        scale: 0.7,
+      });
     }
   }
 
@@ -635,6 +928,7 @@ export class GameScene {
     ctx.fill();
 
     for (const slot of this.rackSlots) {
+      if (this.isDraggingTile('rack', slot.tile.id)) continue;
       drawPhysicalTile(ctx, slot.tile, slot.opts);
     }
   }

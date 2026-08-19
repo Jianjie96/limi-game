@@ -38,8 +38,15 @@ export interface BoardTileSlot {
   opts: TileRenderOptions;
 }
 
+/** 单个牌组占用的高度（含上下内边距） */
+export const BOARD_ROW_HEIGHT = TILE_HEIGHT + BOARD_GROUP_PADDING * 2;
+
 /**
  * 计算桌面牌组布局（流式布局，自动换行）。
+ *
+ * 所有牌组都会被布局（不再按 fixed bottomY 裁剪），
+ * 便于破冰后拆分/合并/重组产生大量牌组时仍全部可见、可点击；
+ * 超出可视区域的情况由 GameScene 动态下移工作区/牌架来容纳。
  */
 export function layoutBoard(
   groups: TileGroup[],
@@ -53,21 +60,19 @@ export function layoutBoard(
 
   let curX = left;
   let curY = config.topY + 8;
-  const rowHeight = TILE_HEIGHT + BOARD_GROUP_PADDING * 2;
+  const groupH = BOARD_ROW_HEIGHT;
 
   for (const group of groups) {
     const groupW =
       group.tiles.length * TILE_WIDTH +
       (group.tiles.length - 1) * TILE_GAP +
       BOARD_GROUP_PADDING * 2;
-    const groupH = TILE_HEIGHT + BOARD_GROUP_PADDING * 2;
 
+    // 放不下则换行（当前行已有内容时才换，避免单组过宽死循环）。
     if (curX + groupW > right && curX > left) {
       curX = left;
-      curY += rowHeight + BOARD_GROUP_GAP;
+      curY += BOARD_ROW_HEIGHT + BOARD_GROUP_GAP;
     }
-
-    if (curY + groupH > config.bottomY) break;
 
     const groupBounds = { x: curX, y: curY, w: groupW, h: groupH };
     const tileSlots: BoardTileSlot[] = [];
@@ -91,6 +96,14 @@ export function layoutBoard(
   }
 
   return slots;
+}
+
+/** 计算已布局牌组占用的内容高度（顶部留白 + 最后一行下边缘）。 */
+export function boardContentHeight(slots: BoardGroupSlot[], topY: number): number {
+  if (slots.length === 0) return 0;
+  const last = slots[slots.length - 1];
+  const contentBottom = last.bounds.y + last.bounds.h;
+  return Math.max(0, contentBottom - topY);
 }
 
 /** 命中检测：点击位置对应桌面哪张牌 */
