@@ -7,7 +7,9 @@
 //   init — 开局：洗牌发牌在云端完成，写公开状态 + 各人私有手牌
 //   move — 出牌提交：回放客户端操作日志 → submitTurn 校验 → 写库推送
 //   pass — Pass：摸 1 张并结束回合（回滚本回合桌面操作）
-//   tick — 定时触发器（每分钟）：超时回合执行摸牌惩罚并移交
+//   end  — 房主主动结束对局（关闭测试房 / 紧急终止）
+//   tick — 定时触发器（每分钟）：超时回合执行摸牌惩罚并移交；
+//          回收真人长时间无动作的机器人测试房与逾期未开始的等待测试房
 //
 // 数据存储（手牌/牌池严格分离，防窥屏）：
 //   lami_rooms.game     公开状态（桌面/分数/回合/version/turnDeadline）
@@ -28,6 +30,29 @@ const SECRETS = db.collection('lami_secrets');
 const TURN_MS = 60 * 1000;
 /** 房间数据保留时长：已结束/已废弃的房间超过该时长后由 tick 清理。 */
 const ROOM_RETAIN_MS = 3 * 24 * 3600 * 1000;
+/** 测试房闲置回收：真人玩家超过该时长无任何操作（机器人会自动托管回合）→ tick 释放房间。 */
+const TEST_ROOM_IDLE_MS = 24 * 60 * 60 * 1000;
+/** 等待中的测试房：创建后超过该时长仍未开局 → tick 直接回收。 */
+const TEST_ROOM_WAIT_MS = 60 * 60 * 1000;
+
+/** 是否测试房（含 devFill 填充的机器人玩家）。 */
+function hasBots(room) {
+  return Array.isArray(room.players) && room.players.some((p) => String(p.openid || '').startsWith('bot_'));
+}
+
+/** 终止并清理房间（结束对局 / 闲置回收共用）：置 finished + 删密态与手牌。 */
+async function finishAndCleanup(room) {
+  await ROOMS.doc(room.code).update({ data: { status: 'finished' } });
+  try { await SECRETS.doc(room.code).remove(); } catch (e) { /* 无密态则忽略 */ }
+  try {
+    const hands = await HANDS.where({ code: room.code }).limit(10).get();
+    for (const h of hands.data) {
+      await HANDS.doc(h._id).remove();
+    }
+  } catch (e) {
+    // 清理失败不阻断（tick 会兜底清理）
+  }
+}
 
 function ok(data) {
   return Object.assign({ ok: true }, data);
@@ -186,6 +211,8 @@ async function doInit(event, openid) {
         playersOpenid,
         currentPlayerIndex: 0,
         public: buildPublic(engine, version, deadline),
+        // 开局由房主客户端触发，记为一次真人活跃；供 tick 回收闲置测试房判定。
+        lastHumanAt: Date.now(),
       },
     },
   });
@@ -231,6 +258,8 @@ async function doMove(event, openid) {
   await settleAndPersist(room, engine);
   const version = room.game.version + 1;
   const deadline = Date.now() + TURN_MS;
+  // 真人成功出牌：刷新活跃时间（机器人不会调 move，tick 据此回收闲置测试房）。
+  try { await ROOMS.doc(code).update({ data: { 'game.lastHumanAt': Date.now() } }); } catch (e) { /* 忽略 */ }
   return ok(payloadFor(room, engine, version, deadline, openid));
 }
 
@@ -242,16 +271,7 @@ async function doEnd(event, openid) {
   if (!room) return fail('房间不存在');
   if (room.host !== openid) return fail('只有房主可以结束对局');
   if (room.status === 'finished') return ok({ ended: true });
-  await ROOMS.doc(code).update({ data: { status: 'finished' } });
-  try { await SECRETS.doc(code).remove(); } catch (e) { /* 无密态则忽略 */ }
-  try {
-    const hands = await HANDS.where({ code }).limit(10).get();
-    for (const h of hands.data) {
-      await HANDS.doc(h._id).remove();
-    }
-  } catch (e) {
-    // 清理失败不阻断（tick 会兜底清理）
-  }
+  await finishAndCleanup(room);
   return ok({ ended: true });
 }
 
@@ -273,6 +293,8 @@ async function doPass(event, openid) {
   await settleAndPersist(room, engine);
   const version = room.game.version + 1;
   const deadline = Date.now() + TURN_MS;
+  // 真人成功 Pass：刷新活跃时间（机器人不会调 pass）。
+  try { await ROOMS.doc(code).update({ data: { 'game.lastHumanAt': Date.now() } }); } catch (e) { /* 忽略 */ }
   return ok(payloadFor(room, engine, version, deadline, openid));
 }
 
@@ -298,6 +320,15 @@ async function doTick() {
   let handled = 0;
   for (const room of snap.data) {
     try {
+      // 测试房闲置回收：真人长时间无操作时机器人回合会被超时托管无限续命，
+      // 这里按最后真人活跃时间判定，直接释放房间，不再陪跑。
+      if (hasBots(room)) {
+        const lastHuman = (room.game && room.game.lastHumanAt) || room.startedAt || 0;
+        if (now - lastHuman > TEST_ROOM_IDLE_MS) {
+          await finishAndCleanup(room);
+          continue;
+        }
+      }
       const secret = await getDoc(SECRETS, room.code);
       if (!secret) continue;
       const engine = RummikubEngine.fromState(secret.fullState);
@@ -319,10 +350,23 @@ async function doTick() {
   //   - 卡在 started（房主点开始后未成功开局）的僵尸房间
   const cutoff = now - ROOM_RETAIN_MS;
   const staleFinished = await ROOMS.where({ status: 'finished', startedAt: _.lt(cutoff) }).limit(20).get();
+
+  // 等待中的测试房逾期未开局：不等 3 天保留期，直接回收（普通房间仍走原逻辑）。
+  const staleTestWaiting = await ROOMS.where({
+    status: 'waiting',
+    createdAt: _.lt(now - TEST_ROOM_WAIT_MS),
+  }).limit(20).get();
   const staleWaiting = await ROOMS.where({ status: 'waiting', createdAt: _.lt(cutoff) }).limit(20).get();
   const staleStarted = await ROOMS.where({ status: 'started', startedAt: _.lt(cutoff) }).limit(20).get();
+  // 测试等待房并入清理列表（只收含机器人的，去重避免与 staleWaiting 重复删）。
+  const purgeList = [...staleFinished.data, ...staleWaiting.data, ...staleStarted.data];
+  for (const room of staleTestWaiting.data) {
+    if (hasBots(room) && !purgeList.some((r) => r.code === room.code)) {
+      purgeList.push(room);
+    }
+  }
   let purged = 0;
-  for (const room of [...staleFinished.data, ...staleWaiting.data, ...staleStarted.data]) {
+  for (const room of purgeList) {
     try {
       await ROOMS.doc(room.code).remove();
       try { await SECRETS.doc(room.code).remove(); } catch (e) { /* 无密态则忽略 */ }
