@@ -22,7 +22,8 @@ var engine_entry_exports = {};
 __export(engine_entry_exports, {
   RummikubEngine: () => RummikubEngine,
   applyOps: () => applyOps,
-  findLowestScorePlayer: () => findLowestScorePlayer
+  findLowestScorePlayer: () => findLowestScorePlayer,
+  planBotTurn: () => planBotTurn
 });
 module.exports = __toCommonJS(engine_entry_exports);
 
@@ -748,6 +749,11 @@ var RummikubEngine = class _RummikubEngine {
     this.rollbackTurn(ctx);
     incrementPasses(ctx);
     this.emit("turnEnd", { playerId: player.id, reason: "pass" });
+    if (this.isDeadlock()) {
+      const winnerId = findLowestScorePlayer(this.state.players);
+      this.endGame(winnerId, "lowest_score");
+      return;
+    }
     this.nextPlayer();
   }
   /**
@@ -780,6 +786,11 @@ var RummikubEngine = class _RummikubEngine {
     incrementPasses(ctx);
     this.emit("turnRollback", { playerId: player.id, reason: "timeout" });
     this.emit("turnEnd", { playerId: player.id, reason: "timeout" });
+    if (this.isDeadlock()) {
+      const winnerId = findLowestScorePlayer(this.state.players);
+      this.endGame(winnerId, "lowest_score");
+      return;
+    }
     this.nextPlayer();
   }
   // =========================================================================
@@ -1123,9 +1134,183 @@ function tilesFromWorkingArea(engine, tileIds) {
     return tile;
   });
 }
+
+// src/game/bot.ts
+function planBotTurn(engine) {
+  const state = engine.getState();
+  if (state.phase !== "PLAYING") return false;
+  const player = engine.getCurrentPlayer();
+  if (!player.hasMadeInitialMeld) {
+    return planInitialMeld(engine, player.rack, state.config.initialMeldMinScore);
+  }
+  return planFreePlay(engine);
+}
+function planInitialMeld(engine, rack, minScore) {
+  const chosen = selectDisjointMelds(enumerateMelds(rack));
+  const total = chosen.reduce((sum, c) => sum + c.score, 0);
+  if (total < minScore) return false;
+  for (const meld of chosen) {
+    engine.createNewGroupOnBoard(meld.tiles, meld.type);
+  }
+  return true;
+}
+function planFreePlay(engine) {
+  let placedAny = false;
+  const chosen = selectDisjointMelds(enumerateMelds(engine.getCurrentPlayer().rack));
+  for (const meld of chosen) {
+    engine.createNewGroupOnBoard(meld.tiles, meld.type);
+    placedAny = true;
+  }
+  let progress = true;
+  while (progress) {
+    progress = false;
+    const player = engine.getCurrentPlayer();
+    const board = engine.getState().board;
+    const rack = [...player.rack].sort((a, b) => getTileValue(b) - getTileValue(a));
+    for (const tile of rack) {
+      const target = findAttachTarget(tile, board);
+      if (target) {
+        engine.placeTilesOnBoard([tile.id], target.groupId, target.position);
+        placedAny = true;
+        progress = true;
+        break;
+      }
+    }
+  }
+  return placedAny;
+}
+function findAttachTarget(tile, board) {
+  const lt = toLogical(tile);
+  for (const group of board) {
+    if (group.type === "run") {
+      if (group.tiles.some((g) => g.logicalColor === "joker")) continue;
+      const low = group.tiles[0].logicalNumber;
+      const high = group.tiles[group.tiles.length - 1].logicalNumber;
+      const runColor = group.tiles[0].logicalColor;
+      if (tile.color === "joker") {
+        if (high < 13) return { groupId: group.id, position: group.tiles.length };
+        if (low > 1) return { groupId: group.id, position: 0 };
+        continue;
+      }
+      if (tile.color !== runColor) continue;
+      if (tile.number === high + 1 && high + 1 <= 13) {
+        return { groupId: group.id, position: group.tiles.length };
+      }
+      if (tile.number === low - 1 && low - 1 >= 1) {
+        return { groupId: group.id, position: 0 };
+      }
+    } else if (isValidGroupTiles([...group.tiles, lt])) {
+      return { groupId: group.id, position: group.tiles.length };
+    }
+  }
+  return null;
+}
+function enumerateMelds(rack) {
+  const pure = [];
+  const withJoker = [];
+  const jokers = rack.filter((t) => t.color === "joker");
+  for (const color of TILE_COLORS) {
+    pure.push(...findRunCandidates(rack, color, null));
+  }
+  for (const color of TILE_COLORS) {
+    let ji = 0;
+    const jokerFor = () => jokers.length > 0 ? jokers[ji % jokers.length] : null;
+    for (const candidate of findRunCandidates(rack, color, jokerFor())) {
+      withJoker.push(candidate);
+      ji++;
+    }
+  }
+  pure.push(...findGroupCandidates(rack, null));
+  {
+    let ji = 0;
+    const jokerFor = () => jokers.length > 0 ? jokers[ji % jokers.length] : null;
+    for (const candidate of findGroupCandidates(rack, jokerFor())) {
+      withJoker.push(candidate);
+      ji++;
+    }
+  }
+  const byScoreDesc = (a, b) => b.score - a.score;
+  pure.sort(byScoreDesc);
+  withJoker.sort(byScoreDesc);
+  return [...pure, ...withJoker];
+}
+function findRunCandidates(rack, color, joker) {
+  const byNumber = /* @__PURE__ */ new Map();
+  for (const tile of rack) {
+    if (tile.color === color && !byNumber.has(tile.number)) {
+      byNumber.set(tile.number, tile);
+    }
+  }
+  const numbers = [...byNumber.keys()].sort((a, b) => a - b);
+  const candidates = [];
+  const makeRun = (tiles) => ({
+    tiles,
+    type: "run",
+    score: tiles.reduce((sum, t) => sum + getTileValue(t), 0)
+  });
+  let i = 0;
+  while (i < numbers.length) {
+    let j = i;
+    while (j + 1 < numbers.length && numbers[j + 1] === numbers[j] + 1) j++;
+    if (j - i + 1 >= 3) {
+      candidates.push(makeRun(numbers.slice(i, j + 1).map((n) => byNumber.get(n))));
+    }
+    i = j + 1;
+  }
+  if (joker) {
+    for (let k = 0; k < numbers.length; k++) {
+      const a = numbers[k];
+      const b = numbers[k + 1];
+      if (b === void 0) break;
+      if (b === a + 1) {
+        if (a - 1 >= 1) candidates.push(makeRun([joker, byNumber.get(a), byNumber.get(b)]));
+        if (b + 1 <= 13) candidates.push(makeRun([byNumber.get(a), byNumber.get(b), joker]));
+      } else if (b === a + 2) {
+        candidates.push(makeRun([byNumber.get(a), joker, byNumber.get(b)]));
+      }
+    }
+  }
+  return candidates;
+}
+function findGroupCandidates(rack, joker) {
+  const candidates = [];
+  const makeGroup = (tiles) => ({
+    tiles,
+    type: "group",
+    score: tiles.reduce((sum, t) => sum + getTileValue(t), 0)
+  });
+  for (let n = 1; n <= 13; n++) {
+    const perColor = /* @__PURE__ */ new Map();
+    for (const tile of rack) {
+      if (tile.number === n && tile.color !== "joker" && !perColor.has(tile.color)) {
+        perColor.set(tile.color, tile);
+      }
+    }
+    const distinct = [...perColor.values()];
+    if (joker) {
+      if (distinct.length === 2) {
+        candidates.push(makeGroup([...distinct, joker]));
+      }
+    } else if (distinct.length >= 3) {
+      candidates.push(makeGroup(distinct));
+    }
+  }
+  return candidates;
+}
+function selectDisjointMelds(candidates) {
+  const used = /* @__PURE__ */ new Set();
+  const chosen = [];
+  for (const candidate of candidates) {
+    if (candidate.tiles.some((t) => used.has(t.id))) continue;
+    chosen.push(candidate);
+    for (const t of candidate.tiles) used.add(t.id);
+  }
+  return chosen;
+}
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {
   RummikubEngine,
   applyOps,
-  findLowestScorePlayer
+  findLowestScorePlayer,
+  planBotTurn
 });

@@ -564,6 +564,13 @@ export class RummikubEngine {
 
     this.emit('turnEnd', { playerId: player.id, reason: 'pass' });
 
+    // 死局检测：牌池耗尽且全员连续 Pass → 最低分获胜，不再移交回合
+    if (this.isDeadlock()) {
+      const winnerId = findLowestScorePlayer(this.state.players);
+      this.endGame(winnerId, 'lowest_score');
+      return;
+    }
+
     // 进入下一位玩家
     this.nextPlayer();
   }
@@ -610,6 +617,13 @@ export class RummikubEngine {
 
     this.emit('turnRollback', { playerId: player.id, reason: 'timeout' });
     this.emit('turnEnd', { playerId: player.id, reason: 'timeout' });
+
+    // 死局检测：与 pass 同逻辑，避免牌池耗尽后超时托管无限循环
+    if (this.isDeadlock()) {
+      const winnerId = findLowestScorePlayer(this.state.players);
+      this.endGame(winnerId, 'lowest_score');
+      return;
+    }
 
     this.nextPlayer();
   }

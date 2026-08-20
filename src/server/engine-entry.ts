@@ -7,5 +7,6 @@
 // ============================================================================
 
 export { RummikubEngine, applyOps } from '../game/engine';
+export { planBotTurn } from '../game/bot';
 export { findLowestScorePlayer } from '../game/scoring';
 export type { EngineOp, GameState } from '../game/types';

@@ -11,6 +11,9 @@
 //   tick — 定时触发器（每分钟）：超时回合执行摸牌惩罚并移交；
 //          回收真人长时间无动作的机器人测试房与逾期未开始的等待测试房
 //
+// 机器人托管：devFill 填充的测试机器人（openid 形如 bot_*）回合由云端立即代打，
+// 回合一旦移交机器人，advanceBots 连续执行 bot.ts 的贪心 AI 直到回到真人回合。
+//
 // 数据存储（手牌/牌池严格分离，防窥屏）：
 //   lami_rooms.game     公开状态（桌面/分数/回合/version/turnDeadline）
 //   lami_hands/{id}     私有手牌，_id = `${roomCode}_${openid}`，仅本人可读
@@ -18,7 +21,7 @@
 // ============================================================================
 
 const cloud = require('wx-server-sdk');
-const { RummikubEngine, applyOps, findLowestScorePlayer } = require('./engine-bundle.js');
+const { RummikubEngine, applyOps, findLowestScorePlayer, planBotTurn } = require('./engine-bundle.js');
 
 cloud.init({ env: cloud.DYNAMIC_CURRENT_ENV });
 const db = cloud.database();
@@ -239,6 +242,7 @@ async function doMove(event, openid) {
   if (Date.now() > room.game.turnDeadline) {
     engine.handleTimeout();
     await settleAndPersist(room, engine);
+    await advanceBots(room, engine);
     return fail('回合已超时，已自动摸牌并移交回合');
   }
 
@@ -256,11 +260,11 @@ async function doMove(event, openid) {
   }
 
   await settleAndPersist(room, engine);
-  const version = room.game.version + 1;
-  const deadline = Date.now() + TURN_MS;
+  // 回合若移交到机器人 → 云端立即连续代打，真人响应里直接拿到最新状态。
+  await advanceBots(room, engine);
   // 真人成功出牌：刷新活跃时间（机器人不会调 move，tick 据此回收闲置测试房）。
   try { await ROOMS.doc(code).update({ data: { 'game.lastHumanAt': Date.now() } }); } catch (e) { /* 忽略 */ }
-  return ok(payloadFor(room, engine, version, deadline, openid));
+  return ok(payloadFor(room, engine, room.game.version, room.game.turnDeadline, openid));
 }
 
 /** 结束对局：房主主动终止（开发调试关闭测试房 / 紧急终止），
@@ -291,22 +295,66 @@ async function doPass(event, openid) {
 
   engine.pass();
   await settleAndPersist(room, engine);
-  const version = room.game.version + 1;
-  const deadline = Date.now() + TURN_MS;
+  // 回合若移交到机器人 → 云端立即连续代打。
+  await advanceBots(room, engine);
   // 真人成功 Pass：刷新活跃时间（机器人不会调 pass）。
   try { await ROOMS.doc(code).update({ data: { 'game.lastHumanAt': Date.now() } }); } catch (e) { /* 忽略 */ }
-  return ok(payloadFor(room, engine, version, deadline, openid));
+  return ok(payloadFor(room, engine, room.game.version, room.game.turnDeadline, openid));
 }
 
-/** 出牌/Pass 成功后统一落库；若分出胜负则收尾。 */
+/** 出牌/Pass 成功后统一落库；若分出胜负则收尾。
+ * 版本号回写 room.game 内存，同一请求内多次落库（机器人连打）版本递增不重复。 */
 async function settleAndPersist(room, engine) {
   const st = engine.getState();
-  const version = room.game.version + 1;
+  const version = (room.game.version || 0) + 1;
   const deadline = Date.now() + TURN_MS;
   await persistState(room, engine, version, deadline);
+  room.game.version = version;
+  room.game.turnDeadline = deadline;
+  room.game.currentPlayerIndex = st.currentPlayerIndex;
   if (st.phase === 'GAME_OVER') {
     await ROOMS.doc(room.code).update({ data: { status: 'finished' } });
   }
+}
+
+// ----------------------------------------------------------------------------
+// 机器人托管：回合移交 bot_* 玩家后，云端立即用 bot.ts AI 代打
+// ----------------------------------------------------------------------------
+
+/** 执行机器人一个回合：planBotTurn 规划落子 → submitTurn 提交；无牌可出或提交被拒则 pass。
+ * 异常时回滚到回合开始状态并 pass 兜底，保证密态不损坏。 */
+function botPlayOneTurn(engine) {
+  const snapshot = engine.serializeState();
+  try {
+    if (planBotTurn(engine)) {
+      const res = engine.submitTurn();
+      if (res.valid) return;
+    }
+    engine.pass();
+  } catch (e) {
+    try {
+      engine.loadState(snapshot);
+      engine.pass();
+    } catch (e2) { /* 最后兜底：状态已在内存，下次 tick 会再处理 */ }
+  }
+}
+
+/** 当前回合是机器人时连续代打，直到回到真人回合或对局结束；末尾一次性落库。 */
+async function advanceBots(room, engine) {
+  const openids = (room.game && room.game.playersOpenid) || [];
+  let turns = 0;
+  while (turns < 100) {
+    const st = engine.getState();
+    if (st.phase !== 'PLAYING') break;
+    const openid = openids[st.currentPlayerIndex];
+    if (!String(openid || '').startsWith('bot_')) break;
+    botPlayOneTurn(engine);
+    turns++;
+  }
+  if (turns > 0) {
+    await settleAndPersist(room, engine);
+  }
+  return turns;
 }
 
 /** 定时任务：扫描超时回合，执行摸牌惩罚并移交；顺带清理过期房间数据。 */
@@ -338,6 +386,8 @@ async function doTick() {
       }
       engine.handleTimeout();
       await settleAndPersist(room, engine);
+      // 超时移交后若轮到机器人 → 立即代打，不等下一分钟 tick。
+      await advanceBots(room, engine);
       handled++;
     } catch (e) {
       // 单个房间失败不影响其他房间
