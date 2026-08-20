@@ -314,6 +314,58 @@ export class RummikubEngine {
   }
 
   /**
+   * 把牌放回当前玩家的牌架（未破冰时撤销首次出牌使用）。
+   * 可从桌面牌组或工作区取回；同时更新「本回合从牌架放下」的追踪。
+   */
+  returnTilesToRack(tileIds: number[]): Tile[] {
+    this.assertPhase(TurnPhase.PLAY);
+    const player = this.getCurrentPlayer();
+    const ctx = this.getTurnContext();
+    const idSet = new Set(tileIds);
+    const returned: Tile[] = [];
+
+    // 从桌面牌组中移除
+    const nextBoard: TileGroup[] = [];
+    for (const group of this.state.board) {
+      const remaining: LogicalTile[] = [];
+      for (const lt of group.tiles) {
+        if (idSet.has(lt.originalTile.id)) {
+          returned.push(lt.originalTile);
+        } else {
+          remaining.push(lt);
+        }
+      }
+      if (remaining.length === 0) continue; // 整组被拿回 → 移除该组
+      nextBoard.push(remaining.length === group.tiles.length ? group : { ...group, tiles: remaining });
+    }
+    this.state.board = nextBoard;
+
+    // 从工作区中移除
+    const waReturned = ctx.workingArea.filter(t => idSet.has(t.id));
+    ctx.workingArea = ctx.workingArea.filter(t => !idSet.has(t.id));
+    for (const t of waReturned) {
+      if (!returned.some(r => r.id === t.id)) returned.push(t);
+    }
+
+    if (returned.length !== tileIds.length) {
+      throw new Error('部分牌既不在桌面也不在工作区');
+    }
+
+    // 放回牌架
+    player.rack = [...player.rack, ...returned];
+
+    // 更新「本回合从牌架放下」追踪，保持状态一致
+    const returnedIds = new Set(returned.map(t => t.id));
+    ctx.rackTilesPlacedThisTurn = ctx.rackTilesPlacedThisTurn.filter(t => !returnedIds.has(t.id));
+    if (ctx.rackTilesPlacedThisTurn.length === 0) {
+      ctx.hasPlacedFromRack = false;
+    }
+
+    this.emit('boardManipulated', { action: 'returnToRack', tileIds });
+    return returned;
+  }
+
+  /**
    * 替换桌面上的 Joker。
    * Joker 是通配牌，替换只需保证「用真实牌替换后牌组仍然合法」，
    * 因此动态校验替换结果，而非比对某个写死的代表值。

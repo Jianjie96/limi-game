@@ -444,6 +444,15 @@ export class GameScene {
     return x >= left && x <= right && y >= this.workingAreaY && y <= this.workingAreaY + this.workingAreaHeight;
   }
 
+  /** 判断点是否落在牌架区域（用于把牌拖回牌架，无需精确命中某张手牌）。 */
+  private isInRackRegion(x: number, y: number): boolean {
+    const left = this.safeLeft + 8;
+    const right = this.screenW - this.safeRight - 8;
+    const top = this.rackConfig.y;
+    const bottom = top + rackHeight(this.rackSlots.length, this.rackConfig);
+    return x >= left && x <= right && y >= top && y <= bottom;
+  }
+
   /** 当前是否正在拖拽某来源的某张牌（用于在原位置隐藏该牌）。 */
   private isDraggingTile(kind: DragSourceKind, tileId: number): boolean {
     return !!this.drag && this.drag.source.kind === kind && this.drag.source.tileId === tileId;
@@ -460,6 +469,7 @@ export class GameScene {
     const targetGroupId = boardTile?.groupId ?? boardGroupSlot?.groupId ?? null;
     const onBoardEmpty = this.isInBoardRegion(x, y) && !targetGroupId && !onWorkingArea;
     const rackTarget = hitTestRack(x, y, this.rackSlots);
+    const onRack = !!rackTarget || this.isInRackRegion(x, y);
 
     try {
       // 牌架 → 牌架：拖到另一张手牌上重排顺序（理牌）。
@@ -485,9 +495,15 @@ export class GameScene {
         return;
       }
 
-      // 工作区 → 桌面：合并到牌组 / 取出成组。
+      // 工作区 → 牌架 / 桌面。
       if (src.kind === 'working') {
+        // 未破冰：工作区里本回合放下的牌可放回牌架。
         if (!this.canManipulateBoard()) {
+          if (onRack && !targetGroupId && !onWorkingArea && this.isRackPlacedThisTurn(src.tileId)) {
+            this.engine.returnTilesToRack([src.tileId]);
+            this.showMessage('已放回牌架');
+            return;
+          }
           this.showMessage('破冰后才能操作桌面牌');
           return;
         }
@@ -501,11 +517,26 @@ export class GameScene {
       }
 
       // 桌面 → 其它地方：拆分 / 移动 / 合并 / 成立新组。
+      const sourceGroupId = src.sourceGroupId!;
+
+      // 未破冰时，仅能操作本回合从牌架放下的牌：放回牌架或拆到工作区。
       if (!this.canManipulateBoard()) {
-        this.showMessage('破冰后才能操作桌面牌');
+        if (!this.isRackPlacedThisTurn(src.tileId)) {
+          this.showMessage('破冰后才能操作桌面牌');
+          return;
+        }
+        if (onRack && !targetGroupId && !onWorkingArea) {
+          this.engine.returnTilesToRack([src.tileId]);
+          this.showMessage('已放回牌架');
+        } else if (onWorkingArea) {
+          this.engine.removeTilesFromBoard(sourceGroupId, [src.tileId]);
+          this.showMessage('已拆分到工作区');
+        } else {
+          this.showMessage('破冰后才能操作桌面牌');
+        }
         return;
       }
-      const sourceGroupId = src.sourceGroupId!;
+
       if (boardTile && targetGroupId === sourceGroupId) {
         // 同一牌组内拖到另一张牌上 → 仅重排顺序（Joker 显示值随位置变化）。
         this.engine.moveTileWithinGroup(sourceGroupId, src.tileId, boardTile.index);
@@ -609,15 +640,22 @@ export class GameScene {
     return state.phase === GamePhase.PLAYING && this.engine.getCurrentPlayer().hasMadeInitialMeld;
   }
 
+  /** 该牌是否是本回合从牌架放下桌面的牌（未破冰时可拿回自己的牌）。 */
+  private isRackPlacedThisTurn(tileId: number): boolean {
+    const ctx = this.engine.getState().turnContext;
+    return !!ctx && ctx.rackTilesPlacedThisTurn.some(t => t.id === tileId);
+  }
+
   /** 点击桌面上的某张牌：有选中牌架牌时加牌，否则拆分到工作区。 */
   private onBoardTileTap(slot: BoardTileSlot): void {
-    if (!this.canManipulateBoard()) {
-      this.showMessage('破冰后才能操作桌面牌');
-      return;
-    }
+    const tileId = slot.logicalTile.originalTile.id;
 
-    // 有选中牌架牌 → 把它们加到这个牌组（给已有牌组加牌）。
+    // 有选中牌架牌 → 把它们加到这个牌组（给已有牌组加牌，需破冰）。
     if (this.selectedRackIds.size > 0) {
+      if (!this.canManipulateBoard()) {
+        this.showMessage('破冰后才能给桌面牌组加牌');
+        return;
+      }
       try {
         const rack = this.engine.getCurrentPlayer().rack;
         const tiles = rack.filter((t) => this.selectedRackIds.has(t.id));
@@ -631,9 +669,13 @@ export class GameScene {
       return;
     }
 
-    // 否则拆分：把这张牌移到工作区。
+    // 否则拆分到工作区（未破冰时仅允许拿回本回合从牌架放下的牌）。
+    if (!this.canManipulateBoard() && !this.isRackPlacedThisTurn(tileId)) {
+      this.showMessage('破冰后才能操作桌面牌');
+      return;
+    }
+
     try {
-      const tileId = slot.logicalTile.originalTile.id;
       this.engine.removeTilesFromBoard(slot.groupId, [tileId]);
       this.showMessage('已拆分：牌移入工作区');
     } catch (err: any) {
