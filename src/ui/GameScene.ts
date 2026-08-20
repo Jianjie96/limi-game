@@ -45,7 +45,7 @@ import {
   BUTTON_HEIGHT,
   BUTTON_COLORS,
 } from './constants';
-import { layoutRack, hitTestRack, rackHeight, type RackConfig, type RackTileSlot } from './Rack';
+import { layoutRack, layoutRackWithGap, rackGapIndexAt, hitTestRack, rackHeight, type RackConfig, type RackTileSlot } from './Rack';
 import {
   layoutBoard,
   hitTestBoard,
@@ -131,6 +131,8 @@ interface TileAnim {
   tscale: number;
   /** 出生延迟（毫秒）：发牌级联时牌先停在牌池点，到时再飞出。 */
   pending: number;
+  /** 拱形飞行：理牌预览让位/复位时沿二次贝塞尔拱起移动，与真正落位区分。 */
+  arc?: { sx: number; sy: number; t: number; dur: number; delay: number };
 }
 
 /** easeOutBack：带轻微回弹的缓出曲线，弹出动画更有卡通感。 */
@@ -179,6 +181,8 @@ export class GameScene {
   /** 横扫连选状态：按下牌架牌横向滑动时持续扩展选中范围。 */
   private sweepSelectActive = false;
   private rangeSelectAnchor: number | null = null;
+  /** 理牌实时预览：拖拽牌架牌时牌架中开出的缺口索引（排除后序列），null 表示无预览。 */
+  private previewGapIndex: number | null = null;
 
   /**
    * 本场景是否经历过 touchStart。
@@ -458,6 +462,17 @@ export class GameScene {
     } else {
       this.drag.curX = t.clientX;
       this.drag.curY = t.clientY;
+
+      // 理牌实时预览：拖的是牌架牌时，牌架内实时开缺口提示将插入的位置；
+      // 拖出牌架区域则闭合缺口（邻牌拱回原位），松手不改变顺序。
+      if (this.drag.source.kind === 'rack') {
+        const next = this.isInRackRegion(t.clientX, t.clientY)
+          ? rackGapIndexAt(t.clientX, t.clientY, this.getSelfPlayer().rack.length - 1, this.rackConfig)
+          : null;
+        if (next !== this.previewGapIndex) {
+          this.previewGapIndex = next;
+        }
+      }
     }
     this.markDirty();
   };
@@ -482,6 +497,7 @@ export class GameScene {
       this.clearLongPressTimer();
       this.longPressActive = false;
       this.rangeSelectAnchor = null;
+      this.previewGapIndex = null;
       this.pressSource = null;
       this.markDirty();
       return;
@@ -490,6 +506,7 @@ export class GameScene {
     if (this.drag) {
       this.handleTileDrop(this.drag, this.drag.curX, this.drag.curY);
       this.drag = null;
+      this.previewGapIndex = null;
       this.pressSource = null;
       this.markDirty();
       return;
@@ -507,6 +524,7 @@ export class GameScene {
     this.longPressActive = false;
     this.sweepSelectActive = false;
     this.rangeSelectAnchor = null;
+    this.previewGapIndex = null;
     this.drag = null;
     this.pressSource = null;
     this.markDirty();
@@ -785,11 +803,14 @@ export class GameScene {
     const onRack = !!rackTarget || this.isInRackRegion(x, y);
 
     try {
-      // 牌架 → 牌架：拖到另一张手牌上重排顺序（理牌）。
-      if (src.kind === 'rack' && rackTarget && !targetGroupId && !onWorkingArea) {
-        this.engine.reorderRackTile(src.tileId, rackTarget.index);
-        audio.play('sort');
-        return;
+      // 牌架 → 牌架：优先用实时预览的缺口位置提交重排（理牌）。
+      if (src.kind === 'rack' && !targetGroupId && !onWorkingArea) {
+        const insertAt = this.previewGapIndex ?? (rackTarget ? rackTarget.index : null);
+        if (insertAt != null) {
+          this.engine.reorderRackTile(src.tileId, insertAt);
+          audio.play('sort');
+          return;
+        }
       }
 
       // 牌架 → 桌面：加到已有牌组 / 空白处成新组。
@@ -1151,7 +1172,12 @@ export class GameScene {
       const boardBottom = this.workingAreaY - 8;
       this.boardBottom = boardBottom;
       this.boardSlots = this.layoutBoardToFit(state.board, boardBottom);
-      this.rackSlots = layoutRack(rackTiles, this.rackConfig, this.selectedRackIds);
+      // 理牌实时预览：拖拽牌架牌且缺口开着时，用含缺口的预览布局（邻牌让位）。
+      const draggingRackId = this.drag?.source.kind === 'rack' ? this.drag.source.tileId : null;
+      this.rackSlots =
+        draggingRackId != null && this.previewGapIndex != null
+          ? layoutRackWithGap(rackTiles, draggingRackId, this.previewGapIndex, this.rackConfig, this.selectedRackIds)
+          : layoutRack(rackTiles, this.rackConfig, this.selectedRackIds);
 
       // 先登记全部牌的动画目标，再按当前动画位置绘制。
       this.registerAnimTargets();
@@ -1193,6 +1219,8 @@ export class GameScene {
   private registerAnimTargets(): void {
     const seen = new Set<number>();
     const deck = this.deckPoint();
+    // 槽位发生「跳跃」的牌架牌（预览让位/复位）→ 拱形飞行，先收集再统一错峰。
+    const arcCandidates: TileAnim[] = [];
 
     for (const slot of this.rackSlots) {
       const id = slot.tile.id;
@@ -1200,6 +1228,10 @@ export class GameScene {
       const tscale = slot.opts.selected ? 1.06 : 1; // 选中轻微放大
       const a = this.tileAnims.get(id);
       if (a) {
+        // 横向位移超过一个槽位 → 拱起移动（预览中的临时让位，与平滑落位区分）。
+        if (!a.arc && Math.abs(slot.opts.x - a.x) > TILE_WIDTH * 0.8) {
+          arcCandidates.push(a);
+        }
         a.tx = slot.opts.x;
         a.ty = slot.opts.y;
         a.tscale = tscale;
@@ -1210,6 +1242,18 @@ export class GameScene {
           pending: slot.index * DEAL_STAGGER_MS,
         });
       }
+    }
+
+    // 让位动效保持轻快：统一短时长、无错峰，避免眼花缭乱。
+    for (const a of arcCandidates) {
+      const dist = Math.hypot(a.tx - a.x, a.ty - a.y);
+      a.arc = {
+        sx: a.x,
+        sy: a.y,
+        t: 0,
+        dur: 200 + Math.min(80, dist * 0.4),
+        delay: 0,
+      };
     }
 
     for (const group of this.boardSlots) {
@@ -1261,6 +1305,7 @@ export class GameScene {
     if (!a) return false;
     return (
       a.pending > 0 ||
+      !!a.arc ||
       Math.abs(a.tx - a.x) > 1.5 ||
       Math.abs(a.ty - a.y) > 1.5 ||
       Math.abs(a.tscale - a.scale) > 0.01
@@ -1278,6 +1323,34 @@ export class GameScene {
         animating = true;
         continue;
       }
+
+      // 轻微让位动效：沿低弧度贝塞尔平移，终点即当前目标，
+      // 目标再变（缺口继续移动）时曲线自动跟随；缓出无过冲，保持克制。
+      if (a.arc) {
+        animating = true;
+        if (a.arc.delay > 0) {
+          a.arc.delay -= dt;
+          continue;
+        }
+        a.arc.t += dt;
+        const raw = Math.min(1, a.arc.t / a.arc.dur);
+        const u = 1 - Math.pow(1 - raw, 3); // easeOutCubic：轻快无回弹
+        // 控制点：水平取中点，垂直只抬高一点点，示意「拿起来挪」即可。
+        const lift = Math.min(12, 5 + Math.abs(a.tx - a.arc.sx) * 0.05);
+        const cx = (a.arc.sx + a.tx) / 2;
+        const cy = Math.min(a.arc.sy, a.ty) - lift;
+        const inv = 1 - u;
+        a.x = inv * inv * a.arc.sx + 2 * inv * u * cx + u * u * a.tx;
+        a.y = inv * inv * a.arc.sy + 2 * inv * u * cy + u * u * a.ty;
+        if (raw >= 1) {
+          a.x = a.tx;
+          a.y = a.ty;
+          a.scale = a.tscale;
+          a.arc = undefined;
+        }
+        continue;
+      }
+
       const dx = a.tx - a.x;
       const dy = a.ty - a.y;
       const ds = a.tscale - a.scale;
@@ -1761,7 +1834,9 @@ export class GameScene {
   private buildRack(): void {
     const ctx = this.ctx;
     const { screenW, y, left, right } = this.rackConfig;
-    const h = rackHeight(this.rackSlots.length, this.rackConfig);
+    // 预览开缺口时 rackSlots 少一张，背景高度仍按完整牌数算，避免牌架抽动。
+    const tileCount = this.rackSlots.length + (this.previewGapIndex != null ? 1 : 0);
+    const h = rackHeight(tileCount, this.rackConfig);
     const x = left + 8;
     const w = screenW - left - right - 16;
 
