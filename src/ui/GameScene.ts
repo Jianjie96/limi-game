@@ -10,6 +10,7 @@ import type { Tile, TileGroup, GameState, PlayerState } from '../game/types';
 import { GamePhase } from '../game/types';
 import { RummikubEngine } from '../game/engine';
 import type { OnlineCoordinator } from './online';
+import { drawCapsuleButton } from './backdrop';
 import { canFormMelds, isValidRun, isValidGroupTiles } from '../game/validate';
 import { detectGroupType, toLogical } from '../game/tiles';
 import {
@@ -210,6 +211,9 @@ export class GameScene {
 
   private buttons: ButtonState[] = [];
   private orientationButton!: ButtonState;
+  /** 结束对局回调（仅测试房房主挂接）：挂接后顶栏右侧显示「结束对局」按钮。 */
+  onRequestEndGame: (() => void) | null = null;
+  private endGameRect: { x: number; y: number; w: number; h: number } | null = null;
 
   private isLandscape = false;
   /** dispose 后丢弃异步回调（转屏等待可能晚于场景释放）。 */
@@ -661,6 +665,11 @@ export class GameScene {
   }
 
   private onPointerDown(x: number, y: number): void {
+    const er = this.endGameRect;
+    if (er && x >= er.x && x <= er.x + er.w && y >= er.y && y <= er.y + er.h) {
+      this.onRequestEndGame?.();
+      return;
+    }
     if (hitTestButton(x, y, [this.orientationButton])) {
       this.toggleOrientation();
       return;
@@ -1645,11 +1654,25 @@ export class GameScene {
       align: 'left',
     });
 
-    this.drawText(this.screenW - this.safeRight - 12, cy, '出牌 或 Pass 摸牌', {
-      size: FONT_SIZE_LABEL - 2,
-      color: INK_SOFT,
-      align: 'right',
-    });
+    if (this.onRequestEndGame) {
+      // 测试房应急出口：顶栏右侧「结束对局」按钮（代替右侧提示文案）。
+      const bw = 76;
+      const bh = 26;
+      this.endGameRect = {
+        x: this.screenW - this.safeRight - 12 - bw,
+        y: cy - bh / 2,
+        w: bw,
+        h: bh,
+      };
+      drawCapsuleButton(ctx, this.endGameRect, '结束对局', 'danger', 12);
+    } else {
+      this.endGameRect = null;
+      this.drawText(this.screenW - this.safeRight - 12, cy, '出牌 或 Pass 摸牌', {
+        size: FONT_SIZE_LABEL - 2,
+        color: INK_SOFT,
+        align: 'right',
+      });
+    }
   }
 
   private buildOpponents(state: GameState): void {

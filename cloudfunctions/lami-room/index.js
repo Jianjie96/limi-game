@@ -2,10 +2,12 @@
 // 云函数 lami-room — 拉密房间服务（微信云开发）
 // ----------------------------------------------------------------------------
 // 单函数多 action 设计，客户端通过 event.action 分发：
-//   create — 创建房间（2/3/4 人），房主自动成为第一个玩家
-//   join   — 通过房号加入房间（分享链接进入时调用）
-//   get    — 查询房间最新状态（客户端轮询用）
-//   start  — 房主在人齐后开始游戏
+//   create  — 创建房间（2/3/4 人），房主自动成为第一个玩家
+//   join    — 通过房号加入房间（分享链接进入时调用）
+//   get     — 查询房间最新状态（客户端轮询用）
+//   start   — 房主在人齐后开始游戏
+//   devFill — 开发调试：房主用测试机器人补满空位，单人即可开局；
+//             机器人回合由 lami-game 定时触发器超时自动摸牌托管
 // 数据集合：lami_rooms（以 5 位房号作为文档 _id）
 // ============================================================================
 
@@ -138,6 +140,27 @@ exports.main = async (event) => {
           },
         });
         room.status = 'started';
+        return ok({ room, self: OPENID });
+      }
+
+      // 开发调试：房主用测试机器人补满空位（仅等待中的房间），单人即可开局。
+      // 机器人回合不会主动出牌，由 lami-game 定时触发器超时自动摸牌并移交。
+      case 'devFill': {
+        const code = normalizeCode(event.code);
+        const room = await getRoomDoc(code);
+        if (!room) return fail('房间不存在');
+        if (room.host !== OPENID) return fail('只有房主可以填充机器人');
+        if (room.status !== 'waiting') return fail('房间不在等待状态');
+        const bots = [];
+        for (let i = room.players.length; i < room.capacity; i++) {
+          bots.push({ openid: `bot_${code}_${i}`, name: `测试机器人${i}` });
+        }
+        if (bots.length > 0) {
+          await COL.doc(code).update({
+            data: { players: db.command.push(bots) },
+          });
+          room.players = room.players.concat(bots);
+        }
         return ok({ room, self: OPENID });
       }
 

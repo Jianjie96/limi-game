@@ -133,6 +133,11 @@ export function startRoom(code: string): Promise<RoomResult> {
   return callRoom<RoomResponse>('start', { code });
 }
 
+/** 开发调试：房主用测试机器人补满空位，单人即可开局联调实时对战。 */
+export function fillDevBots(code: string): Promise<RoomResult> {
+  return callRoom<RoomResponse>('devFill', { code });
+}
+
 // ----------------------------------------------------------------------------
 // 本地玩家身份（小游戏无授权头像昵称，用随机代号）
 // ----------------------------------------------------------------------------

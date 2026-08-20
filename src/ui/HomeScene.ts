@@ -23,6 +23,8 @@ export class HomeScene {
   onCreateRoom: ((capacity: number) => void) | null = null;
   /** 本地试玩（开发后门，不依赖云开发） */
   onLocalPlay: (() => void) | null = null;
+  /** 开发后门：联机测试房（机器人补位），单人即可联调实时对战。 */
+  onDevRoom: (() => void) | null = null;
   /** 断线重连：回到上次未结束的对局 */
   onResume: (() => void) | null = null;
   /** 打开个人中心（设置页） */
@@ -56,6 +58,7 @@ export class HomeScene {
   private confirmRect: SceneButtonRect = { x: 0, y: 0, w: 0, h: 0 };
   private cancelRect: SceneButtonRect = { x: 0, y: 0, w: 0, h: 0 };
   private localPlayRect: SceneButtonRect = { x: 0, y: 0, w: 0, h: 0 };
+  private devRoomRect: SceneButtonRect = { x: 0, y: 0, w: 0, h: 0 };
   private resumeBtnRect: SceneButtonRect = { x: 0, y: 0, w: 0, h: 0 };
   private profileRect: SceneButtonRect = { x: 0, y: 0, w: 0, h: 0 };
 
@@ -188,6 +191,12 @@ export class HomeScene {
     }
     if (this.onLocalPlay && hitRect(px, py, this.localPlayRect)) {
       this.onLocalPlay();
+      return;
+    }
+    if (this.onDevRoom && hitRect(px, py, this.devRoomRect)) {
+      this.busy = true;
+      this.dirty = true;
+      this.onDevRoom();
     }
   }
 
@@ -261,13 +270,16 @@ export class HomeScene {
     this.createBtnRect = { x: cx - btnW / 2, y: createY, w: btnW, h: btnH };
     this.joinBtnRect = { x: cx - btnW / 2, y: createY + btnH + 18, w: btnW, h: btnH };
 
-    // 断线重连入口：置于主按钮上方最醒目的位置。
+    // 断线重连入口：置于主按钮上方最醒目的位置；宽度按文案自适应（含房号，比主按钮长）。
     if (this.resumeCode) {
-      this.resumeBtnRect = { x: cx - btnW / 2, y: createY - btnH - 22, w: btnW, h: btnH };
+      const label = this.busy ? '进入中…' : `回到对局 · 房间 ${this.resumeCode}`;
+      ctx.font = `bold 16px ${FONT_FAMILY}`;
+      const resumeW = Math.min(w * 0.86, Math.max(btnW, ctx.measureText(label).width + 56));
+      this.resumeBtnRect = { x: cx - resumeW / 2, y: createY - btnH - 22, w: resumeW, h: btnH };
       drawCapsuleButton(
         ctx,
         this.resumeBtnRect,
-        this.busy ? '进入中…' : `回到对局 · 房间 ${this.resumeCode}`,
+        label,
         'primary',
         16
       );
@@ -276,20 +288,32 @@ export class HomeScene {
     drawCapsuleButton(ctx, this.createBtnRect, this.busy ? '创建中…' : '创建房间', 'primary', 18);
     drawCapsuleButton(ctx, this.joinBtnRect, '加入房间', 'secondary', 18);
 
-    // 底部本地试玩入口（开发调试用，不依赖云开发）
-    if (this.onLocalPlay) {
-      const lpW = 130;
+    // 底部开发入口（仅开发版）：本地试玩（离线）/ 联机测试房（机器人补位）
+    if (this.onLocalPlay || this.onDevRoom) {
       const lpH = 26;
-      this.localPlayRect = {
-        x: (w - lpW) / 2,
-        y: h - this.safeTop - lpH - 8,
-        w: lpW,
-        h: lpH,
-      };
-      drawSceneText(ctx, w / 2, this.localPlayRect.y + lpH / 2, '本地试玩 ›', {
-        size: 13,
-        color: INK_SOFT,
-      });
+      const y = h - this.safeTop - lpH - 8;
+      ctx.font = `13px ${FONT_FAMILY}`;
+      const localLabel = '本地试玩 ›';
+      const devLabel = '联机测试房 ›';
+      const localW = this.onLocalPlay ? ctx.measureText(localLabel).width + 16 : 0;
+      const devW = this.onDevRoom ? ctx.measureText(devLabel).width + 16 : 0;
+      const gap = this.onLocalPlay && this.onDevRoom ? 28 : 0;
+      let x = (w - (localW + gap + devW)) / 2;
+      if (this.onLocalPlay) {
+        this.localPlayRect = { x, y, w: localW, h: lpH };
+        drawSceneText(ctx, x + localW / 2, y + lpH / 2, localLabel, {
+          size: 13,
+          color: INK_SOFT,
+        });
+        x += localW + gap;
+      }
+      if (this.onDevRoom) {
+        this.devRoomRect = { x, y, w: devW, h: lpH };
+        drawSceneText(ctx, x + devW / 2, y + lpH / 2, this.busy ? '创建中…' : devLabel, {
+          size: 13,
+          color: INK_SOFT,
+        });
+      }
     }
 
     if (this.pickerVisible) this.drawPicker();

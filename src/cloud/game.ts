@@ -100,6 +100,14 @@ export async function sendPass(code: string): Promise<MoveResponse> {
   return result as MoveResponse;
 }
 
+/** 结束对局（房主）：终止当前对局并清理云端数据，用于关闭测试房 / 紧急终止。 */
+export async function endGame(code: string): Promise<void> {
+  const result = await callGameRaw('end', { code });
+  if (!result || !result.ok) {
+    throw new Error((result && result.message) || '结束对局失败');
+  }
+}
+
 // ----------------------------------------------------------------------------
 // 实时订阅（云数据库 watch）
 // ----------------------------------------------------------------------------

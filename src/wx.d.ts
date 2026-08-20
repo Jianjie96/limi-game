@@ -150,6 +150,16 @@ declare namespace wx {
   function onKeyboardComplete(callback: (res: { value: string }) => void): void;
   function offKeyboardComplete(callback: (res: { value: string }) => void): void;
 
+  // 模态弹窗（结束对局等二次确认）
+  function showModal(options: {
+    title?: string;
+    content?: string;
+    confirmText?: string;
+    cancelText?: string;
+    success?: (res: { confirm: boolean; cancel: boolean }) => void;
+    fail?: (err: any) => void;
+  }): void;
+
   // 微信云开发（最小集）
   interface CloudWatch {
     close: () => void;

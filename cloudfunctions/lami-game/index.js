@@ -234,6 +234,27 @@ async function doMove(event, openid) {
   return ok(payloadFor(room, engine, version, deadline, openid));
 }
 
+/** 结束对局：房主主动终止（开发调试关闭测试房 / 紧急终止），
+ * 直接置为 finished 并清理密态与手牌数据。 */
+async function doEnd(event, openid) {
+  const code = normCode(event.code);
+  const room = await getDoc(ROOMS, code);
+  if (!room) return fail('房间不存在');
+  if (room.host !== openid) return fail('只有房主可以结束对局');
+  if (room.status === 'finished') return ok({ ended: true });
+  await ROOMS.doc(code).update({ data: { status: 'finished' } });
+  try { await SECRETS.doc(code).remove(); } catch (e) { /* 无密态则忽略 */ }
+  try {
+    const hands = await HANDS.where({ code }).limit(10).get();
+    for (const h of hands.data) {
+      await HANDS.doc(h._id).remove();
+    }
+  } catch (e) {
+    // 清理失败不阻断（tick 会兜底清理）
+  }
+  return ok({ ended: true });
+}
+
 /** Pass：摸 1 张并结束回合（引擎内部回滚本回合桌面操作）。 */
 async function doPass(event, openid) {
   const code = normCode(event.code);
@@ -332,6 +353,8 @@ exports.main = async (event) => {
         return await doMove(event, OPENID);
       case 'pass':
         return await doPass(event, OPENID);
+      case 'end':
+        return await doEnd(event, OPENID);
       default:
         return fail('未知操作');
     }

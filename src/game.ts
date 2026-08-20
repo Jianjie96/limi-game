@@ -19,11 +19,13 @@ import { audio } from './ui/audio';
 import { isDevEnvironment } from './ui/env';
 import { getNickname, applyPreferredOrientation, getPreferredOrientation } from './ui/profile';
 import type { PublicGameState } from './cloud/game';
+import { endGame } from './cloud/game';
 import {
   initCloud,
   createRoom,
   joinRoom,
   getRoom,
+  fillDevBots,
   getLastRoom,
   clearLastRoom,
   RoomInfo,
@@ -141,6 +143,18 @@ function wireHome(home: HomeScene): void {
       };
       startLocalGame(demo);
     };
+    // 联机测试房：真实云房间 + 测试机器人补位，单人即可联调实时对战全流程。
+    // 机器人回合由 lami-game 定时触发器超时自动摸牌托管（每回合约 1 分钟）。
+    home.onDevRoom = () => {
+      createRoom(2, getNickname())
+        .then((result) => fillDevBots(result.room.code))
+        .then((result) => {
+          enterRoom(result);
+        })
+        .catch((e: Error) => {
+          home.showError(e.message);
+        });
+    };
   }
   // 断线重连：上次房间若仍在对局中且本人在场，首页展示「回到对局」入口。
   const lastCode = getLastRoom();
@@ -236,6 +250,27 @@ function startOnlineGame(room: RoomInfo, selfOpenid: string): void {
     room.host === selfOpenid
   );
   scene.coordinator = coordinator;
+  // 测试房（机器人补位）：给房主挂「结束对局」应急出口，否则开局后无法关闭。
+  if (room.host === selfOpenid && room.players.some((p) => p.openid.startsWith('bot_'))) {
+    scene.onRequestEndGame = () => {
+      wx.showModal({
+        title: '结束对局',
+        content: '确定结束当前测试对局吗？房间将被关闭。',
+        confirmText: '结束',
+        success: (res) => {
+          if (!res.confirm) return;
+          endGame(room.code)
+            .then(() => {
+              clearLastRoom();
+              goHome();
+            })
+            .catch((e: Error) => {
+              scene.showMessage(`结束失败：${e.message}`, 2400);
+            });
+        },
+      });
+    };
+  }
   switchScene(scene);
   scene.start();
   scene.showMessage('正在连接对局…', 2000);
