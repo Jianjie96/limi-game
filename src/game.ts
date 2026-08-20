@@ -38,6 +38,19 @@ initCloud();
 // 本机玩家名（每次启动固定一个随机代号）。
 const myName = localPlayerName();
 
+/** 是否开发版（envVersion === 'develop'），体验版/正式版均视为线上。 */
+function isDevEnvironment(): boolean {
+  try {
+    return (
+      typeof wx.getAccountInfoSync === 'function' &&
+      wx.getAccountInfoSync().miniProgram.envVersion === 'develop'
+    );
+  } catch (e) {
+    // API 不可用时按线上处理，隐藏调试入口。
+    return false;
+  }
+}
+
 // ----------------------------------------------------------------------------
 // 场景切换
 // ----------------------------------------------------------------------------
@@ -66,6 +79,24 @@ function goHome(): HomeScene {
         home.showError(e.message);
       });
   };
+  // 开发后门：仅开发版显示，不依赖云开发，直接本地开一局（4 人）方便调试。
+  if (isDevEnvironment()) {
+    home.onLocalPlay = () => {
+      const demo: RoomInfo = {
+        code: 'LOCAL',
+        host: 'local',
+        capacity: 4,
+        status: 'started',
+        players: [
+          { openid: 'local-1', name: myName },
+          { openid: 'local-2', name: '玩家2' },
+          { openid: 'local-3', name: '玩家3' },
+          { openid: 'local-4', name: '玩家4' },
+        ],
+      };
+      startGame(demo);
+    };
+  }
   switchScene(home);
   return home;
 }
@@ -113,7 +144,16 @@ function tryJoinSharedRoom(roomId: string, silent = false): void {
     });
 }
 
-const launchQuery = wx.getLaunchOptionsSync().query || {};
+let launchQuery: Record<string, string> = {};
+try {
+  // 部分旧基础库 / 特殊环境下该 API 可能不存在，失败不阻塞启动。
+  launchQuery = (typeof wx.getLaunchOptionsSync === 'function'
+    ? wx.getLaunchOptionsSync().query
+    : {}) || {};
+} catch (e) {
+  launchQuery = {};
+}
+
 if (launchQuery.roomId) {
   // 分享链接进入：先到首页再自动加入，失败时有地方展示提示。
   goHome();
@@ -123,9 +163,13 @@ if (launchQuery.roomId) {
 }
 
 // 游戏中被分享卡片再次唤起时，也尝试加入对应房间。
-wx.onShow((res) => {
-  const roomId = res.query?.roomId;
-  if (!roomId) return;
-  if (current instanceof RoomScene && current.code === roomId) return;
-  tryJoinSharedRoom(String(roomId), true);
-});
+try {
+  wx.onShow((res) => {
+    const roomId = res.query?.roomId;
+    if (!roomId) return;
+    if (current instanceof RoomScene && current.code === roomId) return;
+    tryJoinSharedRoom(String(roomId), true);
+  });
+} catch (e) {
+  // 不支持 onShow 的环境忽略即可
+}

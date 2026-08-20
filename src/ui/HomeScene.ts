@@ -20,6 +20,8 @@ import { FROST_STRONG, FROST_BORDER, GOLD, INK, INK_SOFT, GOLD_DEEP } from './co
 export class HomeScene {
   /** 选择人数并确认后回调（创建房间请求由外部发起） */
   onCreateRoom: ((capacity: number) => void) | null = null;
+  /** 本地试玩（开发后门，不依赖云开发） */
+  onLocalPlay: (() => void) | null = null;
 
   private ctx: CanvasRenderingContext2D;
   private screenW: number;
@@ -47,6 +49,7 @@ export class HomeScene {
   private optionRects: SceneButtonRect[] = [];
   private confirmRect: SceneButtonRect = { x: 0, y: 0, w: 0, h: 0 };
   private cancelRect: SceneButtonRect = { x: 0, y: 0, w: 0, h: 0 };
+  private localPlayRect: SceneButtonRect = { x: 0, y: 0, w: 0, h: 0 };
 
   private touchStartHandler = (e: { touches: Array<{ clientX: number; clientY: number }> }) => {
     const t = e.touches[0];
@@ -142,6 +145,10 @@ export class HomeScene {
     }
     if (hitRect(px, py, this.joinBtnRect)) {
       this.showInfo('开发中，敬请期待～');
+      return;
+    }
+    if (this.onLocalPlay && hitRect(px, py, this.localPlayRect)) {
+      this.onLocalPlay();
     }
   }
 
@@ -187,6 +194,22 @@ export class HomeScene {
 
     drawCapsuleButton(ctx, this.createBtnRect, this.busy ? '创建中…' : '创建房间', 'primary', 18);
     drawCapsuleButton(ctx, this.joinBtnRect, '加入房间', 'secondary', 18);
+
+    // 底部本地试玩入口（开发调试用，不依赖云开发）
+    if (this.onLocalPlay) {
+      const lpW = 130;
+      const lpH = 26;
+      this.localPlayRect = {
+        x: (w - lpW) / 2,
+        y: h - this.safeTop - lpH - 8,
+        w: lpW,
+        h: lpH,
+      };
+      drawSceneText(ctx, w / 2, this.localPlayRect.y + lpH / 2, '本地试玩 ›', {
+        size: 13,
+        color: INK_SOFT,
+      });
+    }
 
     if (this.pickerVisible) this.drawPicker();
     if (this.message && Date.now() < this.messageUntil) this.drawMessage();
