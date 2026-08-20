@@ -72,3 +72,56 @@ export function getScreenInfo(
 
   return { screenWidth, screenHeight, pixelRatio, safeTop, safeBottom, safeLeft, safeRight };
 }
+
+/**
+ * 等待系统完成转屏后再读取屏幕信息。
+ * wx.setDeviceOrientation 是异步的，调用后立即读窗口尺寸拿到的往往还是
+ * 旧方向的值（会导致布局拉伸、点击坐标错位）。这里轮询等待宽高发生交换，
+ * 最多等 timeout 毫秒；期间若 API 报告了新的 onWindowResize 尺寸则优先采用。
+ */
+export function getScreenInfoAfterRotation(
+  target: 'portrait' | 'landscape',
+  canvas?: { width?: number; height?: number },
+  timeout = 1200,
+): Promise<ScreenInfo> {
+  return new Promise((resolve) => {
+    const matches = (info: ScreenInfo) =>
+      target === 'landscape' ? info.screenWidth > info.screenHeight : info.screenWidth <= info.screenHeight;
+
+    const initial = getScreenInfo(canvas);
+    if (matches(initial)) {
+      resolve(initial);
+      return;
+    }
+
+    let latest: ScreenInfo | null = null;
+    const onResize = (res: any) => {
+      const w = res?.windowWidth ?? 0;
+      const h = res?.windowHeight ?? 0;
+      if (w > 0 && h > 0) {
+        // 只取方向已符合目标的事件，避免拿转屏中间态。
+        const ok = target === 'landscape' ? w > h : w <= h;
+        if (ok) latest = getScreenInfo(canvas);
+      }
+    };
+    try {
+      wx.onWindowResize(onResize);
+    } catch (_e) {
+      /* 不支持则仅靠轮询 */
+    }
+
+    const start = Date.now();
+    const timer = setInterval(() => {
+      const fresh = latest ?? getScreenInfo(canvas);
+      if (matches(fresh) || Date.now() - start >= timeout) {
+        clearInterval(timer);
+        try {
+          wx.offWindowResize(onResize);
+        } catch (_e) {
+          /* 忽略 */
+        }
+        resolve(fresh);
+      }
+    }, 50);
+  });
+}

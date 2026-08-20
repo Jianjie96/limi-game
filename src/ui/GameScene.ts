@@ -63,7 +63,7 @@ import {
   roundRectPath,
   type TileRenderOptions,
 } from './renderer';
-import { getScreenInfo, type ScreenInfo } from './screen';
+import { getScreenInfo, getScreenInfoAfterRotation, type ScreenInfo } from './screen';
 import { audio } from './audio';
 import { vibrateIfEnabled } from './profile';
 
@@ -196,6 +196,8 @@ export class GameScene {
   private orientationButton!: ButtonState;
 
   private isLandscape = false;
+  /** dispose 后丢弃异步回调（转屏等待可能晚于场景释放）。 */
+  private disposed = false;
 
   private message = '';
   private messageTimer: any = null;
@@ -529,6 +531,7 @@ export class GameScene {
 
   /** 场景切换时释放全部监听与定时器，交还画布给下一个场景。 */
   dispose(): void {
+    this.disposed = true;
     cancelAnimationFrame(this.rafId);
     wx.offTouchStart(this.touchStartHandler);
     wx.offTouchMove(this.touchMoveHandler);
@@ -543,20 +546,7 @@ export class GameScene {
 
   private refreshScreenInfo(): void {
     // 转屏后重新读取全量屏幕信息（含更新后的逻辑尺寸与安全区）。
-    const info = getScreenInfo(this.canvas);
-    this.screenW = info.screenWidth;
-    this.screenH = info.screenHeight;
-    this.pixelRatio = info.pixelRatio;
-    this.safeTop = info.safeTop;
-    this.safeBottom = info.safeBottom;
-    this.safeLeft = info.safeLeft;
-    this.safeRight = info.safeRight;
-    this.isLandscape = this.screenW > this.screenH;
-
-    this.canvas.width = Math.round(this.screenW * this.pixelRatio);
-    this.canvas.height = Math.round(this.screenH * this.pixelRatio);
-    this.updateLayout();
-    this.markDirty();
+    this.applyScreenInfo(getScreenInfo(this.canvas));
   }
 
   private toggleOrientation(): void {
@@ -568,13 +558,33 @@ export class GameScene {
     wx.setDeviceOrientation({
       value: target,
       success: () => {
-        // 转屏后系统信息不会立即更新，延迟一段时间再刷新，确保拿到新尺寸。
-        setTimeout(() => this.refreshScreenInfo(), 300);
+        // 转屏是异步的：等宽高真正交换后再刷新布局，
+        // 固定延时不可靠（会拿到旧尺寸导致拉伸/点击错位）。
+        getScreenInfoAfterRotation(target, this.canvas).then((info) => {
+          if (this.disposed) return;
+          this.applyScreenInfo(info);
+        });
       },
       fail: () => {
         this.showMessage('转屏失败');
       },
     });
+  }
+
+  /** 应用已确认的屏幕信息（转屏完成后）并重排布局。 */
+  private applyScreenInfo(info: ScreenInfo): void {
+    this.screenW = info.screenWidth;
+    this.screenH = info.screenHeight;
+    this.pixelRatio = info.pixelRatio;
+    this.safeTop = info.safeTop;
+    this.safeBottom = info.safeBottom;
+    this.safeLeft = info.safeLeft;
+    this.safeRight = info.safeRight;
+    this.isLandscape = this.screenW > this.screenH;
+    this.canvas.width = Math.round(this.screenW * this.pixelRatio);
+    this.canvas.height = Math.round(this.screenH * this.pixelRatio);
+    this.updateLayout();
+    this.markDirty();
   }
 
   private setupEngineListeners(): void {

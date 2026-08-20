@@ -14,10 +14,10 @@ import { HomeScene } from './ui/HomeScene';
 import { RoomScene } from './ui/RoomScene';
 import { SettingsScene } from './ui/SettingsScene';
 import { OnlineCoordinator } from './ui/online';
-import { getScreenInfo, type ScreenInfo } from './ui/screen';
+import { getScreenInfo, getScreenInfoAfterRotation, type ScreenInfo } from './ui/screen';
 import { audio } from './ui/audio';
 import { isDevEnvironment } from './ui/env';
-import { getNickname, applyPreferredOrientation } from './ui/profile';
+import { getNickname, applyPreferredOrientation, getPreferredOrientation } from './ui/profile';
 import type { PublicGameState } from './cloud/game';
 import {
   initCloud,
@@ -33,19 +33,18 @@ import {
 // 微信小游戏中第一次调用 createCanvas 拿到的是主屏幕画布。
 const nativeCanvas = wx.createCanvas();
 
-// 主画布创建时的默认物理尺寸由系统按真实窗口初始化，
-// 其宽高比是冷启动时「实际方向」的可靠基准（比早期屏幕 API 更可信）。
-const bootLandscape = nativeCanvas.width > nativeCanvas.height;
-
 /** 读取最新屏幕信息，并把主画布后备存储同步到对应物理尺寸。 */
 function freshScreenInfo(): ScreenInfo {
+  // 以画布当前物理方向为基准（冷启动时由系统按真实窗口初始化；
+  // 之后每次转屏都已被上一个场景同步到正确方向）。
+  const canvasLandscape = nativeCanvas.width > nativeCanvas.height;
   const i = getScreenInfo(nativeCanvas);
 
-  // 冷启动兑底：部分 iOS 机型在启动早期返回的窗口方向与实际不符
+  // 冷启动兜底：部分 iOS 机型在启动早期返回的窗口方向与实际不符
   // （曾导致首页文字失真、对局只渲染半屏）。以画布物理方向为准交换宽高，
-  // 安全区按 90° 旋转的几何关系同步换算。仅在方向不一致时触发，
-  // 不影响后续主动转屏流程（转屏走场景内的 refreshScreenInfo）。
-  if ((i.screenWidth > i.screenHeight) !== bootLandscape) {
+  // 安全区按 90° 旋转的几何关系同步换算。仅在方向不一致时触发；
+  // 主动转屏后画布已同步新方向，不会被误判回旧方向。
+  if ((i.screenWidth > i.screenHeight) !== canvasLandscape) {
     const w = i.screenWidth;
     i.screenWidth = i.screenHeight;
     i.screenHeight = w;
@@ -93,11 +92,25 @@ function switchScene(next: DisposableScene): void {
   current = next;
 }
 
-/** 首页 */
-function goHome(): HomeScene {
+/** 首页（等待转屏完成后再构建，避免用旧方向尺寸布局） */
+let goHomeToken = 0;
+function goHome(): void {
   // 从对局/设置页回到首页时，方向恢复到个人中心的偏好值。
+  const target = getPreferredOrientation();
   applyPreferredOrientation();
-  const home = new HomeScene(nativeCanvas, freshScreenInfo());
+  // setDeviceOrientation 是异步的：立即读窗口尺寸拿到的还是旧方向的值，
+  // 会导致首页拉伸、点击错位。等系统真正完成转屏（或已在目标方向）再构建。
+  const token = ++goHomeToken;
+  getScreenInfoAfterRotation(target, nativeCanvas).then((info) => {
+    if (token !== goHomeToken) return; // 期间又发生了跳转，丢弃过期的构建
+    const home = new HomeScene(nativeCanvas, info);
+    wireHome(home);
+    switchScene(home);
+  });
+}
+
+/** 首页各入口接线：建房 / 个人中心 / 本地试玩 / 断线重连。 */
+function wireHome(home: HomeScene): void {
   home.onCreateRoom = (capacity: number) => {
     createRoom(capacity, getNickname())
       .then((result) => {
@@ -159,8 +172,6 @@ function goHome(): HomeScene {
         // 查询失败静默（房间可能已被清理），不打扰首页。
       });
   }
-  switchScene(home);
-  return home;
 }
 
 /** 个人中心（设置页）：头像昵称 + 音频/震动/方向开关 */

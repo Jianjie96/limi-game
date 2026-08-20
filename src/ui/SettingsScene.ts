@@ -6,7 +6,7 @@
 // 与 HomeScene 共享画布与 backdrop 视觉语言，通过 dispose() 交还。
 // ============================================================================
 
-import { ScreenInfo, getScreenInfo } from './screen';
+import { ScreenInfo, getScreenInfo, getScreenInfoAfterRotation } from './screen';
 import { roundRectPath } from './renderer';
 import {
   drawBackdrop,
@@ -62,6 +62,8 @@ export class SettingsScene {
   private landscapeRowRect: SceneButtonRect = { x: 0, y: 0, w: 0, h: 0 };
 
   private editingNickname = false;
+  /** dispose 后丢弃异步回调（转屏等待可能晚于返回）。 */
+  private disposed = false;
 
   private touchStartHandler = (e: { touches: Array<{ clientX: number; clientY: number }> }) => {
     const t = e.touches[0];
@@ -116,6 +118,7 @@ export class SettingsScene {
   }
 
   dispose(): void {
+    this.disposed = true;
     cancelAnimationFrame(this.rafId);
     wx.offTouchStart(this.touchStartHandler);
     wx.offWindowResize(this.resizeHandler);
@@ -196,8 +199,14 @@ export class SettingsScene {
       const next = getPreferredOrientation() === 'landscape' ? 'portrait' : 'landscape';
       setPreferredOrientation(next);
       vibrateIfEnabled();
-      // 立即切设备方向；转屏后系统尺寸更新有延迟，稍后再刷新布局。
-      applyPreferredOrientation(() => setTimeout(() => this.measureAndRepaint(), 300));
+      // 立即切设备方向；转屏是异步的，等尺寸真正交换后再重排布局，
+      // 固定延时不可靠（会导致拉伸/点击错位）。
+      applyPreferredOrientation();
+      getScreenInfoAfterRotation(next, this.canvas).then((info) => {
+        if (this.disposed) return;
+        this.applyScreenInfo(info);
+        this.dirty = true;
+      });
       this.dirty = true;
       return;
     }
@@ -222,9 +231,16 @@ export class SettingsScene {
     }
   }
 
-  private measureAndRepaint(): void {
-    this.measure();
-    this.dirty = true;
+  /** 应用已确认的屏幕信息（转屏完成后），同步画布后备存储。 */
+  private applyScreenInfo(info: ScreenInfo): void {
+    this.screenW = info.screenWidth;
+    this.screenH = info.screenHeight;
+    this.pixelRatio = info.pixelRatio;
+    this.safeTop = info.safeTop;
+    this.safeLeft = info.safeLeft;
+    this.safeRight = info.safeRight;
+    this.canvas.width = Math.round(info.screenWidth * info.pixelRatio);
+    this.canvas.height = Math.round(info.screenHeight * info.pixelRatio);
   }
 
   // --------------------------------------------------------------------------
