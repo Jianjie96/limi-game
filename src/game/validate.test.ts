@@ -131,6 +131,34 @@ describe('isValidRun', () => {
     ];
     expect(isValidRun(tiles)).toBe(false);
   });
+
+  it('12-13-joker 合法（Joker 只能代表 11，不能当 14）', () => {
+    const tiles = [
+      makeTile(0, 'red', 13),
+      makeTile(1, 'red', 12),
+      makeJoker(104),
+    ];
+    expect(isValidRun(tiles)).toBe(true);
+  });
+
+  it('joker-1-2 合法（Joker 只能代表 3，不能当 0）', () => {
+    const tiles = [
+      makeJoker(104),
+      makeTile(0, 'red', 1),
+      makeTile(1, 'red', 2),
+    ];
+    expect(isValidRun(tiles)).toBe(true);
+  });
+
+  it('Joker 延伸不能超出 1..13 范围', () => {
+    // 1-2 + 12 张 Joker：向上只有 11 个延伸位（3..13），放不下
+    const tiles = [
+      makeTile(0, 'red', 1),
+      makeTile(1, 'red', 2),
+      ...Array.from({ length: 12 }, (_, i) => makeJoker(100 + i)),
+    ];
+    expect(isValidRun(tiles)).toBe(false);
+  });
 });
 
 describe('isValidGroupTiles', () => {

@@ -105,6 +105,23 @@ declare namespace wx {
   }
   function createInnerAudioContext(): InnerAudioContext;
 
+  // 文件系统与下载（音频本地缓存）
+  interface FileSystemManager {
+    /** 同步判断文件是否存在（不存在时抛异常）。 */
+    accessSync(path: string): void;
+    saveFile(options: {
+      tempFilePath: string;
+      success?: (res: { savedFilePath: string }) => void;
+      fail?: (err: any) => void;
+    }): void;
+  }
+  function getFileSystemManager(): FileSystemManager;
+  function downloadFile(options: {
+    url: string;
+    success?: (res: { tempFilePath: string; statusCode: number }) => void;
+    fail?: (err: any) => void;
+  }): void;
+
   // 微信云开发（最小集）
   interface CloudWatch {
     close: () => void;

@@ -106,6 +106,9 @@ function isValidRun(tiles) {
   const gaps = span - nonJokers.length;
   if (jokerCount < gaps) return false;
   const remainingJokers = jokerCount - gaps;
+  const roomBelow = min - 1;
+  const roomAbove = 13 - max;
+  if (remainingJokers > roomBelow + roomAbove) return false;
   const totalLen = span + remainingJokers;
   return tiles.length === totalLen;
 }

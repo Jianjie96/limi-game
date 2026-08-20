@@ -286,7 +286,7 @@ export function drawLogicalTile(ctx: CanvasRenderingContext2D, lt: LogicalTile, 
  * - 顺子：按存储顺序（显示顺序），左侧延伸取最小值、右侧延伸取最大值、中间取相邻填充值。
  * - 刻子：取缺失颜色、与组内数字一致。
  */
-function inferJokerDisplayValue(
+export function inferJokerDisplayValue(
   groupType: GroupType,
   tiles: readonly LogicalTile[],
   jokerIndex: number,
@@ -331,16 +331,20 @@ function inferJokerDisplayValue(
     return { color, number: (left?.logicalNumber ?? min) + jokersBefore };
   }
   if (hasAfter) {
-    // 左端延伸：min 向小延伸，连续 Joker 依次 -1。
+    // 左端延伸：默认 min 向小延伸；越过 1 时（如 joker-1-2 只能取 3）改为 max 向大延伸。
+    // jokers 为从紧邻真实牌一端数起的序号，翻转后仍按此序号从 max 向上排。
     let jokers = 0;
     for (let i = jokerIndex; i < tiles.length && isJokerTile(tiles[i]); i++) jokers++;
-    return { color, number: min - jokers };
+    if (min - jokers >= 1) return { color, number: min - jokers };
+    return { color, number: max + jokers };
   }
   if (hasBefore) {
-    // 右端延伸：max 向大延伸，连续 Joker 依次 +1。
+    // 右端延伸：默认 max 向大延伸；越过 13 时（如 12-13-joker 只能取 11）改为 min 向小延伸。
+    // jokers 为从紧邻真实牌一端数起的序号，翻转后仍按此序号从 min 向下排。
     let jokers = 0;
     for (let i = jokerIndex; i >= 0 && isJokerTile(tiles[i]); i--) jokers++;
-    return { color, number: max + jokers };
+    if (max + jokers <= 13) return { color, number: max + jokers };
+    return { color, number: min - jokers };
   }
   return null;
 }

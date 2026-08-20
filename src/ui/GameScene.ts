@@ -266,9 +266,10 @@ export class GameScene {
   }
 
   private setupButtons(): void {
+    // 主按钮「出牌」放右侧（用户习惯右边是主操作）；布局按数组顺序从左到右。
     this.buttons = createButtonStates([
-      { id: 'submit', label: '出牌', x: 0, y: 0, width: 0, variant: 'primary' },
       { id: 'pass', label: 'Pass 摸牌', x: 0, y: 0, width: 0, variant: 'secondary' },
+      { id: 'submit', label: '出牌', x: 0, y: 0, width: 0, variant: 'primary' },
     ]);
   }
 

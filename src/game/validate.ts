@@ -23,7 +23,8 @@ import { isLogicalJoker, toLogical } from './tiles';
  * 1. 分离 nonJokers / jokers
  * 2. 同色检查 + 去重 + 排序
  * 3. span = max - min + 1, 空位数 = span - nonJokers.length
- * 4. 剩余 Joker 可向两端延伸: totalLen = span + remainingJokers
+ * 4. 剩余 Joker 可向两端延伸，但整个顺子必须落在 1..13 内：
+ *    可用延伸位 = (min-1) + (13-max)，不够则不合法；totalLen = span + remainingJokers
  * 5. tiles.length === totalLen → 合法
  */
 export function isValidRun(tiles: readonly LogicalTile[]): boolean {
@@ -63,8 +64,13 @@ export function isValidRun(tiles: readonly LogicalTile[]): boolean {
 
   if (jokerCount < gaps) return false; // Joker 不够填补中间
 
-  // 剩余 Joker 可以向两端延伸
+  // 剩余 Joker 可以向两端延伸，但拉密牌最大只有 13：
+  // 向下最多延到 1，向上最多延到 13，延伸位不够则不合法。
   const remainingJokers = jokerCount - gaps;
+  const roomBelow = min - 1;
+  const roomAbove = 13 - max;
+  if (remainingJokers > roomBelow + roomAbove) return false;
+
   const totalLen = span + remainingJokers;
 
   return tiles.length === totalLen;
