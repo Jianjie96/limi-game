@@ -115,8 +115,14 @@ const LONG_PRESS_DELAY = 400;
 
 /** 拖拽时幽灵牌的缩放系数。 */
 const DRAG_GHOST_SCALE = 1.05;
-/** 发牌/摸牌时每张牌的错峰间隔（毫秒），形成级联飞牌效果。 */
-const DEAL_STAGGER_MS = 35;
+/** 批量发牌时每张牌的错峰间隔（毫秒）：一张一张发，留出观看节拍，堆高对后续牌的期待。 */
+const DEAL_STAGGER_MS = 160;
+/** 批量发牌判定阈值：一次出现 ≥ 该数量的新牌架牌才按「发牌」仪式慢速节奏。 */
+const DEAL_BULK_THRESHOLD = 6;
+/** 摸牌等少量增补时每张牌的错峰间隔（毫秒）：快进快出，不阻塞操作。 */
+const DEAL_QUICK_STAGGER_MS = 40;
+/** 发牌单张飞行基础时长（毫秒），实际随距离小幅加长。 */
+const DEAL_FLIGHT_MS = 300;
 /** 结算面板弹出动画时长（毫秒）。 */
 const GAME_OVER_ANIM_MS = 320;
 /** 牌动画平滑速度（越大越跟手，指数平滑系数）。 */
@@ -130,10 +136,20 @@ interface TileAnim {
   tx: number;
   ty: number;
   tscale: number;
-  /** 出生延迟（毫秒）：发牌级联时牌先停在牌池点，到时再飞出。 */
+  /** 出生延迟（毫秒）：发牌级联时牌先停在牌池点堆成牌堆，到时再逐张飞出。 */
   pending: number;
-  /** 拱形飞行：理牌预览让位/复位时沿二次贝塞尔拱起移动，与真正落位区分。 */
-  arc?: { sx: number; sy: number; t: number; dur: number; delay: number };
+  /** 拱形飞行：理牌预览让位/复位、发牌飞行时沿二次贝塞尔拱起移动。 */
+  arc?: {
+    sx: number;
+    sy: number;
+    /** 起始缩放：飞行期间同步放大到目标缩放。 */
+    ss: number;
+    t: number;
+    dur: number;
+    delay: number;
+    /** 发牌飞行：用带回弹的缓出曲线强调「落牌感」。 */
+    back?: boolean;
+  };
 }
 
 /** easeOutBack：带轻微回弹的缓出曲线，弹出动画更有卡通感。 */
@@ -588,10 +604,8 @@ export class GameScene {
   }
 
   private setupEngineListeners(): void {
-    this.engine.on('gameStart', () => {
-      // 本地模式开局：发牌级联音效。
-      audio.play('deal');
-    });
+    // 发牌音效由动画系统在批量发牌（开局/换手）时统一触发，
+    // 本地与联机模式都能听到，不在此处重复播放。
 
     this.engine.on('turnStart', () => {
       this.selectedRackIds.clear();
@@ -1190,9 +1204,9 @@ export class GameScene {
   // 动画系统（牌飞行 / 发牌级联 / 气泡淡入淡出）
   // =========================================================================
 
-  /** 牌池点：新牌出生点，发牌/摸牌时从这里逐张飞出。 */
+  /** 牌池点：新牌出生点，发牌/摸牌时从桌面中部逐张飞出。 */
   private deckPoint(): { x: number; y: number } {
-    return { x: this.screenW / 2, y: this.rackConfig.y - 22 };
+    return { x: this.screenW / 2, y: (this.boardConfig.topY + this.workingAreaY) / 2 };
   }
 
   /**
@@ -1206,6 +1220,8 @@ export class GameScene {
     const deck = this.deckPoint();
     // 槽位发生「跳跃」的牌架牌（预览让位/复位）→ 拱形飞行，先收集再统一错峰。
     const arcCandidates: TileAnim[] = [];
+    // 本帧新出现的牌架牌：按出生批次决定发牌节奏。
+    const newRackSlots: RackTileSlot[] = [];
 
     for (const slot of this.rackSlots) {
       const id = slot.tile.id;
@@ -1221,12 +1237,33 @@ export class GameScene {
         a.ty = slot.opts.y;
         a.tscale = tscale;
       } else {
-        this.tileAnims.set(id, {
-          x: deck.x, y: deck.y, scale: 0.4,
-          tx: slot.opts.x, ty: slot.opts.y, tscale,
-          pending: slot.index * DEAL_STAGGER_MS,
-        });
+        newRackSlots.push(slot);
       }
+    }
+
+    // 发牌节奏：一次出现大量新牌（开局发牌/换手）时一张一张慢发，
+    // 让玩家看清每张牌并堆叠对后续牌的期待；摸牌等少量增补快进快出。
+    const bulkDeal = newRackSlots.length >= DEAL_BULK_THRESHOLD;
+    const stagger = bulkDeal ? DEAL_STAGGER_MS : DEAL_QUICK_STAGGER_MS;
+    if (bulkDeal) audio.play('deal');
+    for (let i = 0; i < newRackSlots.length; i++) {
+      const slot = newRackSlots[i];
+      // 待发的牌先在牌池点堆成牌堆（轻微错位模拟牌堆厚度），到点后拱形飞入牌架。
+      const sx = deck.x + ((i % 3) - 1) * 1.5;
+      const sy = deck.y - Math.min(i, 10) * 1.2;
+      const dist = Math.hypot(slot.opts.x - sx, slot.opts.y - sy);
+      this.tileAnims.set(slot.tile.id, {
+        x: sx, y: sy, scale: 0.42,
+        tx: slot.opts.x, ty: slot.opts.y,
+        tscale: slot.opts.selected ? 1.06 : 1,
+        pending: i * stagger,
+        arc: {
+          sx, sy, ss: 0.42, t: 0,
+          dur: DEAL_FLIGHT_MS + Math.min(140, dist * 0.25),
+          delay: 0,
+          back: bulkDeal,
+        },
+      });
     }
 
     // 让位动效保持轻快：统一短时长、无错峰，避免眼花缭乱。
@@ -1235,6 +1272,7 @@ export class GameScene {
       a.arc = {
         sx: a.x,
         sy: a.y,
+        ss: a.scale,
         t: 0,
         dur: 200 + Math.min(80, dist * 0.4),
         delay: 0,
@@ -1309,8 +1347,7 @@ export class GameScene {
         continue;
       }
 
-      // 轻微让位动效：沿低弧度贝塞尔平移，终点即当前目标，
-      // 目标再变（缺口继续移动）时曲线自动跟随；缓出无过冲，保持克制。
+      // 拱形飞行：发牌用带回弹的缓出曲线强调落牌感，让位用轻快缓出保持克制。
       if (a.arc) {
         animating = true;
         if (a.arc.delay > 0) {
@@ -1319,14 +1356,18 @@ export class GameScene {
         }
         a.arc.t += dt;
         const raw = Math.min(1, a.arc.t / a.arc.dur);
-        const u = 1 - Math.pow(1 - raw, 3); // easeOutCubic：轻快无回弹
-        // 控制点：水平取中点，垂直只抬高一点点，示意「拿起来挪」即可。
-        const lift = Math.min(12, 5 + Math.abs(a.tx - a.arc.sx) * 0.05);
+        const u = a.arc.back ? easeOutBack(raw) : 1 - Math.pow(1 - raw, 3);
+        // 发牌弧度高一些，让每张牌的飞行轨迹清晰可见；让位只抬高一点点。
+        const lift = a.arc.back
+          ? Math.min(80, 30 + Math.abs(a.tx - a.arc.sx) * 0.18)
+          : Math.min(12, 5 + Math.abs(a.tx - a.arc.sx) * 0.05);
         const cx = (a.arc.sx + a.tx) / 2;
         const cy = Math.min(a.arc.sy, a.ty) - lift;
         const inv = 1 - u;
         a.x = inv * inv * a.arc.sx + 2 * inv * u * cx + u * u * a.tx;
         a.y = inv * inv * a.arc.sy + 2 * inv * u * cy + u * u * a.ty;
+        // 飞行期间同步放大到目标缩放，落位时轻微过冲更有「拍在桌上」的感觉。
+        a.scale = a.arc.ss + (a.tscale - a.arc.ss) * u;
         if (raw >= 1) {
           a.x = a.tx;
           a.y = a.ty;
