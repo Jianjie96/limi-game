@@ -9,7 +9,8 @@
     "build": "tsc --noEmit && rm -rf dist && esbuild src/game.ts --bundle --format=cjs --platform=node --target=es2019 --outfile=dist/game.js && npm run build:server",
     "build:server": "esbuild src/server/engine-entry.ts --bundle --format=cjs --platform=node --target=es2019 --outfile=cloudfunctions/lami-game/engine-bundle.js",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "gen:sfx": "node tools/gen-sfx.js"
   },
   "devDependencies": {
     "esbuild": "^0.21.5",

@@ -21,6 +21,7 @@ import {
   watchGame,
   type PublicGameState,
 } from '../cloud/game';
+import { audio } from './audio';
 
 /** GameScene 暴露给协调器的最小接口（避免循环依赖）。 */
 export interface OnlineSceneHost {
@@ -113,6 +114,8 @@ export class OnlineCoordinator {
   /** 正在等待云端响应（期间 watch 推送仅缓存）。 */
   private busy = false;
   private hostRetry = 0;
+  /** 首次应用云端状态时播放发牌音效。 */
+  private firstApply = true;
 
   constructor(
     private engine: RummikubEngine,
@@ -188,11 +191,13 @@ export class OnlineCoordinator {
       if (!res.valid) {
         // 与本地模式一致：失败即回滚到回合开始。
         if (this.turnStartJson) this.engine.loadState(this.turnStartJson);
+        audio.play('error');
         const msg = res.errors.map((er) => er.message).join('; ');
         this.scene.showMessage(`出牌失败: ${msg}`, 3000);
         return;
       }
     } catch (e: any) {
+      audio.play('error');
       this.scene.showMessage(e.message || '操作失败', 3000);
       return;
     }
@@ -203,6 +208,7 @@ export class OnlineCoordinator {
         this.busy = false;
         if (resp.ok && resp.payload) {
           this.applyPayload(resp.payload.public, resp.payload.hand);
+          audio.play('submit');
           this.scene.showMessage('出牌成功');
         } else {
           const msg =
@@ -215,6 +221,7 @@ export class OnlineCoordinator {
           } else if (this.turnStartJson) {
             this.engine.loadState(this.turnStartJson);
           }
+          audio.play('error');
           this.scene.showMessage(msg, 3000);
         }
         this.tryApply(); // 消费 busy 期间缓存的推送
@@ -222,6 +229,7 @@ export class OnlineCoordinator {
       .catch((e: Error) => {
         this.busy = false;
         // 网络失败：保留草稿不回滚，提示重试。
+        audio.play('error');
         this.scene.showMessage(e.message || '网络异常，请重试', 3000);
       });
   }
@@ -238,14 +246,17 @@ export class OnlineCoordinator {
         this.busy = false;
         if (resp.ok && resp.payload) {
           this.applyPayload(resp.payload.public, resp.payload.hand);
+          audio.play('pass');
           this.scene.showMessage('Pass 成功，摸牌 1 张');
         } else {
+          audio.play('error');
           this.scene.showMessage(resp.message || '操作失败', 3000);
         }
         this.tryApply();
       })
       .catch((e: Error) => {
         this.busy = false;
+        audio.play('error');
         this.scene.showMessage(e.message || '网络异常，请重试', 3000);
       });
   }
@@ -286,11 +297,19 @@ export class OnlineCoordinator {
     const json = buildMaskedStateJson(pub, hand, this.selfIndex);
     this.engine.loadState(json);
 
+    // 首次拿到云端状态：开局发牌音效。
+    if (this.firstApply) {
+      this.firstApply = false;
+      if (pub.phase === 'PLAYING') audio.play('deal');
+    }
+
     const myTurn = pub.phase === 'PLAYING' && pub.currentPlayerIndex === this.selfIndex;
     this.turnStartJson = myTurn ? json : '';
 
     if (pub.phase === 'GAME_OVER' && pub.result) {
       const winner = pub.result.playerResults.find((r) => r.isWinner);
+      // 本人获胜用胜利彩带，否则用柔和结算音。
+      audio.play(pub.result.playerResults[this.selfIndex]?.isWinner ? 'victory' : 'result');
       this.scene.showMessage(`游戏结束! ${winner?.playerName ?? ''} 获胜!`, 3200);
     }
   }

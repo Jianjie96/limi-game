@@ -14,6 +14,7 @@ import { HomeScene } from './ui/HomeScene';
 import { RoomScene } from './ui/RoomScene';
 import { OnlineCoordinator } from './ui/online';
 import { getScreenInfo } from './ui/screen';
+import { audio } from './ui/audio';
 import type { PublicGameState } from './cloud/game';
 import {
   initCloud,
@@ -39,6 +40,14 @@ nativeCanvas.height = info.screenHeight * info.pixelRatio;
 
 // 初始化云开发（失败不阻塞，调用接口时再提示）。
 initCloud();
+
+// 音频：预取云存储音效临时链接；BGM 在用户首次触摸后启动（避开自动播放限制）。
+audio.init();
+const bgmStarter = () => {
+  audio.startBgm();
+  wx.offTouchStart(bgmStarter);
+};
+wx.onTouchStart(bgmStarter);
 
 // 本机玩家名（每次启动固定一个随机代号）。
 const myName = localPlayerName();

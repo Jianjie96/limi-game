@@ -64,6 +64,20 @@ declare namespace wx {
     miniProgram: { envVersion: 'develop' | 'trial' | 'release'; appId?: string };
   };
 
+  // 音频（背景音乐 + 操作音效）
+  interface InnerAudioContext {
+    src: string;
+    loop: boolean;
+    volume: number;
+    play(): void;
+    pause(): void;
+    stop(): void;
+    seek(position: number): void;
+    destroy(): void;
+    onError(callback: (err?: any) => void): void;
+  }
+  function createInnerAudioContext(): InnerAudioContext;
+
   // 微信云开发（最小集）
   interface CloudWatch {
     close: () => void;
@@ -92,6 +106,13 @@ declare namespace wx {
       complete?: () => void;
     }): void;
     database(options?: { env?: string }): CloudDatabase;
+    getTempFileURL(options: {
+      fileList: string[];
+      success?: (res: {
+        fileList: Array<{ fileID: string; tempFileURL: string; status: number }>;
+      }) => void;
+      fail?: (err: any) => void;
+    }): void;
   };
   // 注意：requestAnimationFrame / cancelAnimationFrame 是微信小游戏的「全局函数」，
   // 不是 wx 命名空间下的方法，因此不要在这里声明为 wx.requestAnimationFrame。

@@ -63,6 +63,7 @@ import {
   type TileRenderOptions,
 } from './renderer';
 import { getScreenInfo, type ScreenInfo } from './screen';
+import { audio } from './audio';
 
 /** 工作区单张牌的位置信息（用于绘制与命中检测） */
 interface WorkingAreaSlot {
@@ -184,6 +185,8 @@ export class GameScene {
 
   private buttons: ButtonState[] = [];
   private orientationButton!: ButtonState;
+  /** 右上角声音开关按钮（位于转屏按钮左侧）。 */
+  private soundButton!: ButtonState;
 
   private isLandscape = false;
 
@@ -236,6 +239,7 @@ export class GameScene {
 
     this.setupButtons();
     this.setupOrientationButton();
+    this.setupSoundButton();
     this.updateLayout();
     this.bindTouch();
     this.bindResize();
@@ -263,6 +267,20 @@ export class GameScene {
       {
         id: 'toggleOrientation',
         label: this.isLandscape ? '切竖屏' : '切横屏',
+        x: 0,
+        y: 0,
+        width: 76,
+        height: 24,
+        variant: 'secondary',
+      },
+    ])[0];
+  }
+
+  private setupSoundButton(): void {
+    this.soundButton = createButtonStates([
+      {
+        id: 'toggleSound',
+        label: audio.isMuted() ? '声音 关' : '声音 开',
         x: 0,
         y: 0,
         width: 76,
@@ -306,6 +324,10 @@ export class GameScene {
     this.orientationButton.config.x = this.screenW - this.safeRight - ow - 8;
     this.orientationButton.config.y = this.safeTop + PLAYER_INFO_HEIGHT + 3;
     this.orientationButton.config.label = this.isLandscape ? '切竖屏' : '切横屏';
+
+    // 声音开关：紧贴转屏按钮左侧。
+    this.soundButton.config.x = this.orientationButton.config.x - 76 - 8;
+    this.soundButton.config.y = this.orientationButton.config.y;
   }
 
   private updateButtonStates(): void {
@@ -500,6 +522,11 @@ export class GameScene {
   }
 
   private setupEngineListeners(): void {
+    this.engine.on('gameStart', () => {
+      // 本地模式开局：发牌级联音效。
+      audio.play('deal');
+    });
+
     this.engine.on('turnStart', () => {
       this.selectedRackIds.clear();
       this.highlightedGroupIds.clear();
@@ -507,14 +534,22 @@ export class GameScene {
     });
 
     this.engine.on('tileDrawn', () => {
+      audio.play('draw');
       this.showMessage('摸牌成功');
     });
 
     this.engine.on('turnEnd', (data: any) => {
       const reason = data?.reason || '';
-      if (reason === 'pass') this.showMessage('Pass 成功，回合结束');
-      else if (reason === 'submit') this.showMessage('出牌成功');
-      else if (reason === 'timeout') this.showMessage('超时，回合结束');
+      if (reason === 'pass') {
+        audio.play('pass');
+        this.showMessage('Pass 成功，回合结束');
+      } else if (reason === 'submit') {
+        audio.play('submit');
+        this.showMessage('出牌成功');
+      } else if (reason === 'timeout') {
+        audio.play('draw');
+        this.showMessage('超时，回合结束');
+      }
     });
 
     this.engine.on('turnRollback', () => {
@@ -527,6 +562,8 @@ export class GameScene {
     this.engine.on('gameOver', (data: any) => {
       const winner = data.result.playerResults.find((r: any) => r.isWinner);
       this.gameOverStart = Date.now();
+      // 本地热座无明确「本人」，统一用胜利彩带。
+      audio.play('victory');
       this.showMessage(`游戏结束! ${winner?.playerName} 获胜!`);
     });
 
@@ -538,11 +575,18 @@ export class GameScene {
     });
 
     this.engine.on('error', (data: any) => {
+      audio.play('error');
       this.showMessage(`错误: ${data.message || '未知错误'}`);
     });
   }
 
   private onPointerDown(x: number, y: number): void {
+    if (hitTestButton(x, y, [this.soundButton])) {
+      const muted = audio.toggleMute();
+      this.soundButton.config.label = muted ? '声音 关' : '声音 开';
+      this.markDirty();
+      return;
+    }
     if (hitTestButton(x, y, [this.orientationButton])) {
       this.toggleOrientation();
       return;
@@ -680,6 +724,7 @@ export class GameScene {
       // 牌架 → 牌架：拖到另一张手牌上重排顺序（理牌）。
       if (src.kind === 'rack' && rackTarget && !targetGroupId && !onWorkingArea) {
         this.engine.reorderRackTile(src.tileId, rackTarget.index);
+        audio.play('sort');
         return;
       }
 
@@ -692,10 +737,12 @@ export class GameScene {
           }
           this.engine.placeTilesOnBoard([src.tileId], targetGroupId);
           this.selectedRackIds.delete(src.tileId);
+          audio.play('place');
           this.showMessage('已加入牌组');
         } else if (onBoardEmpty) {
           this.engine.createNewGroupOnBoard([src.tile], detectGroupType([src.tile]));
           this.selectedRackIds.delete(src.tileId);
+          audio.play('place');
         }
         return;
       }
@@ -705,6 +752,7 @@ export class GameScene {
         // 工作区内拖到另一张牌上 → 仅调整顺序（理牌），不受破冰限制。
         if (workingHit && workingHit.tile.id !== src.tileId) {
           this.engine.reorderWorkingAreaTile(src.tileId, workingHit.index);
+          audio.play('sort');
           this.showMessage('已调整顺序');
           return;
         }
@@ -713,6 +761,7 @@ export class GameScene {
         if (!this.canManipulateBoard()) {
           if (onRack && !targetGroupId && !onWorkingArea && this.isRackPlacedThisTurn(src.tileId)) {
             this.engine.returnTilesToRack([src.tileId]);
+            audio.play('pickup');
             this.showMessage('已放回牌架');
             return;
           }
@@ -721,9 +770,11 @@ export class GameScene {
         }
         if (targetGroupId) {
           this.engine.placeWorkingAreaTilesOnBoard([src.tileId], targetGroupId);
+          audio.play('place');
           this.showMessage('已合并到牌组');
         } else if (onBoardEmpty) {
           this.engine.createNewGroupFromWorkingArea([src.tile], detectGroupType([src.tile]));
+          audio.play('place');
         }
         return;
       }
@@ -739,9 +790,11 @@ export class GameScene {
         }
         if (onRack && !targetGroupId && !onWorkingArea) {
           this.engine.returnTilesToRack([src.tileId]);
+          audio.play('pickup');
           this.showMessage('已放回牌架');
         } else if (onWorkingArea) {
           this.engine.removeTilesFromBoard(sourceGroupId, [src.tileId]);
+          audio.play('pickup');
           this.showMessage('已拆分到工作区');
         } else {
           this.showMessage('破冰后才能操作桌面牌');
@@ -752,20 +805,25 @@ export class GameScene {
       if (boardTile && targetGroupId === sourceGroupId) {
         // 同一牌组内拖到另一张牌上 → 仅重排顺序（Joker 显示值随位置变化）。
         this.engine.moveTileWithinGroup(sourceGroupId, src.tileId, boardTile.index);
+        audio.play('sort');
         this.showMessage('已调整顺序');
       } else if (targetGroupId && targetGroupId !== sourceGroupId) {
         this.engine.removeTilesFromBoard(sourceGroupId, [src.tileId]);
         this.engine.placeWorkingAreaTilesOnBoard([src.tileId], targetGroupId);
+        audio.play('place');
         this.showMessage('已移动');
       } else if (onBoardEmpty) {
         this.engine.removeTilesFromBoard(sourceGroupId, [src.tileId]);
         this.engine.createNewGroupFromWorkingArea([src.tile], detectGroupType([src.tile]));
+        audio.play('place');
       } else if (onWorkingArea) {
         this.engine.removeTilesFromBoard(sourceGroupId, [src.tileId]);
+        audio.play('pickup');
         this.showMessage('已拆分到工作区');
       }
       // 落回原牌组或无效位置 → 不操作（牌保持原位）。
     } catch (err: any) {
+      audio.play('error');
       this.showMessage(err.message || '操作失败');
     }
   }
@@ -794,7 +852,9 @@ export class GameScene {
             const type = detectGroupType(tiles);
             this.engine.createNewGroupOnBoard(tiles, type);
             this.selectedRackIds.clear();
+            audio.play('place');
           } catch (err: any) {
+            audio.play('error');
             this.showMessage(err.message || '放置失败');
             return;
           }
@@ -808,6 +868,7 @@ export class GameScene {
 
         const result = this.engine.submitTurn();
         if (!result.valid) {
+          audio.play('error');
           const errMsg = result.errors.map((er) => er.message).join('; ');
           this.showMessage(`出牌失败: ${errMsg}`);
         }
@@ -828,6 +889,7 @@ export class GameScene {
     const id = slot.tile.id;
     if (this.selectedRackIds.has(id)) {
       this.selectedRackIds.delete(id);
+      audio.play('pickup');
       this.markDirty();
       return;
     }
@@ -836,11 +898,13 @@ export class GameScene {
     const rack = this.getSelfPlayer().rack;
     const candidateTiles = rack.filter((t) => this.selectedRackIds.has(t.id) || t.id === id);
     if (!canFormMelds(candidateTiles)) {
+      audio.play('error');
       this.showMessage('所选牌存在明显冲突，无法组成合法顺子/刻子');
       return;
     }
 
     this.selectedRackIds.add(id);
+    audio.play('pickup');
 
     // 已选中一组完整合法的顺子/刻子时，给出「可以出牌」提示。
     if (this.isCompleteMeld(rack.filter((t) => this.selectedRackIds.has(t.id)))) {
@@ -1432,8 +1496,8 @@ export class GameScene {
     const opponents = state.players.filter((p) => p.id !== selfIndex);
     // 对手行贴着顶栏下沿，整体位于桌面区域（topY）上方，避免被桌面遮盖。
     const y = this.safeTop + PLAYER_INFO_HEIGHT + 15;
-    // 右侧止于转屏按钮左侧，防止徽章被按钮遮挡。
-    const maxX = this.orientationButton.config.x - 8;
+    // 右侧止于声音开关按钮左侧，防止徽章被按钮遮挡。
+    const maxX = this.soundButton.config.x - 8;
 
     let x = this.safeLeft + 12;
     for (const opp of opponents) {
@@ -1671,6 +1735,9 @@ export class GameScene {
     const { config } = this.orientationButton;
     const h = config.height ?? BUTTON_HEIGHT;
     this.drawCartoonButton(config.x, config.y, config.width, h, config.label, 'secondary', FONT_SIZE_BUTTON - 5);
+    // 声音开关与转屏按钮同行同样式。
+    const sc = this.soundButton.config;
+    this.drawCartoonButton(sc.x, sc.y, sc.width, sc.height ?? BUTTON_HEIGHT, sc.label, 'secondary', FONT_SIZE_BUTTON - 5);
   }
 
   private buildButtons(): void {
