@@ -94,6 +94,8 @@ declare namespace wx {
     src: string;
     loop: boolean;
     volume: number;
+    /** iOS：是否跟随系统静音键（游戏音效设 false，静音键开启时也发声）。 */
+    obeyMuteSwitch: boolean;
     play(): void;
     pause(): void;
     stop(): void;
@@ -133,6 +135,8 @@ declare namespace wx {
     database(options?: { env?: string }): CloudDatabase;
     getTempFileURL(options: {
       fileList: string[];
+      /** 显式指定文件所在云环境（跨环境换取时必传）。 */
+      config?: { env: string };
       success?: (res: {
         fileList: Array<{ fileID: string; tempFileURL: string; status: number }>;
       }) => void;
