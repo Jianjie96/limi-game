@@ -176,12 +176,28 @@ function writeWav(file, buf) {
 // 各音效构建
 // ----------------------------------------------------------------------------
 
-/** 发牌：14 张级联咔哒（与渲染层 DEAL_STAGGER 节奏呼应）。 */
+/**
+ * 发牌：与渲染层逐张发牌动画对齐（14 张 × 160ms 错峰 ≈ 2.6s）。
+ * 每张牌两段声音：起飞的轻柔「唰」（拱形起飞）+ 延迟约 0.12s 的落牌「嗒」
+ * （对应飞行动画落位）；音高随张数缓升、音量递增，堆叠期待感，
+ * 最后一张落点加重收尾。
+ */
 function buildDeal() {
-  const b = makeBuf(1.3);
-  for (let i = 0; i < 14; i++) {
-    clack(b, 0.03 + i * 0.085, 0.4 + 0.55 * (i / 13), 0.9 + Math.random() * 0.3);
+  const COUNT = 14;
+  const STAGGER = 0.16;
+  const LAND_DELAY = 0.12;
+  const b = makeBuf(0.06 + (COUNT - 1) * STAGGER + LAND_DELAY + 0.3);
+  for (let i = 0; i < COUNT; i++) {
+    const takeoff = 0.03 + i * STAGGER;
+    const p = 0.95 + i * 0.03;
+    // 起飞：短促上扬扫频噪声，像牌从牌堆抽出的轻风。
+    addBuf(b, sweepNoise(0.09, 0.16 + 0.22 * (i / (COUNT - 1)), 900, 2600, 0.01, 0.026), takeoff);
+    // 落牌：带音高变化的咔哒，随飞行时长滞后于起飞。
+    clack(b, takeoff + LAND_DELAY, 0.5 + 0.42 * (i / (COUNT - 1)), p);
   }
+  // 末张收尾加重：仪式感句号。
+  const lastLand = 0.03 + (COUNT - 1) * STAGGER + LAND_DELAY;
+  addOsc(b, { freq: 98, start: lastLand, dur: 0.14, vol: 0.4, tau: 0.05 });
   return normalize(b, 0.8);
 }
 

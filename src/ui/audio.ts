@@ -36,8 +36,12 @@ const SFX_FILES: SfxName[] = [
   'submit', 'error', 'pass', 'victory', 'result',
 ];
 
-/** 本地缓存索引（名称 → savedFilePath）的存储键。 */
-const CACHE_KEY = 'lami_audio_cache';
+/**
+ * 本地缓存索引（名称 → savedFilePath）的存储键。
+ * 带版本号：替换 COS 上的音频文件后需 bump 版本号（如 v2 → v3），
+ * 否则旧设备会继续播放缓存里的旧音效。
+ */
+const CACHE_KEY = 'lami_audio_cache_v2';
 
 const BGM_MUTE_KEY = 'lami_bgm_on';
 const SFX_MUTE_KEY = 'lami_sfx_on';
