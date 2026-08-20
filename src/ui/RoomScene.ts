@@ -50,6 +50,8 @@ export class RoomScene {
   private rafId = 0;
   private dirty = true;
   private busy = false;
+  /** 已触发进场（防止重复 enterGame） */
+  private entered = false;
   private pollTimer: ReturnType<typeof setInterval> | null = null;
 
   private message = '';
@@ -86,8 +88,9 @@ export class RoomScene {
     wx.onWindowResize(this.resizeHandler);
     this.rafId = requestAnimationFrame(this.tick);
 
-    // 等待中持续轮询房间状态
+    // 等待中持续轮询房间状态；重连进入时房间可能已在对局中，先立即查一次。
     this.pollTimer = setInterval(() => this.poll(), POLL_INTERVAL_MS);
+    setTimeout(() => this.poll(), 400);
   }
 
   dispose(): void {
@@ -111,7 +114,7 @@ export class RoomScene {
   // --------------------------------------------------------------------------
 
   private poll(): void {
-    if (this.busy || this.isRoomStarted()) return;
+    if (this.busy || this.entered) return;
     getRoom(this.code)
       .then((result) => {
         this.room = result.room;
@@ -131,6 +134,8 @@ export class RoomScene {
   }
 
   private enterGame(): void {
+    if (this.entered) return;
+    this.entered = true;
     if (this.pollTimer) {
       clearInterval(this.pollTimer);
       this.pollTimer = null;
@@ -308,7 +313,8 @@ export class RoomScene {
     this.shareBtnRect = { x: w / 2 - shareW / 2, y: actionY, w: shareW, h: 40 };
 
     if (room.status !== 'waiting') {
-      drawSceneText(ctx, w / 2, actionY + 20, '正在进入游戏…', { size: 16, color: INK });
+      const text = room.status === 'finished' ? '该房间对局已结束' : '正在进入游戏…';
+      drawSceneText(ctx, w / 2, actionY + 20, text, { size: 16, color: INK });
       return;
     }
 

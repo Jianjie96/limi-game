@@ -22,6 +22,8 @@ export class HomeScene {
   onCreateRoom: ((capacity: number) => void) | null = null;
   /** 本地试玩（开发后门，不依赖云开发） */
   onLocalPlay: (() => void) | null = null;
+  /** 断线重连：回到上次未结束的对局 */
+  onResume: (() => void) | null = null;
 
   private ctx: CanvasRenderingContext2D;
   private screenW: number;
@@ -50,6 +52,10 @@ export class HomeScene {
   private confirmRect: SceneButtonRect = { x: 0, y: 0, w: 0, h: 0 };
   private cancelRect: SceneButtonRect = { x: 0, y: 0, w: 0, h: 0 };
   private localPlayRect: SceneButtonRect = { x: 0, y: 0, w: 0, h: 0 };
+  private resumeBtnRect: SceneButtonRect = { x: 0, y: 0, w: 0, h: 0 };
+
+  /** 断线重连入口房号（外部校验房间仍在对局后调 showResume 激活） */
+  private resumeCode = '';
 
   private touchStartHandler = (e: { touches: Array<{ clientX: number; clientY: number }> }) => {
     const t = e.touches[0];
@@ -100,6 +106,18 @@ export class HomeScene {
     this.dirty = true;
   }
 
+  /** 展示「回到对局」入口（仅当上次房间仍在对局中且本人在场时由外部激活） */
+  showResume(code: string): void {
+    this.resumeCode = code;
+    this.dirty = true;
+  }
+
+  /** 隐藏重连入口（重连失败 / 房间已失效时调用） */
+  hideResume(): void {
+    this.resumeCode = '';
+    this.dirty = true;
+  }
+
   // --------------------------------------------------------------------------
   // 交互
   // --------------------------------------------------------------------------
@@ -147,6 +165,12 @@ export class HomeScene {
       this.showInfo('开发中，敬请期待～');
       return;
     }
+    if (this.resumeCode && hitRect(px, py, this.resumeBtnRect)) {
+      this.busy = true;
+      this.dirty = true;
+      this.onResume?.();
+      return;
+    }
     if (this.onLocalPlay && hitRect(px, py, this.localPlayRect)) {
       this.onLocalPlay();
     }
@@ -191,6 +215,18 @@ export class HomeScene {
     const createY = h * 0.52;
     this.createBtnRect = { x: cx - btnW / 2, y: createY, w: btnW, h: btnH };
     this.joinBtnRect = { x: cx - btnW / 2, y: createY + btnH + 18, w: btnW, h: btnH };
+
+    // 断线重连入口：置于主按钮上方最醒目的位置。
+    if (this.resumeCode) {
+      this.resumeBtnRect = { x: cx - btnW / 2, y: createY - btnH - 22, w: btnW, h: btnH };
+      drawCapsuleButton(
+        ctx,
+        this.resumeBtnRect,
+        this.busy ? '进入中…' : `回到对局 · 房间 ${this.resumeCode}`,
+        'primary',
+        16
+      );
+    }
 
     drawCapsuleButton(ctx, this.createBtnRect, this.busy ? '创建中…' : '创建房间', 'primary', 18);
     drawCapsuleButton(ctx, this.joinBtnRect, '加入房间', 'secondary', 18);

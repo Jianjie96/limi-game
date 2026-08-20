@@ -54,6 +54,11 @@ declare namespace wx {
   }): void;
   function getLaunchOptionsSync(): { scene: number; query: Record<string, string> };
   function onShow(callback: (res: { scene: number; query?: Record<string, string> }) => void): void;
+
+  // 本地存储（断线重连：记忆上次房间号）
+  function setStorageSync(key: string, data: any): void;
+  function getStorageSync(key: string): any;
+  function removeStorageSync(key: string): void;
   /** 小程序账号信息：envVersion 区分 develop（开发版）/ trial（体验版）/ release（正式版） */
   function getAccountInfoSync(): {
     miniProgram: { envVersion: 'develop' | 'trial' | 'release'; appId?: string };

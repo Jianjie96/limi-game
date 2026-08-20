@@ -81,15 +81,21 @@ exports.main = async (event) => {
         return fail('创建房间失败，请重试');
       }
 
-      // 加入房间：已在房内视为重进；已满/已开局则拒绝
+      // 加入房间：已在房内视为重进；已满/已开局则拒绝。
+      // 断线重连：对局进行中/已结束时，房内玩家可重新进入继续对局，陌生人不可中途加入。
       case 'join': {
         const code = normalizeCode(event.code);
         const name = String(event.name || '玩家');
         const room = await getRoomDoc(code);
         if (!room) return fail('房间不存在，请检查房号');
-        if (room.status !== 'waiting') return fail('该房间已开始游戏');
+        const isMember = room.players.some((p) => p.openid === OPENID);
 
-        if (room.players.some((p) => p.openid === OPENID)) {
+        if (room.status !== 'waiting') {
+          if (isMember) return ok({ room, self: OPENID });
+          return fail(room.status === 'finished' ? '该房间对局已结束' : '该房间已开始游戏');
+        }
+
+        if (isMember) {
           return ok({ room, self: OPENID });
         }
         if (room.players.length >= room.capacity) return fail('房间已满员');

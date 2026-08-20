@@ -109,12 +109,18 @@ function callRoom<T extends { ok: boolean }>(
 
 /** 创建房间（2/3/4 人），房主自动入座。 */
 export function createRoom(capacity: number, name: string): Promise<RoomResult> {
-  return callRoom<RoomResponse>('create', { capacity, name });
+  return callRoom<RoomResponse>('create', { capacity, name }).then((result) => {
+    saveLastRoom(result.room.code);
+    return result;
+  });
 }
 
 /** 通过房号加入房间（重复加入视为重进，直接返回房间）。 */
 export function joinRoom(code: string, name: string): Promise<RoomResult> {
-  return callRoom<RoomResponse>('join', { code, name });
+  return callRoom<RoomResponse>('join', { code, name }).then((result) => {
+    saveLastRoom(result.room.code);
+    return result;
+  });
 }
 
 /** 查询房间最新状态（轮询用）。 */
@@ -135,4 +141,35 @@ export function startRoom(code: string): Promise<RoomResult> {
 export function localPlayerName(): string {
   const n = Math.floor(Math.random() * 900) + 100;
   return `旅行者${n}`;
+}
+
+// ----------------------------------------------------------------------------
+// 上次房间记忆（断线重连：退出后再进游戏可从首页直接回到对局）
+// ----------------------------------------------------------------------------
+
+const LAST_ROOM_KEY = 'lami_last_room';
+
+export function saveLastRoom(code: string): void {
+  try {
+    wx.setStorageSync(LAST_ROOM_KEY, code);
+  } catch (e) {
+    // 存储失败不影响主流程
+  }
+}
+
+export function getLastRoom(): string {
+  try {
+    const code = wx.getStorageSync(LAST_ROOM_KEY);
+    return typeof code === 'string' ? code : '';
+  } catch (e) {
+    return '';
+  }
+}
+
+export function clearLastRoom(): void {
+  try {
+    wx.removeStorageSync(LAST_ROOM_KEY);
+  } catch (e) {
+    // 忽略
+  }
 }

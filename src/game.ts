@@ -19,7 +19,10 @@ import {
   initCloud,
   createRoom,
   joinRoom,
+  getRoom,
   localPlayerName,
+  getLastRoom,
+  clearLastRoom,
   RoomInfo,
   RoomResult,
 } from './cloud/room';
@@ -98,6 +101,36 @@ function goHome(): HomeScene {
       };
       startLocalGame(demo);
     };
+  }
+  // 断线重连：上次房间若仍在对局中且本人在场，首页展示「回到对局」入口。
+  const lastCode = getLastRoom();
+  if (lastCode) {
+    getRoom(lastCode)
+      .then((result) => {
+        const room = result.room;
+        const isMember = room.players.some((p) => p.openid === result.self);
+        const inGame = room.status === 'started' || room.status === 'playing';
+        if (isMember && inGame) {
+          home.onResume = () => {
+            joinRoom(room.code, myName)
+              .then((joinResult) => {
+                home.closePicker();
+                enterRoom(joinResult);
+              })
+              .catch((e: Error) => {
+                home.hideResume();
+                home.showError(`回到对局失败：${e.message}`);
+              });
+          };
+          home.showResume(room.code);
+        } else if (room.status === 'finished') {
+          // 对局已收尾：清除记忆，下次不再提示。
+          clearLastRoom();
+        }
+      })
+      .catch(() => {
+        // 查询失败静默（房间可能已被清理），不打扰首页。
+      });
   }
   switchScene(home);
   return home;
