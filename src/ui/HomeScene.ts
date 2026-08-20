@@ -16,7 +16,7 @@ import {
   SceneButtonRect,
 } from './backdrop';
 import { FROST_STRONG, FROST_BORDER, GOLD, INK, INK_SOFT, GOLD_DEEP, FONT_FAMILY } from './constants';
-import { getNickname, getAvatarColor } from './profile';
+import { getNickname, drawAvatar } from './profile';
 
 export class HomeScene {
   /** 选择人数并确认后回调（创建房间请求由外部发起） */
@@ -234,19 +234,10 @@ export class HomeScene {
       const startX = (w - clusterW) / 2;
       this.profileRect = { x: startX - 12, y: entryY - 26, w: clusterW + 24, h: 52 };
 
-      // 头像圆片（元素色 + 白环 + 末字）
+      // 头像（微信图片优先，元素色兜底）
       const avX = startX + avatarR;
-      ctx.fillStyle = getAvatarColor();
-      ctx.beginPath();
-      ctx.arc(avX, entryY, avatarR, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.strokeStyle = 'rgba(255,255,255,0.9)';
-      ctx.lineWidth = 1.5;
-      ctx.stroke();
-      drawSceneText(ctx, avX, entryY + 0.5, name.charAt(name.length - 1), {
-        size: 13,
-        bold: true,
-        color: '#FFFFFF',
+      drawAvatar(ctx, avX, entryY, avatarR, () => {
+        this.dirty = true;
       });
 
       // 昵称 + 进入箭头

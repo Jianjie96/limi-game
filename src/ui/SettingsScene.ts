@@ -1,8 +1,8 @@
 // ============================================================================
 // SettingsScene.ts — 个人中心（设置页）场景
 // ----------------------------------------------------------------------------
-// 从首页「个人中心」进入：头像（可选元素色）+ 昵称（原生键盘修改），
-// 以及 背景音 / 音效 / 震动反馈 / 横屏模式 四个开关。
+// 从首页「个人中心」进入：头像（微信相册/拍照选择，元素色兜底）+
+// 昵称（原生键盘修改），以及 背景音 / 音效 / 震动反馈 / 横屏模式 四个开关。
 // 与 HomeScene 共享画布与 backdrop 视觉语言，通过 dispose() 交还。
 // ============================================================================
 
@@ -22,6 +22,10 @@ import {
   setNickname,
   getAvatarIndex,
   setAvatarIndex,
+  getAvatarPath,
+  chooseAvatarFromWeChat,
+  resetAvatar,
+  drawAvatar,
   isVibrateEnabled,
   setVibrateEnabled,
   vibrateIfEnabled,
@@ -54,6 +58,7 @@ export class SettingsScene {
 
   // 命中区域（绘制时记录）
   private backRect: SceneButtonRect = { x: 0, y: 0, w: 0, h: 0 };
+  private avatarRect: SceneButtonRect = { x: 0, y: 0, w: 0, h: 0 };
   private nickEditRect: SceneButtonRect = { x: 0, y: 0, w: 0, h: 0 };
   private swatchRects: SceneButtonRect[] = [];
   private bgmRowRect: SceneButtonRect = { x: 0, y: 0, w: 0, h: 0 };
@@ -162,17 +167,26 @@ export class SettingsScene {
       this.onExit?.();
       return;
     }
+    if (hitRect(px, py, this.avatarRect)) {
+      this.pickAvatar();
+      return;
+    }
     if (hitRect(px, py, this.nickEditRect)) {
       this.openNicknameKeyboard();
       return;
     }
     for (let i = 0; i < this.swatchRects.length; i++) {
       if (hitRect(px, py, this.swatchRects[i])) {
+        // 选色卡 = 恢复默认头像（如已设微信头像则清除）并切换底色。
+        if (getAvatarPath()) {
+          resetAvatar();
+          this.showInfo('已恢复默认头像');
+        }
         if (getAvatarIndex() !== i) {
           setAvatarIndex(i);
           vibrateIfEnabled();
-          this.dirty = true;
         }
+        this.dirty = true;
         return;
       }
     }
@@ -210,6 +224,22 @@ export class SettingsScene {
       this.dirty = true;
       return;
     }
+  }
+
+  /** 拉起微信原生选择器更换头像（相册/拍照），随时可再点重选。 */
+  private pickAvatar(): void {
+    if (typeof wx.chooseMedia !== 'function') {
+      this.showInfo('当前环境不支持选择头像');
+      return;
+    }
+    vibrateIfEnabled();
+    chooseAvatarFromWeChat().then((path) => {
+      if (this.disposed) return;
+      if (path) {
+        this.showInfo('头像已更新');
+        this.dirty = true;
+      }
+    });
   }
 
   private openNicknameKeyboard(): void {
@@ -341,18 +371,10 @@ export class SettingsScene {
     const name = getNickname();
     const cx = cardX + 50;
     const cy = cardY + 50;
-    ctx.fillStyle = AVATAR_COLORS[getAvatarIndex()];
-    ctx.beginPath();
-    ctx.arc(cx, cy, 24, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.strokeStyle = 'rgba(255,255,255,0.9)';
-    ctx.lineWidth = 2;
-    ctx.stroke();
-    drawSceneText(ctx, cx, cy + 1, name.charAt(name.length - 1), {
-      size: 18,
-      bold: true,
-      color: '#FFFFFF',
+    drawAvatar(ctx, cx, cy, 24, () => {
+      if (!this.disposed) this.dirty = true;
     });
+    this.avatarRect = { x: cx - 28, y: cy - 28, w: 56, h: 56 };
 
     const nameX = cardX + 86;
     drawSceneText(ctx, nameX, cy - 9, name, {
@@ -366,7 +388,7 @@ export class SettingsScene {
       color: INK_SOFT,
       align: 'left',
     });
-    this.nickEditRect = { x: cardX + 16, y: cardY + 14, w: leftW - 24, h: 76 };
+    this.nickEditRect = { x: nameX - 8, y: cardY + 14, w: leftW - 24 - (nameX - cardX - 8), h: 76 };
 
     drawSceneText(ctx, cardX + 24, cardY + cardH - 56, '头像颜色', {
       size: 12,
@@ -374,7 +396,8 @@ export class SettingsScene {
       align: 'left',
     });
     this.swatchRects = [];
-    const selected = getAvatarIndex();
+    const hasCustomAvatar = !!getAvatarPath();
+    const selected = hasCustomAvatar ? -1 : getAvatarIndex();
     const r = 11;
     const gap = 14;
     let x = cardX + 24;
@@ -427,23 +450,15 @@ export class SettingsScene {
     const ctx = this.ctx;
     const name = getNickname();
 
-    // 头像圆片（元素色 + 白环 + 末字）
+    // 头像（微信图片优先，元素色兜底；可点选更换）
     const cx = cardX + 56;
     const cy = cardY + 48;
-    ctx.fillStyle = AVATAR_COLORS[getAvatarIndex()];
-    ctx.beginPath();
-    ctx.arc(cx, cy, 28, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.strokeStyle = 'rgba(255,255,255,0.9)';
-    ctx.lineWidth = 2;
-    ctx.stroke();
-    drawSceneText(ctx, cx, cy + 1, name.charAt(name.length - 1), {
-      size: 22,
-      bold: true,
-      color: '#FFFFFF',
+    drawAvatar(ctx, cx, cy, 28, () => {
+      if (!this.disposed) this.dirty = true;
     });
+    this.avatarRect = { x: cx - 32, y: cy - 32, w: 64, h: 64 };
 
-    // 昵称 + 修改入口（整块可点，唤起键盘）
+    // 昵称 + 修改入口（唤起键盘）
     const nameX = cardX + 100;
     drawSceneText(ctx, nameX, cy - 10, name, {
       size: 18,
@@ -459,7 +474,7 @@ export class SettingsScene {
     this.nickEditRect = { x: nameX - 8, y: cardY + 16, w: cardW - 100 - 8, h: 64 };
   }
 
-  /** 头像色选择行 */
+  /** 头像色选择行（选中即恢复默认头像并换底色） */
   private drawSwatchRow(cardX: number, y: number, cardW: number): void {
     const ctx = this.ctx;
     drawSceneText(ctx, cardX + 24, y + 16, '头像颜色', {
@@ -469,7 +484,8 @@ export class SettingsScene {
     });
 
     this.swatchRects = [];
-    const selected = getAvatarIndex();
+    const hasCustom = !!getAvatarPath();
+    const selected = hasCustom ? -1 : getAvatarIndex();
     const r = 13;
     const gap = 18;
     const totalW = AVATAR_COLORS.length * r * 2 + (AVATAR_COLORS.length - 1) * gap;

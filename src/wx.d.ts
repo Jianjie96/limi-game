@@ -122,6 +122,19 @@ declare namespace wx {
     fail?: (err: any) => void;
   }): void;
 
+  // 媒体选择（个人中心：从微信相册/拍照选择头像）
+  function chooseMedia(options: {
+    count?: number;
+    mediaType?: string[];
+    sourceType?: string[];
+    sizeType?: string[];
+    maxDuration?: number;
+    success?: (res: {
+      tempFiles: Array<{ tempFilePath: string; size: number; fileType?: string }>;
+    }) => void;
+    fail?: (err: any) => void;
+  }): void;
+
   // 原生键盘（个人中心昵称输入）
   function showKeyboard(options: {
     defaultValue?: string;
