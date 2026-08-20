@@ -6,7 +6,7 @@
 // 绘制统一通过 Canvas 2D 上下文在逻辑坐标下进行（由 DPR 缩放映射到物理像素）。
 // ============================================================================
 
-import type { Tile, GameState } from '../game/types';
+import type { Tile, TileGroup, GameState } from '../game/types';
 import { GamePhase } from '../game/types';
 import { RummikubEngine } from '../game/engine';
 import { canFormMelds, isValidRun, isValidGroupTiles } from '../game/validate';
@@ -39,6 +39,7 @@ import {
   layoutBoard,
   hitTestBoard,
   hitTestBoardGroup,
+  boardContentHeight,
   type BoardConfig,
   type BoardGroupSlot,
   type BoardTileSlot,
@@ -857,12 +858,11 @@ export class GameScene {
       this.workingAreaY = rackTop - waMeasured.height - 8;
       this.workingAreaSlots = this.workingAreaLayout(workingTiles, this.workingAreaY).slots;
 
-      // 桌面：顶部紧贴玩家信息下方，向下填满到工作区上方的全部剩余空间，
-      // 避免桌面与工作区之间出现大片无效留白。
+      // 桌面：顶部紧贴玩家信息下方，向下填满到工作区上方的全部剩余空间。
       this.boardConfig.topY = this.safeTop + PLAYER_INFO_HEIGHT + 14;
-      this.boardSlots = layoutBoard(state.board, this.boardConfig, this.highlightedGroupIds);
       const boardBottom = this.workingAreaY - 8;
       this.boardBottom = boardBottom;
+      this.boardSlots = this.layoutBoardToFit(state.board, boardBottom);
 
       this.buildBoard(state, boardBottom);
       this.buildWorkingArea(state);
@@ -961,6 +961,21 @@ export class GameScene {
       });
       x += w + 20;
     }
+  }
+
+  /** 计算桌面布局：内容超出可用高度时整体缩放假面，保证不与工作区/牌架重叠。 */
+  private layoutBoardToFit(groups: TileGroup[], boardBottom: number): BoardGroupSlot[] {
+    const availableH = Math.max(48, boardBottom - this.boardConfig.topY);
+
+    let slots = layoutBoard(groups, this.boardConfig, this.highlightedGroupIds, 1);
+    let scale = 1;
+    for (let i = 0; i < 6; i++) {
+      const h = boardContentHeight(slots, this.boardConfig.topY);
+      if (groups.length === 0 || h <= availableH) break;
+      scale = Math.max(0.5, scale * (availableH / h));
+      slots = layoutBoard(groups, this.boardConfig, this.highlightedGroupIds, scale);
+    }
+    return slots;
   }
 
   private buildBoard(state: GameState, boardBottom: number): void {

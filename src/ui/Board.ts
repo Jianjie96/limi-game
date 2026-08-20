@@ -44,34 +44,37 @@ export const BOARD_ROW_HEIGHT = TILE_HEIGHT + BOARD_GROUP_PADDING * 2;
 /**
  * 计算桌面牌组布局（流式布局，自动换行）。
  *
- * 所有牌组都会被布局（不再按 fixed bottomY 裁剪），
- * 便于破冰后拆分/合并/重组产生大量牌组时仍全部可见、可点击；
- * 超出可视区域的情况由 GameScene 动态下移工作区/牌架来容纳。
+ * @param scale 牌面缩放系数。当桌面内容超出可视区域时，可按此系数整体缩放，
+ *              保证所有牌组都落在可用高度内，避免与工作区/牌架重叠。
  */
 export function layoutBoard(
   groups: TileGroup[],
   config: BoardConfig,
   highlightedGroupIds: Set<string> = new Set(),
+  scale = 1,
 ): BoardGroupSlot[] {
   const slots: BoardGroupSlot[] = [];
   const margin = 12;
   const left = config.left + margin;
   const right = config.screenW - config.right - margin;
 
+  const tw = TILE_WIDTH * scale;
+  const th = TILE_HEIGHT * scale;
+  const pad = BOARD_GROUP_PADDING * scale;
+  const gap = TILE_GAP * scale;
+  const groupGap = BOARD_GROUP_GAP * scale;
+
   let curX = left;
   let curY = config.topY + 8;
-  const groupH = BOARD_ROW_HEIGHT;
+  const groupH = th + pad * 2;
 
   for (const group of groups) {
-    const groupW =
-      group.tiles.length * TILE_WIDTH +
-      (group.tiles.length - 1) * TILE_GAP +
-      BOARD_GROUP_PADDING * 2;
+    const groupW = group.tiles.length * tw + (group.tiles.length - 1) * gap + pad * 2;
 
     // 放不下则换行（当前行已有内容时才换，避免单组过宽死循环）。
     if (curX + groupW > right && curX > left) {
       curX = left;
-      curY += BOARD_ROW_HEIGHT + BOARD_GROUP_GAP;
+      curY += groupH + groupGap;
     }
 
     const groupBounds = { x: curX, y: curY, w: groupW, h: groupH };
@@ -84,15 +87,16 @@ export function layoutBoard(
         groupId: group.id,
         index: i,
         opts: {
-          x: curX + BOARD_GROUP_PADDING + i * (TILE_WIDTH + TILE_GAP),
-          y: curY + BOARD_GROUP_PADDING,
+          x: curX + pad + i * (tw + gap),
+          y: curY + pad,
+          scale,
           highlighted: highlightedGroupIds.has(group.id),
         },
       });
     }
 
     slots.push({ groupId: group.id, group, bounds: groupBounds, tileSlots });
-    curX += groupW + BOARD_GROUP_GAP;
+    curX += groupW + groupGap;
   }
 
   return slots;
