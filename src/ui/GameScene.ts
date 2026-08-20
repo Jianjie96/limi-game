@@ -39,7 +39,6 @@ import {
   layoutBoard,
   hitTestBoard,
   hitTestBoardGroup,
-  boardContentHeight,
   type BoardConfig,
   type BoardGroupSlot,
   type BoardTileSlot,
@@ -94,6 +93,9 @@ interface TextOptions {
 /** 拖拽触发阈值（逻辑像素）：移动超过该距离才进入拖拽状态。 */
 const DRAG_THRESHOLD = 8;
 
+/** 长按牌架进入「连续滑动多选」的判定时长（毫秒）。 */
+const LONG_PRESS_DELAY = 300;
+
 export class GameScene {
   private ctx: CanvasRenderingContext2D;
   private canvas: HTMLCanvasElement;
@@ -125,6 +127,11 @@ export class GameScene {
   private pressSource: DragSource | null = null;
   private pressX = 0;
   private pressY = 0;
+
+  // 长按牌架 → 连续滑动多选状态
+  private longPressTimer: any = null;
+  private longPressActive = false;
+  private rangeSelectAnchor: number | null = null;
 
   private buttons: ButtonState[] = [];
   private orientationButton!: ButtonState;
@@ -244,11 +251,34 @@ export class GameScene {
       // 仅记录潜在拖拽来源，不立即执行点击动作（区分点击与拖拽）。
       this.pressSource = this.findTileSource(t.clientX, t.clientY);
       this.markDirty();
+
+      // 牌架长按 → 开启连续滑动多选。
+      this.longPressActive = false;
+      this.rangeSelectAnchor = null;
+      this.clearLongPressTimer();
+      if (this.pressSource?.kind === 'rack') {
+        const rackSlot = hitTestRack(t.clientX, t.clientY, this.rackSlots);
+        if (rackSlot) {
+          this.rangeSelectAnchor = rackSlot.index;
+          this.longPressTimer = setTimeout(() => {
+            this.longPressActive = true;
+            this.applyRangeSelect(this.rangeSelectAnchor!);
+          }, LONG_PRESS_DELAY);
+        }
+      }
     });
 
     wx.onTouchMove((e) => {
       const t = e.touches?.[0];
       if (!t || !this.pressSource) return;
+
+      // 长按多选模式：滑动划过牌架时连续选中范围，不进入拖拽。
+      if (this.longPressActive) {
+        const rackSlot = hitTestRack(t.clientX, t.clientY, this.rackSlots);
+        if (rackSlot) this.applyRangeSelect(rackSlot.index);
+        this.markDirty();
+        return;
+      }
 
       const dx = t.clientX - this.pressX;
       const dy = t.clientY - this.pressY;
@@ -256,6 +286,8 @@ export class GameScene {
       if (!this.drag) {
         // 超过阈值才进入拖拽，避免误触。
         if (Math.hypot(dx, dy) > DRAG_THRESHOLD) {
+          // 开始正常拖拽，取消长按计时。
+          this.clearLongPressTimer();
           this.drag = { source: this.pressSource, curX: t.clientX, curY: t.clientY };
         }
       } else {
@@ -268,6 +300,16 @@ export class GameScene {
     wx.onTouchEnd((e) => {
       const t = e.changedTouches?.[0];
 
+      // 长按多选结束：保留已选中的范围。
+      if (this.longPressActive) {
+        this.clearLongPressTimer();
+        this.longPressActive = false;
+        this.rangeSelectAnchor = null;
+        this.pressSource = null;
+        this.markDirty();
+        return;
+      }
+
       if (this.drag) {
         this.handleTileDrop(this.drag, this.drag.curX, this.drag.curY);
         this.drag = null;
@@ -277,11 +319,15 @@ export class GameScene {
       }
 
       // 未进入拖拽 → 视作点击，走原有命中的点击分发。
+      this.clearLongPressTimer();
       if (t) this.onPointerDown(t.clientX, t.clientY);
       this.pressSource = null;
     });
 
     wx.onTouchCancel(() => {
+      this.clearLongPressTimer();
+      this.longPressActive = false;
+      this.rangeSelectAnchor = null;
       this.drag = null;
       this.pressSource = null;
       this.markDirty();
@@ -430,6 +476,30 @@ export class GameScene {
     }
 
     return null;
+  }
+
+  private clearLongPressTimer(): void {
+    if (this.longPressTimer != null) {
+      clearTimeout(this.longPressTimer);
+      this.longPressTimer = null;
+    }
+  }
+
+  /** 长按牌架时，按连续范围选中 [anchor, cur] 之间的牌（须能凑成合法顺子/刻子）。 */
+  private applyRangeSelect(curIndex: number): void {
+    const anchor = this.rangeSelectAnchor;
+    if (anchor == null) return;
+
+    const rack = this.engine.getCurrentPlayer().rack;
+    const lo = Math.min(anchor, curIndex);
+    const hi = Math.max(anchor, curIndex);
+    const rangeTiles = rack.filter((_, i) => i >= lo && i <= hi);
+    if (!canFormMelds(rangeTiles)) return; // 超出可合法组合范围，保持上次选中结果。
+
+    this.selectedRackIds = new Set(rangeTiles.map(t => t.id));
+    if (rangeTiles.length >= 3 && this.isCompleteMeld(rangeTiles)) {
+      this.showMessage('已选好合法牌组，可点击「出牌」');
+    }
   }
 
   /** 判断点是否落在桌面区域（用于把牌拖到空白处成立新组）。 */
@@ -787,14 +857,11 @@ export class GameScene {
       this.workingAreaY = rackTop - waMeasured.height - 8;
       this.workingAreaSlots = this.workingAreaLayout(workingTiles, this.workingAreaY).slots;
 
-      // 桌面：从顶部向下铺，底部不越过工作区顶部。
+      // 桌面：顶部紧贴玩家信息下方，向下填满到工作区上方的全部剩余空间，
+      // 避免桌面与工作区之间出现大片无效留白。
+      this.boardConfig.topY = this.safeTop + PLAYER_INFO_HEIGHT + 14;
       this.boardSlots = layoutBoard(state.board, this.boardConfig, this.highlightedGroupIds);
-      const contentH = boardContentHeight(this.boardSlots, this.boardConfig.topY);
-      const minBoardH = 72; // 空桌面也保留一个最小高度，避免布局抖动。
-      const boardBottom = Math.min(
-        this.boardConfig.topY + Math.max(contentH, minBoardH),
-        this.workingAreaY,
-      );
+      const boardBottom = this.workingAreaY - 8;
       this.boardBottom = boardBottom;
 
       this.buildBoard(state, boardBottom);

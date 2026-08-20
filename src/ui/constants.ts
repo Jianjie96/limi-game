@@ -86,4 +86,5 @@ export const LAYOUT = {
 export const WORKING_AREA_BG = 'rgba(156, 39, 176, 0.15)';
 export const WORKING_AREA_BORDER = '#9C27B0';
 export const WORKING_AREA_LABEL = '工作区 (点击牌放回桌面)';
-export const WORKING_AREA_HEIGHT = TILE_HEIGHT + 12;
+/** 工作区最小高度（空工作区也保留一个紧凑的标签 + 拖放目标区域）。 */
+export const WORKING_AREA_HEIGHT = 44;
