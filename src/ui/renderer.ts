@@ -1,5 +1,5 @@
 // ============================================================================
-// renderer.ts — 原生 Canvas 2D 绘制（牌面绘制 + 几何命中检测）
+// renderer.ts — 原生 Canvas 2D 绘制（卡通风牌面 + 几何命中检测）
 // ----------------------------------------------------------------------------
 // 不依赖任何第三方框架，直接用 wx 提供的 2D 上下文按逻辑像素绘制。
 // 牌面图形以 (0,0) 为左上角、按原始尺寸绘制，位置与缩放通过 translate/scale 设置。
@@ -14,10 +14,11 @@ import {
   TILE_RADIUS,
   TILE_COLORS_RGB,
   TILE_BG,
+  TILE_BG_BOTTOM,
   TILE_BG_SELECTED,
   TILE_BORDER,
-  JOKER_BG,
-  JOKER_STAR_COLOR,
+  TILE_SHADOW,
+  GOLD,
   FONT_FAMILY,
   FONT_SIZE_TILE,
   FONT_SIZE_TILE_SMALL,
@@ -82,6 +83,96 @@ function setFont(ctx: CanvasRenderingContext2D, size: number, bold: boolean): vo
   ctx.font = `${bold ? 'bold ' : ''}${size}px ${FONT_FAMILY}`;
 }
 
+/** 垂直线性渐变（卡通牌身 / 按钮常用） */
+function verticalGradient(
+  ctx: CanvasRenderingContext2D,
+  y0: number,
+  y1: number,
+  top: string,
+  bottom: string,
+): CanvasGradient {
+  const g = ctx.createLinearGradient(0, y0, 0, y1);
+  g.addColorStop(0, top);
+  g.addColorStop(1, bottom);
+  return g;
+}
+
+/**
+ * 绘制卡通牌身：投影 → 渐变牌面 → 彩色粗边框 → 顶部高光。
+ * selected 时叠加金色选中圈。
+ */
+function drawTileBody(
+  ctx: CanvasRenderingContext2D,
+  accent: string,
+  opts: TileRenderOptions,
+  baseBg: string = TILE_BG,
+): void {
+  const { selected, highlighted } = opts;
+
+  // 卡通投影（偏移的深色圆角矩形，比 shadowBlur 更省性能）。
+  ctx.fillStyle = TILE_SHADOW;
+  roundRectPath(ctx, 1.5, 2.5, TILE_WIDTH, TILE_HEIGHT, TILE_RADIUS);
+  ctx.fill();
+
+  // 渐变牌身。
+  ctx.fillStyle = verticalGradient(
+    ctx,
+    0,
+    TILE_HEIGHT,
+    selected ? TILE_BG_SELECTED : baseBg,
+    selected ? '#FFE082' : TILE_BG_BOTTOM,
+  );
+  roundRectPath(ctx, 0, 0, TILE_WIDTH, TILE_HEIGHT, TILE_RADIUS);
+  ctx.fill();
+
+  // 彩色粗边框（卡通描边）。
+  ctx.strokeStyle = highlighted ? GOLD : accent;
+  ctx.lineWidth = highlighted ? 2.5 : 2;
+  roundRectPath(ctx, 1, 1, TILE_WIDTH - 2, TILE_HEIGHT - 2, TILE_RADIUS - 1);
+  ctx.stroke();
+
+  // 选中金色外圈。
+  if (selected) {
+    ctx.strokeStyle = GOLD;
+    ctx.lineWidth = 2;
+    roundRectPath(ctx, 0.5, 0.5, TILE_WIDTH - 1, TILE_HEIGHT - 1, TILE_RADIUS);
+    ctx.stroke();
+  }
+
+  // 顶部高光（上釉质感）。
+  ctx.fillStyle = 'rgba(255,255,255,0.35)';
+  roundRectPath(ctx, 3, 2.5, TILE_WIDTH - 6, TILE_HEIGHT * 0.32, TILE_RADIUS - 2);
+  ctx.fill();
+}
+
+/** 带白色描边的卡通大数字（先描边后填充，醒目且与牌色融合）。 */
+function drawCartoonNumber(ctx: CanvasRenderingContext2D, number: number, color: string, cx: number, cy: number): void {
+  const size = number >= 10 ? FONT_SIZE_TILE_SMALL : FONT_SIZE_TILE;
+  setFont(ctx, size, true);
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.lineWidth = 3;
+  ctx.lineJoin = 'round';
+  ctx.strokeStyle = '#FFFFFF';
+  ctx.strokeText(String(number), cx, cy);
+  ctx.fillStyle = color;
+  ctx.fillText(String(number), cx, cy);
+}
+
+/** 五角星路径 */
+function starPath(ctx: CanvasRenderingContext2D, cx: number, cy: number, outer: number, inner: number): void {
+  ctx.beginPath();
+  for (let i = 0; i < 10; i++) {
+    const r = i % 2 === 0 ? outer : inner;
+    const angle = -Math.PI / 2 + (i * Math.PI) / 5;
+    const px = cx + r * Math.cos(angle);
+    const py = cy + r * Math.sin(angle);
+    if (i === 0) ctx.moveTo(px, py);
+    else ctx.lineTo(px, py);
+  }
+  ctx.closePath();
+}
+
 // ---------------------------------------------------------------------------
 // 牌面绘制
 // ---------------------------------------------------------------------------
@@ -94,31 +185,28 @@ export function drawNumberTile(
   opts: TileRenderOptions,
 ): void {
   const scale = opts.scale ?? 1;
-  const { selected, highlighted, dimmed } = opts;
+  const { dimmed } = opts;
 
   ctx.save();
   ctx.translate(opts.x, opts.y);
   ctx.scale(scale, scale);
   if (dimmed) ctx.globalAlpha = 0.4;
 
-  ctx.fillStyle = selected ? TILE_BG_SELECTED : TILE_BG;
-  ctx.strokeStyle = highlighted ? '#FFC107' : TILE_BORDER;
-  ctx.lineWidth = highlighted ? 2 : 1;
-  roundRectPath(ctx, 0, 0, TILE_WIDTH, TILE_HEIGHT, TILE_RADIUS);
-  ctx.fill();
-  ctx.stroke();
+  drawTileBody(ctx, TILE_COLORS_RGB[color], opts);
 
-  ctx.fillStyle = TILE_COLORS_RGB[color];
-  setFont(ctx, number >= 10 ? FONT_SIZE_TILE_SMALL : FONT_SIZE_TILE, true);
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillText(String(number), TILE_WIDTH / 2, TILE_HEIGHT / 2);
+  // 中央大号卡通数字。
+  drawCartoonNumber(ctx, number, TILE_COLORS_RGB[color], TILE_WIDTH / 2, TILE_HEIGHT / 2 + 3);
 
-  if (scale >= 1) {
-    setFont(ctx, 10, false);
+  // 左上角小数字 + 色点（放大时才绘制，缩小牌保持干净）。
+  if (scale >= 0.9) {
+    ctx.fillStyle = TILE_COLORS_RGB[color];
+    setFont(ctx, 9, true);
     ctx.textAlign = 'left';
     ctx.textBaseline = 'top';
-    ctx.fillText(String(number), 3, 2);
+    ctx.fillText(String(number), 4.5, 4);
+    ctx.beginPath();
+    ctx.arc(TILE_WIDTH - 7, TILE_HEIGHT - 7, 2.4, 0, Math.PI * 2);
+    ctx.fill();
   }
 
   ctx.restore();
@@ -126,8 +214,8 @@ export function drawNumberTile(
 
 /**
  * 绘制一张 Joker 牌。
- * - 普通 Joker：显示 "JOKER" 与星星。
- * - 桌面上代表某张牌的 Joker：显示其代表的颜色/数字 + 星星标记。
+ * - 普通 Joker：紫色渐变牌身 + 大小星星 + "JOKER" 字样。
+ * - 桌面上代表某张牌的 Joker：显示其代表的颜色/数字 + 星星角标。
  */
 export function drawJokerTile(
   ctx: CanvasRenderingContext2D,
@@ -137,41 +225,45 @@ export function drawJokerTile(
   logicalNumber?: number,
 ): void {
   const scale = opts.scale ?? 1;
-  const { selected, highlighted, dimmed } = opts;
+  const { dimmed } = opts;
 
   ctx.save();
   ctx.translate(opts.x, opts.y);
   ctx.scale(scale, scale);
   if (dimmed) ctx.globalAlpha = 0.4;
 
-  ctx.fillStyle = selected ? TILE_BG_SELECTED : JOKER_BG;
-  ctx.strokeStyle = highlighted ? '#FFC107' : TILE_COLORS_RGB.joker;
-  ctx.lineWidth = highlighted ? 2 : 1.5;
-  roundRectPath(ctx, 0, 0, TILE_WIDTH, TILE_HEIGHT, TILE_RADIUS);
-  ctx.fill();
-  ctx.stroke();
+  drawTileBody(ctx, TILE_COLORS_RGB.joker, opts, '#F3E5F5');
 
   if (isLogical && logicalColor && logicalNumber) {
-    ctx.fillStyle = TILE_COLORS_RGB[logicalColor];
-    setFont(ctx, logicalNumber >= 10 ? FONT_SIZE_TILE_SMALL : FONT_SIZE_TILE, true);
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(String(logicalNumber), TILE_WIDTH / 2, TILE_HEIGHT / 2);
+    // 代表牌：中央按代表值显示，右上角星星标记其 Joker 身份。
+    drawCartoonNumber(ctx, logicalNumber, TILE_COLORS_RGB[logicalColor], TILE_WIDTH / 2, TILE_HEIGHT / 2 + 3);
 
-    ctx.fillStyle = JOKER_STAR_COLOR;
-    setFont(ctx, 10, false);
-    ctx.textAlign = 'right';
-    ctx.textBaseline = 'top';
-    ctx.fillText('★', TILE_WIDTH - 2, 2);
+    ctx.fillStyle = '#FFC107';
+    starPath(ctx, TILE_WIDTH - 9, 9, 5.5, 2.4);
+    ctx.fill();
+    ctx.strokeStyle = TILE_COLORS_RGB.joker;
+    ctx.lineWidth = 1;
+    ctx.stroke();
   } else {
-    ctx.fillStyle = JOKER_STAR_COLOR;
-    setFont(ctx, 12, true);
+    // 本体 Joker：大星星 + 环绕小星 + 文字。
+    ctx.fillStyle = '#FFC107';
+    starPath(ctx, TILE_WIDTH / 2, TILE_HEIGHT / 2 - 3, 11, 4.8);
+    ctx.fill();
+    ctx.strokeStyle = TILE_COLORS_RGB.joker;
+    ctx.lineWidth = 1.2;
+    ctx.stroke();
+
+    ctx.fillStyle = TILE_COLORS_RGB.joker;
+    starPath(ctx, TILE_WIDTH / 2 - 11, TILE_HEIGHT / 2 - 13, 3.4, 1.5);
+    ctx.fill();
+    starPath(ctx, TILE_WIDTH / 2 + 11, TILE_HEIGHT / 2 - 11, 2.8, 1.2);
+    ctx.fill();
+
+    ctx.fillStyle = TILE_COLORS_RGB.joker;
+    setFont(ctx, 8.5, true);
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText('JOKER', TILE_WIDTH / 2, TILE_HEIGHT / 2 - 4);
-
-    setFont(ctx, 16, false);
-    ctx.fillText('★', TILE_WIDTH / 2, TILE_HEIGHT / 2 + 12);
+    ctx.fillText('JOKER', TILE_WIDTH / 2, TILE_HEIGHT - 11);
   }
 
   ctx.restore();
