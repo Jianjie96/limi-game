@@ -26,6 +26,8 @@ const HANDS = db.collection('lami_hands');
 const SECRETS = db.collection('lami_secrets');
 
 const TURN_MS = 60 * 1000;
+/** 房间数据保留时长：已结束/已废弃的房间超过该时长后由 tick 清理。 */
+const ROOM_RETAIN_MS = 3 * 24 * 3600 * 1000;
 
 function ok(data) {
   return Object.assign({ ok: true }, data);
@@ -264,7 +266,7 @@ async function settleAndPersist(room, engine) {
   }
 }
 
-/** 定时任务：扫描超时回合，执行摸牌惩罚并移交。 */
+/** 定时任务：扫描超时回合，执行摸牌惩罚并移交；顺带清理过期房间数据。 */
 async function doTick() {
   const now = Date.now();
   const snap = await ROOMS.where({
@@ -289,7 +291,31 @@ async function doTick() {
       // 单个房间失败不影响其他房间
     }
   }
-  return ok({ handled });
+
+  // 清理过期房间，避免集合无限膨胀拖慢查询：
+  //   - 已结束超过保留期的对局房间
+  //   - 创建后一直没人齐的废弃等待房间
+  //   - 卡在 started（房主点开始后未成功开局）的僵尸房间
+  const cutoff = now - ROOM_RETAIN_MS;
+  const staleFinished = await ROOMS.where({ status: 'finished', startedAt: _.lt(cutoff) }).limit(20).get();
+  const staleWaiting = await ROOMS.where({ status: 'waiting', createdAt: _.lt(cutoff) }).limit(20).get();
+  const staleStarted = await ROOMS.where({ status: 'started', startedAt: _.lt(cutoff) }).limit(20).get();
+  let purged = 0;
+  for (const room of [...staleFinished.data, ...staleWaiting.data, ...staleStarted.data]) {
+    try {
+      await ROOMS.doc(room.code).remove();
+      try { await SECRETS.doc(room.code).remove(); } catch (e) { /* 无密态则忽略 */ }
+      const hands = await HANDS.where({ code: room.code }).limit(10).get();
+      for (const h of hands.data) {
+        await HANDS.doc(h._id).remove();
+      }
+      purged++;
+    } catch (e) {
+      // 单个房间清理失败不影响其他
+    }
+  }
+
+  return ok({ handled, purged });
 }
 
 exports.main = async (event) => {
