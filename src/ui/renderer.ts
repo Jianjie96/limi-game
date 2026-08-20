@@ -215,36 +215,40 @@ function inferJokerDisplayValue(
     return null;
   }
 
-  // Run：以存储顺序（显示顺序）推断，位置是决定代表值的唯一依据。
+  // Run：依据非 Joker 的真实数字区间反推代表值，与存储顺序解耦。
+  // 组内顺序只决定 Joker 位于「左端 / 中间 / 右端」，再用区间两端正确回推。
   const color = nonJokers[0].logicalColor as TileColor;
+  const nums = nonJokers.map(t => t.logicalNumber).sort((a, b) => a - b);
+  const min = nums[0];
+  const max = nums[nums.length - 1];
 
-  let left: LogicalTile | null = null;
-  for (let i = jokerIndex - 1; i >= 0; i--) {
-    if (!isJokerTile(tiles[i])) {
-      left = tiles[i];
-      break;
-    }
-  }
-  let right: LogicalTile | null = null;
-  for (let i = jokerIndex + 1; i < tiles.length; i++) {
-    if (!isJokerTile(tiles[i])) {
-      right = tiles[i];
-      break;
-    }
-  }
+  const hasBefore = tiles.slice(0, jokerIndex).some(t => !isJokerTile(t));
+  const hasAfter = tiles.slice(jokerIndex + 1).some(t => !isJokerTile(t));
 
-  if (left && right) {
-    return { color, number: left.logicalNumber + 1 };
+  if (hasBefore && hasAfter) {
+    // 中间填充：以左侧紧邻非 Joker 为基准，向左连续 Joker 依次 +1。
+    let left: LogicalTile | null = null;
+    for (let i = jokerIndex - 1; i >= 0; i--) {
+      if (!isJokerTile(tiles[i])) {
+        left = tiles[i];
+        break;
+      }
+    }
+    let jokersBefore = 0;
+    for (let i = jokerIndex; i >= 0 && isJokerTile(tiles[i]); i--) jokersBefore++;
+    return { color, number: (left?.logicalNumber ?? min) + jokersBefore };
   }
-  if (right) {
+  if (hasAfter) {
+    // 左端延伸：min 向小延伸，连续 Joker 依次 -1。
     let jokers = 0;
     for (let i = jokerIndex; i < tiles.length && isJokerTile(tiles[i]); i++) jokers++;
-    return { color, number: right.logicalNumber - jokers };
+    return { color, number: min - jokers };
   }
-  if (left) {
+  if (hasBefore) {
+    // 右端延伸：max 向大延伸，连续 Joker 依次 +1。
     let jokers = 0;
     for (let i = jokerIndex; i >= 0 && isJokerTile(tiles[i]); i--) jokers++;
-    return { color, number: left.logicalNumber + jokers };
+    return { color, number: max + jokers };
   }
   return null;
 }
