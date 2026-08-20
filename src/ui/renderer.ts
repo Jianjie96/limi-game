@@ -232,13 +232,13 @@ export function drawJokerTile(
   ctx.scale(scale, scale);
   if (dimmed) ctx.globalAlpha = 0.4;
 
-  drawTileBody(ctx, TILE_COLORS_RGB.joker, opts, '#F3E5F5');
+  drawTileBody(ctx, TILE_COLORS_RGB.joker, opts, '#F6EFFC');
 
   if (isLogical && logicalColor && logicalNumber) {
     // 代表牌：中央按代表值显示，右上角星星标记其 Joker 身份。
     drawCartoonNumber(ctx, logicalNumber, TILE_COLORS_RGB[logicalColor], TILE_WIDTH / 2, TILE_HEIGHT / 2 + 3);
 
-    ctx.fillStyle = '#FFC107';
+    ctx.fillStyle = '#EFC26B';
     starPath(ctx, TILE_WIDTH - 9, 9, 5.5, 2.4);
     ctx.fill();
     ctx.strokeStyle = TILE_COLORS_RGB.joker;
@@ -246,7 +246,7 @@ export function drawJokerTile(
     ctx.stroke();
   } else {
     // 本体 Joker：大星星 + 环绕小星 + 文字。
-    ctx.fillStyle = '#FFC107';
+    ctx.fillStyle = '#EFC26B';
     starPath(ctx, TILE_WIDTH / 2, TILE_HEIGHT / 2 - 3, 11, 4.8);
     ctx.fill();
     ctx.strokeStyle = TILE_COLORS_RGB.joker;

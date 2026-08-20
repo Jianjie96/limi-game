@@ -18,8 +18,18 @@ import {
   FONT_SIZE_BUTTON,
   PLAYER_INFO_HEIGHT,
   PLAYER_INFO_BG,
-  PLAYER_INFO_TEXT,
   AVATAR_COLORS,
+  SKY_TOP,
+  SKY_MID,
+  SKY_BOTTOM,
+  FROST,
+  FROST_STRONG,
+  FROST_BORDER,
+  GOLD,
+  GOLD_DEEP,
+  GOLD_SOFT,
+  INK,
+  INK_SOFT,
   TILE_WIDTH,
   TILE_HEIGHT,
   TILE_GAP,
@@ -27,17 +37,10 @@ import {
   WORKING_AREA_BORDER,
   WORKING_AREA_LABEL,
   WORKING_AREA_HEIGHT,
-  BOARD_BG,
-  BOARD_FELT_DARK,
-  BOARD_FRAME,
   BOARD_GROUP_BG,
   BOARD_GROUP_BORDER,
   BOARD_GROUP_HIGHLIGHT_BG,
   BOARD_GROUP_HIGHLIGHT_BORDER,
-  GOLD,
-  RACK_BG,
-  RACK_BG_DARK,
-  RACK_BORDER,
   BUTTON_HEIGHT,
   BUTTON_COLORS,
 } from './constants';
@@ -893,13 +896,14 @@ export class GameScene {
     const state = this.engine.getState();
     this.updateButtonStates();
 
-    // 全局背景：卡通绒布桌面（上亮下暗渐变，营造牌桌纵深）。
+    // 全局背景：原神式黄昏天色（黛蓝 → 青碧 → 暖赭渐变）+ 暮云光斑。
     const bg = this.ctx.createLinearGradient(0, 0, 0, this.screenH);
-    bg.addColorStop(0, '#43A047');
-    bg.addColorStop(0.55, BOARD_BG);
-    bg.addColorStop(1, '#1B5E20');
+    bg.addColorStop(0, SKY_TOP);
+    bg.addColorStop(0.55, SKY_MID);
+    bg.addColorStop(1, SKY_BOTTOM);
     this.ctx.fillStyle = bg;
     this.ctx.fillRect(0, 0, this.screenW, this.screenH);
+    this.drawSkyDecor();
 
     if (state.phase === GamePhase.WAITING) {
       this.buildWaiting();
@@ -1107,19 +1111,92 @@ export class GameScene {
     });
   }
 
+  // =========================================================================
+  // 开放世界氛围装饰（云朵 / 光斑 / 菱形点缀）
+  // =========================================================================
+
+  /** 天空装饰：柔和云朵 + 漂浮光斑（固定比例位置，避免逐帧闪烁）。 */
+  private drawSkyDecor(): void {
+    const ctx = this.ctx;
+
+    // 柔云：暖调半透明椭圆组，透出墨玻璃面板下方，暮色空气感。
+    const clouds: Array<[number, number, number, number, number]> = [
+      // [x比例, y比例, 宽, 高, 透明度]
+      [0.18, 0.10, 120, 26, 0.20],
+      [0.72, 0.07, 150, 30, 0.16],
+      [0.45, 0.17, 90, 20, 0.14],
+      [0.90, 0.22, 110, 22, 0.13],
+      [0.08, 0.32, 80, 18, 0.11],
+    ];
+    for (const [rx, ry, w, h, a] of clouds) {
+      const cx = rx * this.screenW;
+      const cy = ry * this.screenH;
+      ctx.fillStyle = `rgba(255,238,214,${a})`;
+      ctx.beginPath();
+      ctx.ellipse(cx, cy, w / 2, h / 2, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.ellipse(cx - w * 0.28, cy + h * 0.16, w * 0.30, h * 0.42, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.ellipse(cx + w * 0.30, cy + h * 0.12, w * 0.26, h * 0.38, 0, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // 漂浮光斑：香槟金四芒星，点缀在面板间隙。
+    const sparkles: Array<[number, number, number, number]> = [
+      // [x比例, y比例, 半径, 透明度]
+      [0.06, 0.56, 4, 0.55],
+      [0.93, 0.50, 3, 0.5],
+      [0.50, 0.615, 2.6, 0.45],
+      [0.10, 0.965, 3.2, 0.5],
+      [0.88, 0.965, 3.6, 0.55],
+    ];
+    for (const [rx, ry, r, a] of sparkles) {
+      this.drawSparkle(rx * this.screenW, ry * this.screenH, r, `rgba(255,255,255,${a})`);
+    }
+  }
+
+  /** 四芒星光斑（菱形十字），原神风格的漂浮光点。 */
+  private drawSparkle(x: number, y: number, r: number, color: string): void {
+    const ctx = this.ctx;
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.moveTo(x, y - r * 2);
+    ctx.quadraticCurveTo(x + r * 0.35, y - r * 0.35, x + r * 2, y);
+    ctx.quadraticCurveTo(x + r * 0.35, y + r * 0.35, x, y + r * 2);
+    ctx.quadraticCurveTo(x - r * 0.35, y + r * 0.35, x - r * 2, y);
+    ctx.quadraticCurveTo(x - r * 0.35, y - r * 0.35, x, y - r * 2);
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  /** 菱形点缀（UI 装饰）。 */
+  private drawDiamond(x: number, y: number, r: number, color: string): void {
+    const ctx = this.ctx;
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.moveTo(x, y - r);
+    ctx.lineTo(x + r, y);
+    ctx.lineTo(x, y + r);
+    ctx.lineTo(x - r, y);
+    ctx.closePath();
+    ctx.fill();
+  }
+
   private buildWaiting(): void {
-    // 卡通等待页：描边大标题 + 三张装饰牌。
+    // 清新等待页：白字香槟描边标题 + 三张装饰牌。
     const cx = this.screenW / 2;
     const cy = this.screenH / 2;
     this.drawText(cx, cy - 60, '拉密 Rummikub', {
       size: 30,
-      color: '#FFD54F',
+      color: '#FFFFFF',
       bold: true,
-      outline: { color: '#7A3E00', width: 4 },
+      outline: { color: '#B08A45', width: 4 },
     });
     this.drawText(cx, cy - 20, '等待游戏开始...', {
       size: 16,
-      color: '#FFFFFF',
+      color: INK_SOFT,
       bold: true,
     });
 
@@ -1147,7 +1224,7 @@ export class GameScene {
     const t = this.gameOverStart > 0 ? Math.min(1, (now - this.gameOverStart) / GAME_OVER_ANIM_MS) : 1;
     const pop = 0.6 + 0.4 * (t >= 1 ? 1 : easeOutBack(t));
 
-    this.ctx.fillStyle = `rgba(0,0,0,${0.6 * Math.min(1, t * 2)})`;
+    this.ctx.fillStyle = `rgba(58,66,80,${0.45 * Math.min(1, t * 2)})`;
     this.ctx.fillRect(0, 0, this.screenW, this.screenH);
 
     // 中央卡通结算面板：米色圆角卡片 + 金色描边。
@@ -1176,7 +1253,7 @@ export class GameScene {
 
     this.drawText(this.screenW / 2, py + 34, '游戏结束', {
       size: 26,
-      color: '#FF8F00',
+      color: '#C08A3E',
       bold: true,
       outline: { color: '#FFFDF5', width: 2 },
     });
@@ -1184,20 +1261,20 @@ export class GameScene {
     const winner = result.playerResults.find((r) => r.isWinner);
     this.drawText(this.screenW / 2, py + 68, `🏆 ${winner?.playerName} 获胜!`, {
       size: 18,
-      color: '#7A3E00',
+      color: INK,
       bold: true,
     });
 
     let y = py + 106;
     for (const pr of result.playerResults) {
       const isWin = pr.isWinner;
-      // 单行结算胶囊：赢家金色底，其余灰绿底。
+      // 单行结算胶囊：赢家暖金底，其余薄绿底。
       const rowW = panelW - 48;
-      ctx.fillStyle = isWin ? 'rgba(255,213,79,0.45)' : 'rgba(46,125,50,0.12)';
+      ctx.fillStyle = isWin ? 'rgba(233,201,127,0.45)' : 'rgba(139,201,139,0.16)';
       roundRectPath(ctx, px + 24, y - 12, rowW, 26, 13);
       ctx.fill();
 
-      const color = isWin ? '#E65100' : '#546E7A';
+      const color = isWin ? '#B0742A' : '#5A6478';
       const sign = pr.scoreDelta >= 0 ? '+' : '';
       this.drawText(px + 36, y + 1, pr.playerName, {
         size: 14,
@@ -1207,7 +1284,7 @@ export class GameScene {
       });
       this.drawText(px + panelW - 36, y + 1, `${sign}${pr.scoreDelta}`, {
         size: 15,
-        color: pr.scoreDelta >= 0 ? '#E65100' : '#C62828',
+        color: pr.scoreDelta >= 0 ? '#C07A2C' : '#D96A5E',
         bold: true,
         align: 'right',
       });
@@ -1220,38 +1297,41 @@ export class GameScene {
     const ctx = this.ctx;
     const y = this.safeTop;
 
-    // 深绿半透明顶栏 + 金色下边线（卡通牌桌 HUD）。
+    // 磨砂玻璃顶栏 + 香槟金细分隔线（原神 HUD 风）。
     ctx.fillStyle = PLAYER_INFO_BG;
     ctx.fillRect(0, y, this.screenW, PLAYER_INFO_HEIGHT);
-    ctx.fillStyle = GOLD;
-    ctx.fillRect(0, y + PLAYER_INFO_HEIGHT - 2, this.screenW, 2);
+    ctx.fillStyle = GOLD_SOFT;
+    ctx.fillRect(0, y + PLAYER_INFO_HEIGHT - 1, this.screenW, 1);
 
     const player = this.engine.getCurrentPlayer();
     const cy = y + PLAYER_INFO_HEIGHT / 2;
 
-    // 左侧「回合数」金色胶囊徽章。
+    // 左侧「回合数」香槟金渐变胶囊徽章。
     const turnText = `回合 ${state.turnNumber}`;
     ctx.font = `bold ${FONT_SIZE_LABEL - 2}px ${FONT_FAMILY}`;
     const tw = ctx.measureText(turnText).width;
-    ctx.fillStyle = GOLD;
+    const badge = ctx.createLinearGradient(0, cy - 10, 0, cy + 10);
+    badge.addColorStop(0, '#F0D89C');
+    badge.addColorStop(1, '#D3A85C');
+    ctx.fillStyle = badge;
     roundRectPath(ctx, this.safeLeft + 10, cy - 10, tw + 18, 20, 10);
     ctx.fill();
     this.drawText(this.safeLeft + 19 + tw / 2, cy, turnText, {
       size: FONT_SIZE_LABEL - 2,
-      color: '#7A3E00',
+      color: '#FFFFFF',
       bold: true,
     });
 
     this.drawText(this.safeLeft + 10 + tw + 28, cy, `${player.name} 的回合`, {
       size: FONT_SIZE_LABEL,
-      color: PLAYER_INFO_TEXT,
+      color: INK,
       bold: true,
       align: 'left',
     });
 
     this.drawText(this.screenW - this.safeRight - 12, cy, '出牌 或 Pass 摸牌', {
       size: FONT_SIZE_LABEL - 2,
-      color: '#C8E6C9',
+      color: INK_SOFT,
       align: 'right',
     });
   }
@@ -1269,12 +1349,12 @@ export class GameScene {
       if (x >= maxX) break;
       const avatarColor = AVATAR_COLORS[opp.id % AVATAR_COLORS.length];
 
-      // 卡通头像圆片 + 首字。
+      // 元素风头像圆片 + 白环 + 末字。
       ctx.fillStyle = avatarColor;
       ctx.beginPath();
       ctx.arc(x + 10, y, 10, 0, Math.PI * 2);
       ctx.fill();
-      ctx.strokeStyle = '#FFFFFF';
+      ctx.strokeStyle = 'rgba(255,255,255,0.9)';
       ctx.lineWidth = 1.5;
       ctx.stroke();
       this.drawText(x + 10, y + 0.5, opp.name.charAt(opp.name.length - 1), {
@@ -1283,16 +1363,20 @@ export class GameScene {
         bold: true,
       });
 
-      // 剩余牌数胶囊。
+      // 剩余牌数磨砂胶囊。
       const text = `${opp.rack.length}张`;
       ctx.font = `${FONT_SIZE_LABEL - 3}px ${FONT_FAMILY}`;
       const tw = ctx.measureText(text).width;
-      ctx.fillStyle = 'rgba(0,0,0,0.35)';
+      ctx.fillStyle = FROST_STRONG;
       roundRectPath(ctx, x + 23, y - 9, tw + 14, 18, 9);
       ctx.fill();
+      ctx.strokeStyle = 'rgba(211,188,142,0.6)';
+      ctx.lineWidth = 1;
+      roundRectPath(ctx, x + 23, y - 9, tw + 14, 18, 9);
+      ctx.stroke();
       this.drawText(x + 30 + tw / 2, y + 0.5, text, {
         size: FONT_SIZE_LABEL - 3,
-        color: '#FFFFFF',
+        color: INK,
       });
 
       x += 23 + tw + 14 + 16;
@@ -1319,24 +1403,36 @@ export class GameScene {
     const top = this.boardConfig.topY;
     const h = Math.max(0, boardBottom - top);
 
-    // 绒布内区：略深的绿色 + 木质包边，形成牌桌层次感。
-    ctx.fillStyle = BOARD_FELT_DARK;
-    roundRectPath(ctx, 6, top, this.screenW - 12, h, 12);
+    // 墨玻璃桌面板：深色半透明 + 香槟金细边 + 顶部菱形点缀。
+    ctx.fillStyle = FROST;
+    roundRectPath(ctx, 6, top, this.screenW - 12, h, 14);
     ctx.fill();
-    ctx.strokeStyle = BOARD_FRAME;
-    ctx.lineWidth = 3;
-    roundRectPath(ctx, 6, top, this.screenW - 12, h, 12);
+    ctx.strokeStyle = FROST_BORDER;
+    ctx.lineWidth = 1.5;
+    roundRectPath(ctx, 6, top, this.screenW - 12, h, 14);
     ctx.stroke();
-    ctx.strokeStyle = 'rgba(255,255,255,0.12)';
+    ctx.strokeStyle = 'rgba(211,188,142,0.5)';
     ctx.lineWidth = 1;
-    roundRectPath(ctx, 9, top + 3, this.screenW - 18, h - 6, 9);
+    roundRectPath(ctx, 9, top + 3, this.screenW - 18, h - 6, 11);
     ctx.stroke();
+
+    // 顶部中央点缀：菱形 + 两侧细线（二次元 UI 装饰语汇）。
+    const bcx = this.screenW / 2;
+    ctx.strokeStyle = 'rgba(233,217,180,0.6)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(bcx - 46, top + 3);
+    ctx.lineTo(bcx - 9, top + 3);
+    ctx.moveTo(bcx + 9, top + 3);
+    ctx.lineTo(bcx + 46, top + 3);
+    ctx.stroke();
+    this.drawDiamond(bcx, top + 3, 4, GOLD_SOFT);
 
     for (const slot of this.boardSlots) {
       const { x, y, w, h: gh } = slot.bounds;
       const highlighted = this.highlightedGroupIds.has(slot.groupId);
 
-      // 牌组托盘：高亮时用金色（合并目标），否则半透明白。
+      // 牌组托盘：高亮时用暖金（合并目标），否则半透明白。
       ctx.fillStyle = highlighted ? BOARD_GROUP_HIGHLIGHT_BG : BOARD_GROUP_BG;
       ctx.strokeStyle = highlighted ? BOARD_GROUP_HIGHLIGHT_BORDER : BOARD_GROUP_BORDER;
       ctx.lineWidth = highlighted ? 2 : 1;
@@ -1408,7 +1504,7 @@ export class GameScene {
     const y = this.workingAreaY;
     const h = this.workingAreaHeight;
 
-    // 紫色半透明面板 + 金色虚线边框（卡通「待整理区」）。
+    // 磨砂面板 + 香槟金虚线边框（清新「待整理区」）。
     ctx.fillStyle = WORKING_AREA_BG;
     roundRectPath(ctx, this.safeLeft + 8, y, this.screenW - this.safeLeft - this.safeRight - 16, h, 10);
     ctx.fill();
@@ -1421,7 +1517,7 @@ export class GameScene {
 
     this.drawText(this.safeLeft + 14, y + 2, WORKING_AREA_LABEL, {
       size: 10,
-      color: '#FFE082',
+      color: INK_SOFT,
       align: 'left',
       baseline: 'top',
     });
@@ -1450,25 +1546,22 @@ export class GameScene {
     const x = left + 8;
     const w = screenW - left - right - 16;
 
-    // 木纹牌架：暖棕渐变 + 深色描边 + 顶部亮唇（立体木槽感）。
-    ctx.fillStyle = 'rgba(0,0,0,0.3)';
-    roundRectPath(ctx, x + 2, y + 3, w, h, 12);
+    // 墨玻璃牌架：深色半透明 + 柔和投影 + 香槟金细边。
+    ctx.fillStyle = 'rgba(6,14,22,0.35)';
+    roundRectPath(ctx, x + 2, y + 3, w, h, 14);
     ctx.fill();
 
-    const wood = ctx.createLinearGradient(0, y, 0, y + h);
-    wood.addColorStop(0, RACK_BG);
-    wood.addColorStop(1, RACK_BG_DARK);
-    ctx.fillStyle = wood;
-    roundRectPath(ctx, x, y, w, h, 12);
+    ctx.fillStyle = FROST;
+    roundRectPath(ctx, x, y, w, h, 14);
     ctx.fill();
-    ctx.strokeStyle = RACK_BORDER;
-    ctx.lineWidth = 2;
-    roundRectPath(ctx, x + 1, y + 1, w - 2, h - 2, 11);
+    ctx.strokeStyle = FROST_BORDER;
+    ctx.lineWidth = 1.5;
+    roundRectPath(ctx, x, y, w, h, 14);
     ctx.stroke();
-
-    ctx.fillStyle = 'rgba(255,255,255,0.14)';
-    roundRectPath(ctx, x + 4, y + 3, w - 8, 5, 3);
-    ctx.fill();
+    ctx.strokeStyle = 'rgba(211,188,142,0.5)';
+    ctx.lineWidth = 1;
+    roundRectPath(ctx, x + 3, y + 3, w - 6, h - 6, 11);
+    ctx.stroke();
 
     for (const slot of this.rackSlots) {
       if (this.isDraggingTile('rack', slot.tile.id)) continue;
@@ -1525,8 +1618,8 @@ export class GameScene {
     roundRectPath(ctx, x + 1, y + 1, w - 2, h - 2, (h - 2) / 2);
     ctx.stroke();
 
-    // 顶部釉面高光。
-    ctx.fillStyle = 'rgba(255,255,255,0.35)';
+    // 顶部釉面高光（深色面板上降低强度，避免亮斑刺眼）。
+    ctx.fillStyle = 'rgba(255,255,255,0.16)';
     roundRectPath(ctx, x + 6, y + 3, w - 12, h * 0.42, h / 2);
     ctx.fill();
 
@@ -1534,7 +1627,7 @@ export class GameScene {
       size: fontSize,
       color: colors.text,
       bold: true,
-      outline: variant === 'primary' ? undefined : { color: 'rgba(0,0,0,0.3)', width: 2 },
+      outline: variant === 'danger' ? { color: 'rgba(0,0,0,0.25)', width: 2 } : undefined,
     });
   }
 
@@ -1546,8 +1639,8 @@ export class GameScene {
     // 徽章底边止于牌架上方、与工作区（底边 = rackTop - 8）保持间距，避免互相压盖。
     const cy = this.rackConfig.y - 22;
 
-    // 深绿胶囊徽章（金色描边），居中悬浮在牌架上方。
-    ctx.fillStyle = 'rgba(15,40,20,0.72)';
+    // 磨砂胶囊徽章（香槟金描边 + 光斑），居中悬浮在牌架上方。
+    ctx.fillStyle = FROST_STRONG;
     roundRectPath(ctx, this.screenW / 2 - tw / 2 - 12, cy - 11, tw + 24, 22, 11);
     ctx.fill();
     ctx.strokeStyle = GOLD;
@@ -1555,9 +1648,10 @@ export class GameScene {
     roundRectPath(ctx, this.screenW / 2 - tw / 2 - 12, cy - 11, tw + 24, 22, 11);
     ctx.stroke();
 
-    this.drawText(this.screenW / 2, cy, text, {
+    this.drawSparkle(this.screenW / 2 - tw / 2 - 2, cy, 3, GOLD_SOFT);
+    this.drawText(this.screenW / 2 + 4, cy, text, {
       size: FONT_SIZE_LABEL - 2,
-      color: '#FFE082',
+      color: INK,
       bold: true,
     });
   }
@@ -1575,21 +1669,21 @@ export class GameScene {
     const x = (this.screenW - msgW) / 2;
     const y = this.screenH * 0.45 + (1 - alpha) * 12;
 
-    // 卡通气泡提示：深色圆角 + 金色描边。
-    ctx.fillStyle = 'rgba(0,0,0,0.3)';
+    // 原神式墨玻璃提示条：深色半透明 + 香槟金描边（暖白文字）。
+    ctx.fillStyle = 'rgba(6,14,22,0.35)';
     roundRectPath(ctx, x + 2, y + 3, msgW, msgH, msgH / 2);
     ctx.fill();
-    ctx.fillStyle = 'rgba(20,20,30,0.88)';
+    ctx.fillStyle = 'rgba(24,40,52,0.92)';
     roundRectPath(ctx, x, y, msgW, msgH, msgH / 2);
     ctx.fill();
     ctx.strokeStyle = GOLD;
-    ctx.lineWidth = 2;
+    ctx.lineWidth = 1.5;
     roundRectPath(ctx, x + 1, y + 1, msgW - 2, msgH - 2, (msgH - 2) / 2);
     ctx.stroke();
 
     this.drawText(this.screenW / 2, y + msgH / 2, this.message, {
       size: FONT_SIZE_LABEL,
-      color: '#FFFFFF',
+      color: INK,
       bold: true,
     });
     ctx.restore();
