@@ -5,7 +5,7 @@
 // ============================================================================
 
 import type { Tile } from '../game/types';
-import { TILE_WIDTH, TILE_HEIGHT, TILE_GAP, RACK_PADDING, SELECTED_LIFT } from './constants';
+import { TILE_WIDTH, TILE_HEIGHT, TILE_GAP, RACK_PADDING, RACK_MIN_HEIGHT, SELECTED_LIFT } from './constants';
 import { hitTestTile, type TileRenderOptions } from './renderer';
 
 /** 牌架渲染配置 */
@@ -46,11 +46,11 @@ export function rackRowCount(tileCount: number, config: RackConfig): number {
   return Math.ceil(tileCount / rackTilesPerRow(config));
 }
 
-/** 牌架背景所需高度（含上下留白） */
+/** 牌架区域所需高度（含上下留白）：不低于最小高度，避免牌少时退化成细条。 */
 export function rackHeight(tileCount: number, config: RackConfig): number {
   const rows = rackRowCount(tileCount, config);
-  if (rows <= 0) return RACK_PADDING * 2;
-  return RACK_PADDING * 2 + rows * TILE_HEIGHT + (rows - 1) * ROW_GAP_Y;
+  const content = rows <= 0 ? 0 : rows * TILE_HEIGHT + (rows - 1) * ROW_GAP_Y;
+  return Math.max(RACK_MIN_HEIGHT, RACK_PADDING * 2 + content);
 }
 
 /** 计算牌架布局（自动换行，逐行在安全区内居中） */

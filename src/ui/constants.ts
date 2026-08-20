@@ -115,5 +115,11 @@ export const LAYOUT = {
 export const WORKING_AREA_BG = 'rgba(18,32,42,0.35)';
 export const WORKING_AREA_BORDER = '#D3BC8E';
 export const WORKING_AREA_LABEL = '工作区 (点击牌放回桌面)';
-/** 工作区最小高度（空工作区也保留一个紧凑的标签 + 拖放目标区域）。 */
-export const WORKING_AREA_HEIGHT = 44;
+/**
+ * 工作区最小高度：至少容纳标签 + 一行 0.7 倍缩放牌（16 + 56*0.7 + 6），
+ * 避免被压成一条细缝，也保证单行牌不会溢出面板下边缘。
+ */
+export const WORKING_AREA_HEIGHT = 62;
+
+/** 牌架最小高度：至少一行牌 + 上下留白，避免牌少/为空时退化成细条。 */
+export const RACK_MIN_HEIGHT = TILE_HEIGHT + RACK_PADDING * 2;
