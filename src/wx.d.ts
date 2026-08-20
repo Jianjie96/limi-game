@@ -38,6 +38,34 @@ declare namespace wx {
   }): void;
   function onWindowResize(callback: (res: { windowWidth: number; windowHeight: number }) => void): void;
   function offWindowResize(callback: Function): void;
+
+  // 提示 / 分享 / 启动参数
+  function showToast(options: {
+    title: string;
+    icon?: 'success' | 'error' | 'loading' | 'none';
+    duration?: number;
+  }): void;
+  function shareAppMessage(options: {
+    title?: string;
+    imageUrl?: string;
+    query?: string;
+    success?: () => void;
+    fail?: (err?: any) => void;
+  }): void;
+  function getLaunchOptionsSync(): { scene: number; query: Record<string, string> };
+  function onShow(callback: (res: { scene: number; query?: Record<string, string> }) => void): void;
+
+  // 微信云开发（最小集）
+  const cloud: {
+    init(options?: { env?: string; traceUser?: boolean }): void;
+    callFunction(options: {
+      name: string;
+      data?: Record<string, any>;
+      success?: (res: { result: any }) => void;
+      fail?: (err: any) => void;
+      complete?: () => void;
+    }): void;
+  };
   // 注意：requestAnimationFrame / cancelAnimationFrame 是微信小游戏的「全局函数」，
   // 不是 wx 命名空间下的方法，因此不要在这里声明为 wx.requestAnimationFrame。
 

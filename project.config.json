@@ -29,6 +29,7 @@
     "condition": false
   },
   "compileType": "game",
+  "cloudfunctionRoot": "cloudfunctions/",
   "libVersion": "3.3.4",
   "appid": "wx95657081a8b7c7a6",
   "projectname": "lami-rummikub",

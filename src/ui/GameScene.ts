@@ -181,6 +181,8 @@ export class GameScene {
 
   private message = '';
   private messageTimer: any = null;
+  /** 渲染循环句柄（dispose 时取消） */
+  private rafId = 0;
 
   private dirty = true;
 
@@ -295,103 +297,122 @@ export class GameScene {
   // 输入（微信触摸事件）
   // =========================================================================
 
-  private bindTouch(): void {
-    wx.onTouchStart((e) => {
-      const t = e.touches?.[0];
-      if (!t) return;
-      this.pressX = t.clientX;
-      this.pressY = t.clientY;
-      // 仅记录潜在拖拽来源，不立即执行点击动作（区分点击与拖拽）。
-      this.pressSource = this.findTileSource(t.clientX, t.clientY);
+  private touchStartHandler = (e: { touches?: Array<{ clientX: number; clientY: number }> }) => {
+    const t = e.touches?.[0];
+    if (!t) return;
+    this.pressX = t.clientX;
+    this.pressY = t.clientY;
+    // 仅记录潜在拖拽来源，不立即执行点击动作（区分点击与拖拽）。
+    this.pressSource = this.findTileSource(t.clientX, t.clientY);
+    this.markDirty();
+
+    // 牌架长按 → 开启连续滑动多选。
+    this.longPressActive = false;
+    this.rangeSelectAnchor = null;
+    this.clearLongPressTimer();
+    if (this.pressSource?.kind === 'rack') {
+      const rackSlot = hitTestRack(t.clientX, t.clientY, this.rackSlots);
+      if (rackSlot) {
+        this.rangeSelectAnchor = rackSlot.index;
+        this.longPressTimer = setTimeout(() => {
+          this.longPressActive = true;
+          this.applyRangeSelect(this.rangeSelectAnchor!);
+        }, LONG_PRESS_DELAY);
+      }
+    }
+  };
+
+  private touchMoveHandler = (e: { touches?: Array<{ clientX: number; clientY: number }> }) => {
+    const t = e.touches?.[0];
+    if (!t || !this.pressSource) return;
+
+    // 长按多选模式：滑动划过牌架时连续选中范围，不进入拖拽。
+    if (this.longPressActive) {
+      const rackSlot = hitTestRack(t.clientX, t.clientY, this.rackSlots);
+      if (rackSlot) this.applyRangeSelect(rackSlot.index);
       this.markDirty();
+      return;
+    }
 
-      // 牌架长按 → 开启连续滑动多选。
-      this.longPressActive = false;
-      this.rangeSelectAnchor = null;
-      this.clearLongPressTimer();
-      if (this.pressSource?.kind === 'rack') {
-        const rackSlot = hitTestRack(t.clientX, t.clientY, this.rackSlots);
-        if (rackSlot) {
-          this.rangeSelectAnchor = rackSlot.index;
-          this.longPressTimer = setTimeout(() => {
-            this.longPressActive = true;
-            this.applyRangeSelect(this.rangeSelectAnchor!);
-          }, LONG_PRESS_DELAY);
-        }
-      }
-    });
+    const dx = t.clientX - this.pressX;
+    const dy = t.clientY - this.pressY;
 
-    wx.onTouchMove((e) => {
-      const t = e.touches?.[0];
-      if (!t || !this.pressSource) return;
-
-      // 长按多选模式：滑动划过牌架时连续选中范围，不进入拖拽。
-      if (this.longPressActive) {
-        const rackSlot = hitTestRack(t.clientX, t.clientY, this.rackSlots);
-        if (rackSlot) this.applyRangeSelect(rackSlot.index);
-        this.markDirty();
-        return;
-      }
-
-      const dx = t.clientX - this.pressX;
-      const dy = t.clientY - this.pressY;
-
-      if (!this.drag) {
-        // 超过阈值才进入拖拽，避免误触。
-        if (Math.hypot(dx, dy) > DRAG_THRESHOLD) {
-          // 开始正常拖拽，取消长按计时。
-          this.clearLongPressTimer();
-          this.drag = { source: this.pressSource, curX: t.clientX, curY: t.clientY };
-        }
-      } else {
-        this.drag.curX = t.clientX;
-        this.drag.curY = t.clientY;
-      }
-      this.markDirty();
-    });
-
-    wx.onTouchEnd((e) => {
-      const t = e.changedTouches?.[0];
-
-      // 长按多选结束：保留已选中的范围。
-      if (this.longPressActive) {
+    if (!this.drag) {
+      // 超过阈值才进入拖拽，避免误触。
+      if (Math.hypot(dx, dy) > DRAG_THRESHOLD) {
+        // 开始正常拖拽，取消长按计时。
         this.clearLongPressTimer();
-        this.longPressActive = false;
-        this.rangeSelectAnchor = null;
-        this.pressSource = null;
-        this.markDirty();
-        return;
+        this.drag = { source: this.pressSource, curX: t.clientX, curY: t.clientY };
       }
+    } else {
+      this.drag.curX = t.clientX;
+      this.drag.curY = t.clientY;
+    }
+    this.markDirty();
+  };
 
-      if (this.drag) {
-        this.handleTileDrop(this.drag, this.drag.curX, this.drag.curY);
-        this.drag = null;
-        this.pressSource = null;
-        this.markDirty();
-        return;
-      }
+  private touchEndHandler = (e: { changedTouches?: Array<{ clientX: number; clientY: number }> }) => {
+    const t = e.changedTouches?.[0];
 
-      // 未进入拖拽 → 视作点击，走原有命中的点击分发。
-      this.clearLongPressTimer();
-      if (t) this.onPointerDown(t.clientX, t.clientY);
-      this.pressSource = null;
-    });
-
-    wx.onTouchCancel(() => {
+    // 长按多选结束：保留已选中的范围。
+    if (this.longPressActive) {
       this.clearLongPressTimer();
       this.longPressActive = false;
       this.rangeSelectAnchor = null;
+      this.pressSource = null;
+      this.markDirty();
+      return;
+    }
+
+    if (this.drag) {
+      this.handleTileDrop(this.drag, this.drag.curX, this.drag.curY);
       this.drag = null;
       this.pressSource = null;
       this.markDirty();
-    });
+      return;
+    }
+
+    // 未进入拖拽 → 视作点击，走原有命中的点击分发。
+    this.clearLongPressTimer();
+    if (t) this.onPointerDown(t.clientX, t.clientY);
+    this.pressSource = null;
+  };
+
+  private touchCancelHandler = () => {
+    this.clearLongPressTimer();
+    this.longPressActive = false;
+    this.rangeSelectAnchor = null;
+    this.drag = null;
+    this.pressSource = null;
+    this.markDirty();
+  };
+
+  private resizeHandler = () => {
+    this.refreshScreenInfo();
+  };
+
+  private bindTouch(): void {
+    wx.onTouchStart(this.touchStartHandler);
+    wx.onTouchMove(this.touchMoveHandler);
+    wx.onTouchEnd(this.touchEndHandler);
+    wx.onTouchCancel(this.touchCancelHandler);
   }
 
   private bindResize(): void {
     // onWindowResize 作为辅助监听：真机旋转 / 开发者工具改窗口大小也会触发。
-    wx.onWindowResize(() => {
-      this.refreshScreenInfo();
-    });
+    wx.onWindowResize(this.resizeHandler);
+  }
+
+  /** 场景切换时释放全部监听与定时器，交还画布给下一个场景。 */
+  dispose(): void {
+    cancelAnimationFrame(this.rafId);
+    wx.offTouchStart(this.touchStartHandler);
+    wx.offTouchMove(this.touchMoveHandler);
+    wx.offTouchEnd(this.touchEndHandler);
+    wx.offTouchCancel(this.touchCancelHandler);
+    wx.offWindowResize(this.resizeHandler);
+    this.clearLongPressTimer();
+    if (this.messageTimer) clearTimeout(this.messageTimer);
   }
 
   private refreshScreenInfo(): void {
@@ -885,11 +906,11 @@ export class GameScene {
     if (this.gameOverStart > 0 && now - this.gameOverStart < GAME_OVER_ANIM_MS) animating = true;
     if (animating) this.dirty = true;
 
-    requestAnimationFrame(this.tick);
+    this.rafId = requestAnimationFrame(this.tick);
   };
 
   start(): void {
-    requestAnimationFrame(this.tick);
+    this.rafId = requestAnimationFrame(this.tick);
   }
 
   private rebuild(now: number): void {
