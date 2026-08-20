@@ -12,6 +12,8 @@ export interface ButtonConfig {
   x: number;
   y: number;
   width: number;
+  /** 可选自定义高度；缺省时按统一的 BUTTON_HEIGHT 绘制与命中。 */
+  height?: number;
   variant?: ButtonVariant;
   enabled?: boolean;
 }
@@ -33,7 +35,8 @@ export function hitTestButton(
 ): ButtonState | null {
   for (const btn of buttons) {
     const { x, y, width } = btn.config;
-    if (px >= x && px <= x + width && py >= y && py <= y + BUTTON_HEIGHT) {
+    const h = btn.config.height ?? BUTTON_HEIGHT;
+    if (px >= x && px <= x + width && py >= y && py <= y + h) {
       return btn;
     }
   }

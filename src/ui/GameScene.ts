@@ -199,6 +199,7 @@ export class GameScene {
         x: 0,
         y: 0,
         width: 76,
+        height: 24,
         variant: 'secondary',
       },
     ])[0];
@@ -236,7 +237,7 @@ export class GameScene {
     // 转屏按钮：固定在右上角（顶栏下方），避开右侧安全区。
     const ow = this.orientationButton.config.width;
     this.orientationButton.config.x = this.screenW - this.safeRight - ow - 8;
-    this.orientationButton.config.y = this.safeTop + PLAYER_INFO_HEIGHT + 6;
+    this.orientationButton.config.y = this.safeTop + PLAYER_INFO_HEIGHT + 3;
     this.orientationButton.config.label = this.isLandscape ? '切竖屏' : '切横屏';
   }
 
@@ -871,8 +872,8 @@ export class GameScene {
       this.workingAreaY = rackTop - waMeasured.height - 8;
       this.workingAreaSlots = this.workingAreaLayout(workingTiles, this.workingAreaY).slots;
 
-      // 桌面：顶部紧贴玩家信息下方，向下填满到工作区上方的全部剩余空间。
-      this.boardConfig.topY = this.safeTop + PLAYER_INFO_HEIGHT + 14;
+      // 桌面：顶部预留出对手信息行（顶栏 + 一行徽章高度），向下填满到工作区上方。
+      this.boardConfig.topY = this.safeTop + PLAYER_INFO_HEIGHT + 30;
       const boardBottom = this.workingAreaY - 8;
       this.boardBottom = boardBottom;
       this.boardSlots = this.layoutBoardToFit(state.board, boardBottom);
@@ -1034,10 +1035,14 @@ export class GameScene {
   private buildOpponents(state: GameState): void {
     const ctx = this.ctx;
     const opponents = state.players.filter((p) => p.id !== state.currentPlayerIndex);
-    const y = this.safeTop + PLAYER_INFO_HEIGHT + 16;
+    // 对手行贴着顶栏下沿，整体位于桌面区域（topY）上方，避免被桌面遮盖。
+    const y = this.safeTop + PLAYER_INFO_HEIGHT + 15;
+    // 右侧止于转屏按钮左侧，防止徽章被按钮遮挡。
+    const maxX = this.orientationButton.config.x - 8;
 
     let x = this.safeLeft + 12;
-    opponents.forEach((opp, i) => {
+    for (const opp of opponents) {
+      if (x >= maxX) break;
       const avatarColor = AVATAR_COLORS[opp.id % AVATAR_COLORS.length];
 
       // 卡通头像圆片 + 首字。
@@ -1067,7 +1072,7 @@ export class GameScene {
       });
 
       x += 23 + tw + 14 + 16;
-    });
+    }
   }
 
   /** 计算桌面布局：内容超出可用高度时整体缩放假面，保证不与工作区/牌架重叠。 */
@@ -1228,7 +1233,8 @@ export class GameScene {
 
   private buildOrientationButton(): void {
     const { config } = this.orientationButton;
-    this.drawCartoonButton(config.x, config.y, config.width, BUTTON_HEIGHT - 10, config.label, 'secondary', FONT_SIZE_BUTTON - 2);
+    const h = config.height ?? BUTTON_HEIGHT;
+    this.drawCartoonButton(config.x, config.y, config.width, h, config.label, 'secondary', FONT_SIZE_BUTTON - 5);
   }
 
   private buildButtons(): void {
@@ -1285,7 +1291,8 @@ export class GameScene {
     const text = `牌池剩余: ${state.pool.length} 张`;
     ctx.font = `bold ${FONT_SIZE_LABEL - 2}px ${FONT_FAMILY}`;
     const tw = ctx.measureText(text).width;
-    const cy = this.rackConfig.y - 16;
+    // 徽章底边止于牌架上方、与工作区（底边 = rackTop - 8）保持间距，避免互相压盖。
+    const cy = this.rackConfig.y - 22;
 
     // 深绿胶囊徽章（金色描边），居中悬浮在牌架上方。
     ctx.fillStyle = 'rgba(15,40,20,0.72)';
