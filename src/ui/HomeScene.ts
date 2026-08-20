@@ -305,7 +305,7 @@ export class HomeScene {
     ctx.fillStyle = 'rgba(8,16,24,0.55)';
     ctx.fillRect(0, 0, w, h);
 
-    const cardW = Math.min(340, w * 0.6);
+    const cardW = Math.min(360, w * 0.9);
     const cardH = 190;
     const cardX = (w - cardW) / 2;
     const cardY = (h - cardH) / 2;
@@ -346,20 +346,22 @@ export class HomeScene {
       drawCapsuleButton(ctx, rect, `${2 + i} 人`, selected ? 'primary' : 'secondary', 16);
     }
 
-    // 确认 / 取消
+    // 取消 / 确认：主按钮在右（用户习惯），两按钮宽度不同按整组总宽居中
     const confirmW = Math.min(150, cardW * 0.42);
     const cancelW = Math.min(100, cardW * 0.28);
+    const actionGap = 16;
     const actionY = cardY + cardH - 58;
-    this.confirmRect = {
-      x: cardX + cardW / 2 - confirmW - 8,
-      y: actionY,
-      w: confirmW,
-      h: 40,
-    };
+    const actionX = cardX + (cardW - (cancelW + actionGap + confirmW)) / 2;
     this.cancelRect = {
-      x: cardX + cardW / 2 + 8,
+      x: actionX,
       y: actionY,
       w: cancelW,
+      h: 40,
+    };
+    this.confirmRect = {
+      x: actionX + cancelW + actionGap,
+      y: actionY,
+      w: confirmW,
       h: 40,
     };
     drawCapsuleButton(ctx, this.confirmRect, '确认创建', 'primary', 16);
