@@ -187,6 +187,25 @@ export class RummikubEngine {
   }
 
   /**
+   * 调整工作区内某张牌的顺序（理牌）。
+   * 纯工作区内整理，不改变牌面内容、不消耗动作、不影响回合状态。
+   */
+  reorderWorkingAreaTile(tileId: number, toIndex: number): void {
+    this.assertPhase(TurnPhase.PLAY);
+    const ctx = this.getTurnContext();
+    const fromIndex = ctx.workingArea.findIndex(t => t.id === tileId);
+    if (fromIndex < 0) throw new Error(`工作区中找不到牌 ${tileId}`);
+
+    const arr = [...ctx.workingArea];
+    const [moved] = arr.splice(fromIndex, 1);
+    const insertAt = Math.max(0, Math.min(toIndex, arr.length));
+    arr.splice(insertAt, 0, moved);
+    ctx.workingArea = arr;
+
+    this.emit('boardManipulated', { action: 'reorderWorkingArea', tileId, fromIndex, toIndex: insertAt });
+  }
+
+  /**
    * 将牌从牌架放到桌面已有牌组。
    */
   placeTilesOnBoard(tileIds: number[], groupId: string, position: number = -1): void {

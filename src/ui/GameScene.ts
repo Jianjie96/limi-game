@@ -497,6 +497,13 @@ export class GameScene {
 
       // 工作区 → 牌架 / 桌面。
       if (src.kind === 'working') {
+        // 工作区内拖到另一张牌上 → 仅调整顺序（理牌），不受破冰限制。
+        if (workingHit && workingHit.tile.id !== src.tileId) {
+          this.engine.reorderWorkingAreaTile(src.tileId, workingHit.index);
+          this.showMessage('已调整顺序');
+          return;
+        }
+
         // 未破冰：工作区里本回合放下的牌可放回牌架。
         if (!this.canManipulateBoard()) {
           if (onRack && !targetGroupId && !onWorkingArea && this.isRackPlacedThisTurn(src.tileId)) {
