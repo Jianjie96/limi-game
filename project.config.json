@@ -1,13 +1,20 @@
 {
   "description": "拉密 Rummikub 微信小游戏",
   "packOptions": {
-    "ignore": [],
+    "ignore": [
+      { "type": "folder", "value": "src" },
+      { "type": "folder", "value": "tools" },
+      { "type": "folder", "value": "node_modules" },
+      { "type": "file", "value": "tsconfig.json" },
+      { "type": "file", "value": "vitest.config.ts" },
+      { "type": "file", "value": "package-lock.json" }
+    ],
     "include": []
   },
   "setting": {
     "urlCheck": false,
-    "es6": true,
-    "enhance": true,
+    "es6": false,
+    "enhance": false,
     "compileHotReLoad": false,
     "postcss": true,
     "minified": true,
