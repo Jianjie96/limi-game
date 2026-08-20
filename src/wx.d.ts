@@ -56,6 +56,14 @@ declare namespace wx {
   function onWindowResize(callback: (res: { windowWidth: number; windowHeight: number }) => void): void;
   function offWindowResize(callback: Function): void;
 
+  // 触感反馈（连选模式激活提示）
+  function vibrateShort(options?: {
+    type?: 'heavy' | 'medium' | 'light';
+    success?: () => void;
+    fail?: (err?: any) => void;
+    complete?: () => void;
+  }): void;
+
   // 提示 / 分享 / 启动参数
   function showToast(options: {
     title: string;

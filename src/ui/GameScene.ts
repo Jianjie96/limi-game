@@ -108,8 +108,8 @@ interface TextOptions {
 /** 拖拽触发阈值（逻辑像素）：移动超过该距离才进入拖拽状态。 */
 const DRAG_THRESHOLD = 8;
 
-/** 长按牌架进入「连续滑动多选」的判定时长（毫秒）。 */
-const LONG_PRESS_DELAY = 300;
+/** 长按牌架「拿起」牌的判定时长（毫秒）：拿起后可任意方向拖拽（含牌架内重排）。 */
+const LONG_PRESS_DELAY = 400;
 
 /** 拖拽时幽灵牌的缩放系数。 */
 const DRAG_GHOST_SCALE = 1.05;
@@ -171,9 +171,12 @@ export class GameScene {
   private pressX = 0;
   private pressY = 0;
 
-  // 长按牌架 → 连续滑动多选状态
+  // 牌架手势状态：横扫连选 / 长按拿起待拖拽
   private longPressTimer: any = null;
+  /** 长按「拿起」状态：激活后任意方向移动即进入拖拽。 */
   private longPressActive = false;
+  /** 横扫连选状态：按下牌架牌横向滑动时持续扩展选中范围。 */
+  private sweepSelectActive = false;
   private rangeSelectAnchor: number | null = null;
 
   /**
@@ -370,8 +373,10 @@ export class GameScene {
     this.pressSource = this.canAct() ? this.findTileSource(t.clientX, t.clientY) : null;
     this.markDirty();
 
-    // 牌架长按 → 开启连续滑动多选。
+    // 牌架长按 → 「拿起」该牌（震动反馈），之后任意方向拖动都可拖拽（含牌架内横向重排）。
+    // 横扫连选不依赖长按：由 touchMove 判定水平滑动立即触发。
     this.longPressActive = false;
+    this.sweepSelectActive = false;
     this.rangeSelectAnchor = null;
     this.clearLongPressTimer();
     if (this.pressSource?.kind === 'rack') {
@@ -380,7 +385,10 @@ export class GameScene {
         this.rangeSelectAnchor = rackSlot.index;
         this.longPressTimer = setTimeout(() => {
           this.longPressActive = true;
-          this.applyRangeSelect(this.rangeSelectAnchor!);
+          try { wx.vibrateShort({}); } catch (e) { /* 不支持则忽略 */ }
+          audio.play('pickup');
+          this.showMessage('已拿起牌：拖动可重排或放到桌面');
+          this.markDirty();
         }, LONG_PRESS_DELAY);
       }
     }
@@ -390,10 +398,31 @@ export class GameScene {
     const t = e.touches?.[0];
     if (!t || !this.pressSource) return;
 
-    // 长按多选模式：滑动划过牌架时连续选中范围，不进入拖拽。
-    if (this.longPressActive) {
+    // 横扫连选模式：滑动划过牌架时连续选中范围。
+    if (this.sweepSelectActive) {
+      // 逃逸通道：手指已明显离开牌架区域 → 改为拖拽（扫着扫着想拿牌上桌）。
+      const dist = Math.hypot(t.clientX - this.pressX, t.clientY - this.pressY);
+      if (!this.isInRackRegion(t.clientX, t.clientY) && dist > DRAG_THRESHOLD * 2) {
+        this.sweepSelectActive = false;
+        this.rangeSelectAnchor = null;
+        this.drag = { source: this.pressSource, curX: t.clientX, curY: t.clientY };
+        this.markDirty();
+        return;
+      }
       const rackSlot = hitTestRack(t.clientX, t.clientY, this.rackSlots);
       if (rackSlot) this.applyRangeSelect(rackSlot.index);
+      this.markDirty();
+      return;
+    }
+
+    // 长按「拿起」后：一旦移动即进入正常拖拽（任意方向）。
+    if (this.longPressActive) {
+      const dist = Math.hypot(t.clientX - this.pressX, t.clientY - this.pressY);
+      if (dist > DRAG_THRESHOLD) {
+        this.longPressActive = false;
+        this.rangeSelectAnchor = null;
+        this.drag = { source: this.pressSource, curX: t.clientX, curY: t.clientY };
+      }
       this.markDirty();
       return;
     }
@@ -402,8 +431,23 @@ export class GameScene {
     const dy = t.clientY - this.pressY;
 
     if (!this.drag) {
-      // 超过阈值才进入拖拽，避免误触。
+      // 超过阈值才分流，避免误触。
       if (Math.hypot(dx, dy) > DRAG_THRESHOLD) {
+        // 牌架牌 + 水平滑动 → 立即进入横扫连选（无需长按，不会误判成单击/拖拽）。
+        // 竖直滑动照旧进入拖拽（拿牌上桌）；牌架内横向重排改由长按拿起后拖。
+        if (
+          this.pressSource.kind === 'rack' &&
+          Math.abs(dx) > Math.abs(dy) &&
+          this.isInRackRegion(t.clientX, t.clientY)
+        ) {
+          this.clearLongPressTimer();
+          this.sweepSelectActive = true;
+          audio.play('pickup');
+          const rackSlot = hitTestRack(t.clientX, t.clientY, this.rackSlots);
+          if (rackSlot) this.applyRangeSelect(rackSlot.index);
+          this.markDirty();
+          return;
+        }
         // 开始正常拖拽，取消长按计时。
         this.clearLongPressTimer();
         this.drag = { source: this.pressSource, curX: t.clientX, curY: t.clientY };
@@ -421,7 +465,16 @@ export class GameScene {
     this.touchActive = false;
     const t = e.changedTouches?.[0];
 
-    // 长按多选结束：保留已选中的范围。
+    // 横扫连选结束：保留已选中的范围。
+    if (this.sweepSelectActive) {
+      this.sweepSelectActive = false;
+      this.rangeSelectAnchor = null;
+      this.pressSource = null;
+      this.markDirty();
+      return;
+    }
+
+    // 长按拿起后未移动就松手 → 放回，不做任何动作（不当作点按，避免误改选中）。
     if (this.longPressActive) {
       this.clearLongPressTimer();
       this.longPressActive = false;
@@ -449,6 +502,7 @@ export class GameScene {
     this.touchActive = false;
     this.clearLongPressTimer();
     this.longPressActive = false;
+    this.sweepSelectActive = false;
     this.rangeSelectAnchor = null;
     this.drag = null;
     this.pressSource = null;
@@ -623,6 +677,13 @@ export class GameScene {
     if (groupSlot) {
       this.onBoardGroupTap(groupSlot);
       return;
+    }
+
+    // 点到空白处：清空选中的手牌与牌组高亮（快速反悔，不必逐张取消）。
+    if (this.selectedRackIds.size > 0 || this.highlightedGroupIds.size > 0) {
+      this.selectedRackIds.clear();
+      this.highlightedGroupIds.clear();
+      this.markDirty();
     }
   }
 
