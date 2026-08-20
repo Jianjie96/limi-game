@@ -121,7 +121,15 @@ exports.main = async (event) => {
           return fail(`玩家未到齐（${room.players.length}/${room.capacity}），还不能开始`);
         }
         await COL.doc(code).update({
-          data: { status: 'started', startedAt: Date.now() },
+          data: {
+            status: 'started',
+            startedAt: Date.now(),
+            // 预先写入座位映射：lami-game 开局/校验依赖它，且可避免并发开局竞态。
+            game: {
+              playersOpenid: room.players.map((p) => p.openid),
+              version: 0,
+            },
+          },
         });
         room.status = 'started';
         return ok({ room, self: OPENID });

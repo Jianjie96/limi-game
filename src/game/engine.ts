@@ -17,6 +17,7 @@ import type {
   ValidationError,
   GameEvent,
   GameResult,
+  EngineOp,
 } from './types';
 import { TurnPhase, GamePhase as GP } from './types';
 import { DEFAULT_CONFIG } from './types';
@@ -47,12 +48,17 @@ import {
 } from './turn';
 
 // ---------------------------------------------------------------------------
-// 工具: 生成唯一 ID
+// 工具: 解析牌组 ID 编号
 // ---------------------------------------------------------------------------
 
-let _groupIdCounter = 0;
-function nextGroupId(): string {
-  return `g${++_groupIdCounter}`;
+/** 从桌面牌组 ID 中解析出最大编号（序列化恢复时用于同步计数器）。 */
+function maxGroupIdFromBoard(board: readonly TileGroup[]): number {
+  let max = 0;
+  for (const g of board) {
+    const m = /^g(\d+)$/.exec(g.id);
+    if (m) max = Math.max(max, parseInt(m[1], 10));
+  }
+  return max;
 }
 
 // ---------------------------------------------------------------------------
@@ -62,6 +68,14 @@ function nextGroupId(): string {
 export class RummikubEngine {
   private state: GameState;
   private listeners: Map<GameEvent, Set<(...args: any[]) => void>>;
+  /** 本回合桌面操作日志（在线对战：提交时发云端回放校验） */
+  private turnOps: EngineOp[] = [];
+  /** 牌组 ID 计数器（实例级，fromState 时按桌面最大编号恢复） */
+  private groupIdCounter = 0;
+
+  private nextGroupId(): string {
+    return `g${++this.groupIdCounter}`;
+  }
 
   constructor(config?: Partial<GameConfig>) {
     this.listeners = new Map();
@@ -106,7 +120,7 @@ export class RummikubEngine {
 
     const pool = allTiles;
 
-    _groupIdCounter = 0;
+    this.groupIdCounter = 0;
     this.state = {
       ...this.state,
       phase: GP.PLAYING,
@@ -128,10 +142,11 @@ export class RummikubEngine {
 
     this.emit('gameStart', { players, turnNumber: 1 });
     this.emit('turnStart', { playerId: 0 });
+    this.turnOps = [];
   }
 
   newGame(): void {
-    _groupIdCounter = 0;
+    this.groupIdCounter = 0;
     this.state = {
       ...this.state,
       phase: GP.WAITING,
@@ -144,6 +159,7 @@ export class RummikubEngine {
       turnNumber: 0,
       result: null,
     };
+    this.turnOps = [];
   }
 
   // =========================================================================
@@ -248,6 +264,7 @@ export class RummikubEngine {
     recordRackTilesPlaced(ctx, tiles);
     resetPasses(ctx);
 
+    this.recordOp({ op: 'PLACE_ON_BOARD', tileIds, groupId, position });
     this.emit('tilesPlaced', { playerId: player.id, tileIds, groupId });
   }
 
@@ -278,7 +295,7 @@ export class RummikubEngine {
     const idSet = new Set(tileIds);
     player.rack = player.rack.filter(t => !idSet.has(t.id));
 
-    const groupId = nextGroupId();
+    const groupId = this.nextGroupId();
     const logicalTiles = tiles.map(toLogical);
 
     const newGroup: TileGroup = {
@@ -292,6 +309,7 @@ export class RummikubEngine {
     recordRackTilesPlaced(ctx, tiles);
     resetPasses(ctx);
 
+    this.recordOp({ op: 'CREATE_GROUP', tileIds, groupType });
     this.emit('tilesPlaced', { playerId: player.id, tileIds, groupId, isNew: true });
     return groupId;
   }
@@ -328,6 +346,7 @@ export class RummikubEngine {
     const physicalTiles = removed.map(lt => lt.originalTile);
     addToWorkingArea(this.getTurnContext(), physicalTiles);
 
+    this.recordOp({ op: 'REMOVE_FROM_BOARD', groupId, tileIds });
     this.emit('boardManipulated', { action: 'remove', groupId, tileIds });
     return physicalTiles;
   }
@@ -380,6 +399,7 @@ export class RummikubEngine {
       ctx.hasPlacedFromRack = false;
     }
 
+    this.recordOp({ op: 'RETURN_TO_RACK', tileIds });
     this.emit('boardManipulated', { action: 'returnToRack', tileIds });
     return returned;
   }
@@ -429,6 +449,7 @@ export class RummikubEngine {
     recordJokerReplacement(ctx, jokerTile, groupId, realTile);
     recordRackTilesPlaced(ctx, [realTile]);
 
+    this.recordOp({ op: 'REPLACE_JOKER', groupId, jokerPosition, realTileId: realTile.id });
     this.emit('jokerReplaced', {
       playerId: player.id,
       groupId,
@@ -463,6 +484,7 @@ export class RummikubEngine {
     tiles.splice(insertAt, 0, moved);
 
     this.replaceGroup({ ...group, tiles });
+    this.recordOp({ op: 'MOVE_WITHIN_GROUP', groupId, tileId, toIndex });
     this.emit('boardManipulated', { action: 'reorder', groupId, tileId, fromIndex, toIndex: insertAt });
   }
 
@@ -491,6 +513,7 @@ export class RummikubEngine {
     // Joker 保持通配（logicalColor='joker'），提交时由校验器按“是否存在合法赋值”动态判断。
     this.replaceGroup({ ...group, tiles: newTiles });
 
+    this.recordOp({ op: 'PLACE_WA_ON_BOARD', tileIds, groupId, position });
     this.emit('boardManipulated', { action: 'placeFromWorkingArea', groupId, tileIds });
   }
 
@@ -504,7 +527,7 @@ export class RummikubEngine {
     const tileIds = tiles.map(t => t.id);
     removeFromWorkingArea(ctx, tileIds);
 
-    const groupId = nextGroupId();
+    const groupId = this.nextGroupId();
     // Joker 保持通配（logicalColor='joker'），提交时由校验器按“是否存在合法赋值”动态判断。
     const logicalTiles = tiles.map(toLogical);
 
@@ -516,6 +539,7 @@ export class RummikubEngine {
 
     this.state.board = [...this.state.board, newGroup];
 
+    this.recordOp({ op: 'CREATE_GROUP_FROM_WA', tileIds, groupType });
     this.emit('boardManipulated', { action: 'createGroupFromWorkingArea', groupId });
     return groupId;
   }
@@ -728,6 +752,9 @@ export class RummikubEngine {
     const rack = ctx.rackAtTurnStart.map((t) => ({ ...t }));
     if (ctx.drawnTile) rack.push(ctx.drawnTile);
     player.rack = rack;
+
+    // 桌面已回到回合起点，操作日志作废。
+    this.turnOps = [];
   }
 
   /**
@@ -814,6 +841,7 @@ export class RummikubEngine {
     );
 
     this.emit('turnStart', { playerId: nextIndex, turnNumber: this.state.turnNumber });
+    this.turnOps = [];
   }
 
   // =========================================================================
@@ -822,6 +850,11 @@ export class RummikubEngine {
 
   getState(): Readonly<GameState> {
     return this.state;
+  }
+
+  /** 本回合已记录的桌面操作日志（只读）。 */
+  getTurnOps(): readonly EngineOp[] {
+    return this.turnOps;
   }
 
   getCurrentPlayer(): PlayerState {
@@ -906,4 +939,103 @@ export class RummikubEngine {
       throw new Error(`游戏未在进行中, 当前: ${this.state.phase}`);
     }
   }
+
+  private recordOp(op: EngineOp): void {
+    this.turnOps.push(op);
+  }
+
+  // =========================================================================
+  // 序列化 / 反序列化（在线对战：云端权威状态同步）
+  // =========================================================================
+
+  /** 完整导出当前状态（含手牌/牌池，仅限可信侧使用）。 */
+  serializeState(): string {
+    return JSON.stringify(this.state);
+  }
+
+  /**
+   * 原地注入序列化状态（不新建实例，保留已绑定的事件监听）。
+   * 在线模式下 GameScene 持有引擎引用，云端权威状态推送时用此方法整体覆盖。
+   */
+  loadState(json: string): void {
+    const state = JSON.parse(json) as GameState;
+    this.state = state;
+    this.turnOps = [];
+    this.groupIdCounter = maxGroupIdFromBoard(state.board);
+    this.emit('stateLoaded', { phase: state.phase });
+  }
+
+  /**
+   * 从序列化状态重建引擎（含回合上下文）。
+   * 同时把牌组 ID 计数器恢复到桌面最大编号，保证后续回放生成相同 groupId。
+   */
+  static fromState(json: string): RummikubEngine {
+    const state = JSON.parse(json) as GameState;
+    const engine = new RummikubEngine(state.config);
+    engine.loadState(json);
+    return engine;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 操作回放（云端/本地校验共用）
+// ---------------------------------------------------------------------------
+
+/**
+ * 在指定引擎上按序回放操作日志。
+ * 使用与客户端完全相同的公开方法，保证行为一致；任何非法 op 会抛出异常。
+ */
+export function applyOps(engine: RummikubEngine, ops: readonly EngineOp[]): void {
+  for (const op of ops) {
+    switch (op.op) {
+      case 'PLACE_ON_BOARD':
+        engine.placeTilesOnBoard(op.tileIds, op.groupId, op.position);
+        break;
+      case 'CREATE_GROUP':
+        engine.createNewGroupOnBoard(tilesFromRack(engine, op.tileIds), op.groupType);
+        break;
+      case 'CREATE_GROUP_FROM_WA':
+        engine.createNewGroupFromWorkingArea(tilesFromWorkingArea(engine, op.tileIds), op.groupType);
+        break;
+      case 'REMOVE_FROM_BOARD':
+        engine.removeTilesFromBoard(op.groupId, op.tileIds);
+        break;
+      case 'RETURN_TO_RACK':
+        engine.returnTilesToRack(op.tileIds);
+        break;
+      case 'REPLACE_JOKER': {
+        const realTile = tilesFromRack(engine, [op.realTileId])[0];
+        engine.replaceJokerOnBoard(op.groupId, op.jokerPosition, realTile);
+        break;
+      }
+      case 'MOVE_WITHIN_GROUP':
+        engine.moveTileWithinGroup(op.groupId, op.tileId, op.toIndex);
+        break;
+      case 'PLACE_WA_ON_BOARD':
+        engine.placeWorkingAreaTilesOnBoard(op.tileIds, op.groupId, op.position);
+        break;
+      default:
+        throw new Error(`未知操作类型: ${(op as any).op}`);
+    }
+  }
+}
+
+/** 从当前玩家牌架中按 ID 取出牌对象。 */
+function tilesFromRack(engine: RummikubEngine, tileIds: number[]): Tile[] {
+  const rack = engine.getCurrentPlayer().rack;
+  return tileIds.map(id => {
+    const tile = rack.find(t => t.id === id);
+    if (!tile) throw new Error(`回放失败：牌 ${id} 不在牌架中`);
+    return tile;
+  });
+}
+
+/** 从工作区中按 ID 取出牌对象。 */
+function tilesFromWorkingArea(engine: RummikubEngine, tileIds: number[]): Tile[] {
+  const wa = engine.getTurnContext().workingArea;
+  return tileIds.map(id => {
+    const tile = wa.find(t => t.id === id);
+    if (!tile) throw new Error(`回放失败：牌 ${id} 不在工作区中`);
+    return tile;
+  });
 }

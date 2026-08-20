@@ -27,7 +27,16 @@ export interface RoomInfo {
   host: string;
   capacity: number;
   players: RoomPlayer[];
-  status: 'waiting' | 'started';
+  /** waiting 等待中 / started 已点开始 / playing 对局中 / finished 已结束。 */
+  status: 'waiting' | 'started' | 'playing' | 'finished';
+  /** 开局后由 lami-game 写入的对局数据（含公开状态 game.public）。 */
+  game?: {
+    version?: number;
+    turnDeadline?: number;
+    currentPlayerIndex?: number;
+    playersOpenid?: string[];
+    public?: any;
+  };
 }
 
 export interface RoomResult {

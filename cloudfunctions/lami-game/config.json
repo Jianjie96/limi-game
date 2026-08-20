@@ -1,0 +1,12 @@
+{
+  "triggers": [
+    {
+      "name": "lamiGameTick",
+      "type": "timer",
+      "config": "0 */1 * * * * *"
+    }
+  ],
+  "permissions": {
+    "openapi": []
+  }
+}

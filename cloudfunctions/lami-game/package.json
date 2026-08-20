@@ -1,0 +1,9 @@
+{
+  "name": "lami-game",
+  "version": "1.0.0",
+  "description": "拉密在线对战权威裁判云函数（引擎打包件 engine-bundle.js 由 npm run build:server 生成）",
+  "main": "index.js",
+  "dependencies": {
+    "wx-server-sdk": "~2.6.3"
+  }
+}

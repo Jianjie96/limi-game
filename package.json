@@ -6,7 +6,8 @@
   "types": "dist/index.d.ts",
   "scripts": {
     "dev": "esbuild src/game.ts --bundle --format=cjs --platform=node --target=es2019 --outfile=dist/game.js --watch",
-    "build": "tsc --noEmit && rm -rf dist && esbuild src/game.ts --bundle --format=cjs --platform=node --target=es2019 --outfile=dist/game.js",
+    "build": "tsc --noEmit && rm -rf dist && esbuild src/game.ts --bundle --format=cjs --platform=node --target=es2019 --outfile=dist/game.js && npm run build:server",
+    "build:server": "esbuild src/server/engine-entry.ts --bundle --format=cjs --platform=node --target=es2019 --outfile=cloudfunctions/lami-game/engine-bundle.js",
     "test": "vitest run",
     "test:watch": "vitest"
   },

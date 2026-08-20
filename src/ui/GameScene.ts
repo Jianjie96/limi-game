@@ -6,9 +6,10 @@
 // 绘制统一通过 Canvas 2D 上下文在逻辑坐标下进行（由 DPR 缩放映射到物理像素）。
 // ============================================================================
 
-import type { Tile, TileGroup, GameState } from '../game/types';
+import type { Tile, TileGroup, GameState, PlayerState } from '../game/types';
 import { GamePhase } from '../game/types';
 import { RummikubEngine } from '../game/engine';
+import type { OnlineCoordinator } from './online';
 import { canFormMelds, isValidRun, isValidGroupTiles } from '../game/validate';
 import { detectGroupType, toLogical } from '../game/tiles';
 import {
@@ -197,7 +198,22 @@ export class GameScene {
   /** 结算面板弹出动画起始时刻（0 = 未开始）。 */
   private gameOverStart = 0;
 
-  constructor(canvas: HTMLCanvasElement, engine: RummikubEngine, info: ScreenInfo) {
+  /** 场景模式：local 本地热座；online 在线对战（底部牌架固定为自己）。 */
+  private mode: 'local' | 'online';
+  /** 在线模式下本人的玩家索引。 */
+  private selfIndex: number;
+  /** 在线同步协调器（仅 online 模式，由入口注入）。 */
+  coordinator: OnlineCoordinator | null = null;
+
+  constructor(
+    canvas: HTMLCanvasElement,
+    engine: RummikubEngine,
+    info: ScreenInfo,
+    mode: 'local' | 'online' = 'local',
+    selfIndex = 0
+  ) {
+    this.mode = mode;
+    this.selfIndex = selfIndex;
     this.engine = engine;
     this.screenW = info.screenWidth;
     this.screenH = info.screenHeight;
@@ -286,11 +302,28 @@ export class GameScene {
   }
 
   private updateButtonStates(): void {
-    const isMyTurn = this.engine.getState().phase === GamePhase.PLAYING;
-    // 回合即处于可操作阶段：玩家可随时「出牌」或选择「Pass 摸牌」。
+    // 仅本人回合处于可操作阶段：玩家可随时「出牌」或选择「Pass 摸牌」。
+    const canAct = this.canAct();
     for (const btn of this.buttons) {
-      btn.config.enabled = isMyTurn;
+      btn.config.enabled = canAct;
     }
+  }
+
+  /** 底部牌架归属：local 跟随当前回合（热座），online 固定为自己。 */
+  private getSelfIndex(): number {
+    return this.mode === 'online' ? this.selfIndex : this.engine.getState().currentPlayerIndex;
+  }
+
+  private getSelfPlayer(): PlayerState {
+    const state = this.engine.getState();
+    return state.players[this.getSelfIndex()] ?? this.engine.getCurrentPlayer();
+  }
+
+  /** 当前是否允许本人操作（在线模式下非本人回合仅可观看）。 */
+  private canAct(): boolean {
+    const state = this.engine.getState();
+    if (state.phase !== GamePhase.PLAYING) return false;
+    return this.mode === 'local' || state.currentPlayerIndex === this.selfIndex;
   }
 
   // =========================================================================
@@ -303,7 +336,8 @@ export class GameScene {
     this.pressX = t.clientX;
     this.pressY = t.clientY;
     // 仅记录潜在拖拽来源，不立即执行点击动作（区分点击与拖拽）。
-    this.pressSource = this.findTileSource(t.clientX, t.clientY);
+    // 在线模式非本人回合：禁用一切牌面交互（保留观看）。
+    this.pressSource = this.canAct() ? this.findTileSource(t.clientX, t.clientY) : null;
     this.markDirty();
 
     // 牌架长按 → 开启连续滑动多选。
@@ -413,6 +447,8 @@ export class GameScene {
     wx.offWindowResize(this.resizeHandler);
     this.clearLongPressTimer();
     if (this.messageTimer) clearTimeout(this.messageTimer);
+    this.coordinator?.dispose();
+    this.coordinator = null;
   }
 
   private refreshScreenInfo(): void {
@@ -482,6 +518,13 @@ export class GameScene {
       this.showMessage(`游戏结束! ${winner?.playerName} 获胜!`);
     });
 
+    this.engine.on('stateLoaded', () => {
+      // 在线模式：云端权威状态整体覆盖后，清除本回合选中/高亮状态。
+      this.selectedRackIds.clear();
+      this.highlightedGroupIds.clear();
+      this.markDirty();
+    });
+
     this.engine.on('error', (data: any) => {
       this.showMessage(`错误: ${data.message || '未知错误'}`);
     });
@@ -498,6 +541,9 @@ export class GameScene {
       this.onButtonTap(btn.config.id);
       return;
     }
+
+    // 在线模式非本人回合：牌面/桌面/工作区均不可交互。
+    if (!this.canAct()) return;
 
     const rackSlot = hitTestRack(x, y, this.rackSlots);
     if (rackSlot) {
@@ -565,7 +611,7 @@ export class GameScene {
     const anchor = this.rangeSelectAnchor;
     if (anchor == null) return;
 
-    const rack = this.engine.getCurrentPlayer().rack;
+    const rack = this.getSelfPlayer().rack;
     const lo = Math.min(anchor, curIndex);
     const hi = Math.max(anchor, curIndex);
     const rangeTiles = rack.filter((_, i) => i >= lo && i <= hi);
@@ -731,7 +777,7 @@ export class GameScene {
         // 若有选中的牌架牌，先把它们作为新牌组放到桌面。
         if (this.selectedRackIds.size > 0) {
           try {
-            const rack = this.engine.getCurrentPlayer().rack;
+            const rack = this.getSelfPlayer().rack;
             const tiles = rack.filter((t) => this.selectedRackIds.has(t.id));
             const type = detectGroupType(tiles);
             this.engine.createNewGroupOnBoard(tiles, type);
@@ -740,6 +786,12 @@ export class GameScene {
             this.showMessage(err.message || '放置失败');
             return;
           }
+        }
+
+        if (this.mode === 'online') {
+          // 在线模式：提交操作日志给云端回放校验（云端是唯一裁判）。
+          this.coordinator?.submit();
+          break;
         }
 
         const result = this.engine.submitTurn();
@@ -751,7 +803,11 @@ export class GameScene {
       }
 
       case 'pass':
-        this.engine.pass();
+        if (this.mode === 'online') {
+          this.coordinator?.pass();
+        } else {
+          this.engine.pass();
+        }
         break;
     }
   }
@@ -765,7 +821,7 @@ export class GameScene {
     }
 
     // 实时校验：新牌与已选中牌须能共同凑成合法顺子/刻子，否则禁止选中。
-    const rack = this.engine.getCurrentPlayer().rack;
+    const rack = this.getSelfPlayer().rack;
     const candidateTiles = rack.filter((t) => this.selectedRackIds.has(t.id) || t.id === id);
     if (!canFormMelds(candidateTiles)) {
       this.showMessage('所选牌存在明显冲突，无法组成合法顺子/刻子');
@@ -791,7 +847,7 @@ export class GameScene {
   /** 当前玩家是否已完成破冰（可自由操作桌面牌）。 */
   private canManipulateBoard(): boolean {
     const state = this.engine.getState();
-    return state.phase === GamePhase.PLAYING && this.engine.getCurrentPlayer().hasMadeInitialMeld;
+    return state.phase === GamePhase.PLAYING && this.getSelfPlayer().hasMadeInitialMeld;
   }
 
   /** 该牌是否是本回合从牌架放下桌面的牌（未破冰时可拿回自己的牌）。 */
@@ -811,7 +867,7 @@ export class GameScene {
         return;
       }
       try {
-        const rack = this.engine.getCurrentPlayer().rack;
+        const rack = this.getSelfPlayer().rack;
         const tiles = rack.filter((t) => this.selectedRackIds.has(t.id));
         this.engine.placeTilesOnBoard(tiles.map(t => t.id), slot.groupId);
         this.selectedRackIds.clear();
@@ -934,7 +990,7 @@ export class GameScene {
       this.buildTopBar(state);
       this.buildOpponents(state);
 
-      const rackTiles = this.engine.getCurrentPlayer().rack;
+      const rackTiles = this.getSelfPlayer().rack;
       const workingTiles = state.turnContext?.workingArea ?? [];
 
       // 自底向上布局：按钮 → 牌架 → 工作区，剩余空间留给桌面，
@@ -1359,7 +1415,9 @@ export class GameScene {
 
   private buildOpponents(state: GameState): void {
     const ctx = this.ctx;
-    const opponents = state.players.filter((p) => p.id !== state.currentPlayerIndex);
+    // 在线模式固定以自己为视角；本地热座模式跟随当前回合玩家。
+    const selfIndex = this.getSelfIndex();
+    const opponents = state.players.filter((p) => p.id !== selfIndex);
     // 对手行贴着顶栏下沿，整体位于桌面区域（topY）上方，避免被桌面遮盖。
     const y = this.safeTop + PLAYER_INFO_HEIGHT + 15;
     // 右侧止于转屏按钮左侧，防止徽章被按钮遮挡。

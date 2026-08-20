@@ -60,6 +60,23 @@ declare namespace wx {
   };
 
   // 微信云开发（最小集）
+  interface CloudWatch {
+    close: () => void;
+  }
+  interface CloudQuery {
+    watch(options: {
+      onChange: (snapshot: { docs: any[]; docChanges: any[] }) => void;
+      onError: (err: any) => void;
+    }): CloudWatch;
+    limit(n: number): CloudQuery;
+    get(options?: { success?: (res: any) => void; fail?: (err: any) => void }): void;
+  }
+  interface CloudCollection {
+    where(query: Record<string, any>): CloudQuery;
+  }
+  interface CloudDatabase {
+    collection(name: string): CloudCollection;
+  }
   const cloud: {
     init(options?: { env?: string; traceUser?: boolean }): void;
     callFunction(options: {
@@ -69,6 +86,7 @@ declare namespace wx {
       fail?: (err: any) => void;
       complete?: () => void;
     }): void;
+    database(options?: { env?: string }): CloudDatabase;
   };
   // 注意：requestAnimationFrame / cancelAnimationFrame 是微信小游戏的「全局函数」，
   // 不是 wx 命名空间下的方法，因此不要在这里声明为 wx.requestAnimationFrame。

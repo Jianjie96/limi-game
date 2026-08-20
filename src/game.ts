@@ -12,7 +12,9 @@ import { RummikubEngine } from './game/engine';
 import { GameScene } from './ui/GameScene';
 import { HomeScene } from './ui/HomeScene';
 import { RoomScene } from './ui/RoomScene';
+import { OnlineCoordinator } from './ui/online';
 import { getScreenInfo } from './ui/screen';
+import type { PublicGameState } from './cloud/game';
 import {
   initCloud,
   createRoom,
@@ -94,7 +96,7 @@ function goHome(): HomeScene {
           { openid: 'local-4', name: '玩家4' },
         ],
       };
-      startGame(demo);
+      startLocalGame(demo);
     };
   }
   switchScene(home);
@@ -104,8 +106,8 @@ function goHome(): HomeScene {
 /** 房间等待页（创建成功后 / 加入成功后进入） */
 function enterRoom(result: RoomResult): void {
   const roomScene = new RoomScene(nativeCanvas, info, result);
-  roomScene.onStart = (room: RoomInfo) => {
-    startGame(room);
+  roomScene.onStart = (room: RoomInfo, selfOpenid: string) => {
+    startOnlineGame(room, selfOpenid);
   };
   roomScene.onExit = () => {
     goHome();
@@ -113,8 +115,8 @@ function enterRoom(result: RoomResult): void {
   switchScene(roomScene);
 }
 
-/** 进入对局：按房间人数创建引擎与游戏场景 */
-function startGame(room: RoomInfo): void {
+/** 本地试玩（仅开发后门）：引擎完全离线运行，热座轮流操作。 */
+function startLocalGame(room: RoomInfo): void {
   const engine = new RummikubEngine({
     playerCount: room.capacity,
     initialHandSize: 14,
@@ -126,6 +128,38 @@ function startGame(room: RoomInfo): void {
   scene.start();
   scene.startGame(room.players.map((p) => p.name));
   scene.showMessage('游戏开始! 可出牌或 Pass 摸牌', 3000);
+}
+
+/**
+ * 在线对战：云端权威引擎 + 数据库实时推送。
+ * 房主负责调 initGame 开局（幂等）；所有客户端通过 watch 订阅
+ * 公开状态与本人手牌，推送到达后 loadState 整体重绘。
+ */
+function startOnlineGame(room: RoomInfo, selfOpenid: string): void {
+  const selfIndex = Math.max(
+    0,
+    room.players.findIndex((p) => p.openid === selfOpenid)
+  );
+  const engine = new RummikubEngine({
+    playerCount: room.capacity,
+    initialHandSize: 14,
+    initialMeldMinScore: 30,
+    turnTimeLimit: 60,
+  });
+  const scene = new GameScene(nativeCanvas, engine, info, 'online', selfIndex);
+  const coordinator = new OnlineCoordinator(
+    engine,
+    scene,
+    room.code,
+    selfOpenid,
+    selfIndex,
+    room.host === selfOpenid
+  );
+  scene.coordinator = coordinator;
+  switchScene(scene);
+  scene.start();
+  scene.showMessage('正在连接对局…', 2000);
+  coordinator.begin(room.game?.public as PublicGameState | undefined);
 }
 
 // ----------------------------------------------------------------------------

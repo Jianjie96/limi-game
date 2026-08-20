@@ -30,8 +30,8 @@ import { RoomInfo, RoomResult, getRoom, startRoom } from '../cloud/room';
 const POLL_INTERVAL_MS = 2000;
 
 export class RoomScene {
-  /** 房间开始游戏后回调（携带最新房间数据） */
-  onStart: ((room: RoomInfo) => void) | null = null;
+  /** 房间开始游戏后回调（携带最新房间数据与本人 openid） */
+  onStart: ((room: RoomInfo, selfOpenid: string) => void) | null = null;
   /** 退出房间回调 */
   onExit: (() => void) | null = null;
 
@@ -111,12 +111,12 @@ export class RoomScene {
   // --------------------------------------------------------------------------
 
   private poll(): void {
-    if (this.busy || this.room.status === 'started') return;
+    if (this.busy || this.isRoomStarted()) return;
     getRoom(this.code)
       .then((result) => {
         this.room = result.room;
         this.dirty = true;
-        if (result.room.status === 'started') {
+        if (this.isRoomStarted()) {
           this.enterGame();
         }
       })
@@ -125,12 +125,17 @@ export class RoomScene {
       });
   }
 
+  /** 房主已点开始（started）或对局已在进行（playing，竞态下可能跳过 started）。 */
+  private isRoomStarted(): boolean {
+    return this.room.status === 'started' || this.room.status === 'playing';
+  }
+
   private enterGame(): void {
     if (this.pollTimer) {
       clearInterval(this.pollTimer);
       this.pollTimer = null;
     }
-    this.onStart?.(this.room);
+    this.onStart?.(this.room, this.myOpenid);
   }
 
   private handleTap(px: number, py: number): void {
