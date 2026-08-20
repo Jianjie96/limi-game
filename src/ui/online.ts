@@ -26,6 +26,8 @@ import { audio } from './audio';
 /** GameScene 暴露给协调器的最小接口（避免循环依赖）。 */
 export interface OnlineSceneHost {
   showMessage(msg: string, duration?: number): void;
+  /** 辅助提示：仅开发版展示，线上静默。 */
+  showTip(msg: string, duration?: number): void;
 }
 
 /** 占位牌：仅用于填充他人牌架数量与牌池数量，不参与任何规则计算。 */
@@ -209,7 +211,7 @@ export class OnlineCoordinator {
         if (resp.ok && resp.payload) {
           this.applyPayload(resp.payload.public, resp.payload.hand);
           audio.play('submit');
-          this.scene.showMessage('出牌成功');
+          this.scene.showTip('出牌成功');
         } else {
           const msg =
             resp.errors?.map((er) => er.message).join('; ') ||
@@ -247,7 +249,7 @@ export class OnlineCoordinator {
         if (resp.ok && resp.payload) {
           this.applyPayload(resp.payload.public, resp.payload.hand);
           audio.play('pass');
-          this.scene.showMessage('Pass 成功，摸牌 1 张');
+          this.scene.showTip('Pass 成功，摸牌 1 张');
         } else {
           audio.play('error');
           this.scene.showMessage(resp.message || '操作失败', 3000);

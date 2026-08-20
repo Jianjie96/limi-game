@@ -56,6 +56,7 @@ import {
   type BoardTileSlot,
 } from './Board';
 import { createButtonStates, hitTestButton, type ButtonState } from './Button';
+import { isDevEnvironment } from './env';
 import {
   drawBoardTile,
   drawPhysicalTile,
@@ -195,6 +196,8 @@ export class GameScene {
 
   private message = '';
   private messageTimer: any = null;
+  /** 辅助提示开关：开发版全量展示，线上只保留必要提示。 */
+  private tipsEnabled = isDevEnvironment();
   /** 渲染循环句柄（dispose 时取消） */
   private rafId = 0;
 
@@ -387,7 +390,7 @@ export class GameScene {
           this.longPressActive = true;
           try { wx.vibrateShort({}); } catch (e) { /* 不支持则忽略 */ }
           audio.play('pickup');
-          this.showMessage('已拿起牌：拖动可重排或放到桌面');
+          this.showTip('已拿起牌：拖动可重排或放到桌面');
           this.markDirty();
         }, LONG_PRESS_DELAY);
       }
@@ -589,17 +592,17 @@ export class GameScene {
 
     this.engine.on('tileDrawn', () => {
       audio.play('draw');
-      this.showMessage('摸牌成功');
+      this.showTip('摸牌成功');
     });
 
     this.engine.on('turnEnd', (data: any) => {
       const reason = data?.reason || '';
       if (reason === 'pass') {
         audio.play('pass');
-        this.showMessage('Pass 成功，回合结束');
+        this.showTip('Pass 成功，回合结束');
       } else if (reason === 'submit') {
         audio.play('submit');
-        this.showMessage('出牌成功');
+        this.showTip('出牌成功');
       } else if (reason === 'timeout') {
         audio.play('draw');
         this.showMessage('超时，回合结束');
@@ -736,7 +739,7 @@ export class GameScene {
 
     this.selectedRackIds = new Set(rangeTiles.map(t => t.id));
     if (rangeTiles.length >= 3 && this.isCompleteMeld(rangeTiles)) {
-      this.showMessage('已选好合法牌组，可点击「出牌」');
+      this.showTip('已选好合法牌组，可点击「出牌」');
     }
   }
 
@@ -799,7 +802,7 @@ export class GameScene {
           this.engine.placeTilesOnBoard([src.tileId], targetGroupId);
           this.selectedRackIds.delete(src.tileId);
           audio.play('place');
-          this.showMessage('已加入牌组');
+          this.showTip('已加入牌组');
         } else if (onBoardEmpty) {
           this.engine.createNewGroupOnBoard([src.tile], detectGroupType([src.tile]));
           this.selectedRackIds.delete(src.tileId);
@@ -814,7 +817,7 @@ export class GameScene {
         if (workingHit && workingHit.tile.id !== src.tileId) {
           this.engine.reorderWorkingAreaTile(src.tileId, workingHit.index);
           audio.play('sort');
-          this.showMessage('已调整顺序');
+          this.showTip('已调整顺序');
           return;
         }
 
@@ -823,7 +826,7 @@ export class GameScene {
           if (onRack && !targetGroupId && !onWorkingArea && this.isRackPlacedThisTurn(src.tileId)) {
             this.engine.returnTilesToRack([src.tileId]);
             audio.play('pickup');
-            this.showMessage('已放回牌架');
+            this.showTip('已放回牌架');
             return;
           }
           this.showMessage('破冰后才能操作桌面牌');
@@ -832,7 +835,7 @@ export class GameScene {
         if (targetGroupId) {
           this.engine.placeWorkingAreaTilesOnBoard([src.tileId], targetGroupId);
           audio.play('place');
-          this.showMessage('已合并到牌组');
+          this.showTip('已合并到牌组');
         } else if (onBoardEmpty) {
           this.engine.createNewGroupFromWorkingArea([src.tile], detectGroupType([src.tile]));
           audio.play('place');
@@ -852,11 +855,11 @@ export class GameScene {
         if (onRack && !targetGroupId && !onWorkingArea) {
           this.engine.returnTilesToRack([src.tileId]);
           audio.play('pickup');
-          this.showMessage('已放回牌架');
+          this.showTip('已放回牌架');
         } else if (onWorkingArea) {
           this.engine.removeTilesFromBoard(sourceGroupId, [src.tileId]);
           audio.play('pickup');
-          this.showMessage('已拆分到工作区');
+          this.showTip('已拆分到工作区');
         } else {
           this.showMessage('破冰后才能操作桌面牌');
         }
@@ -867,12 +870,12 @@ export class GameScene {
         // 同一牌组内拖到另一张牌上 → 仅重排顺序（Joker 显示值随位置变化）。
         this.engine.moveTileWithinGroup(sourceGroupId, src.tileId, boardTile.index);
         audio.play('sort');
-        this.showMessage('已调整顺序');
+        this.showTip('已调整顺序');
       } else if (targetGroupId && targetGroupId !== sourceGroupId) {
         this.engine.removeTilesFromBoard(sourceGroupId, [src.tileId]);
         this.engine.placeWorkingAreaTilesOnBoard([src.tileId], targetGroupId);
         audio.play('place');
-        this.showMessage('已移动');
+        this.showTip('已移动');
       } else if (onBoardEmpty) {
         this.engine.removeTilesFromBoard(sourceGroupId, [src.tileId]);
         this.engine.createNewGroupFromWorkingArea([src.tile], detectGroupType([src.tile]));
@@ -880,7 +883,7 @@ export class GameScene {
       } else if (onWorkingArea) {
         this.engine.removeTilesFromBoard(sourceGroupId, [src.tileId]);
         audio.play('pickup');
-        this.showMessage('已拆分到工作区');
+        this.showTip('已拆分到工作区');
       }
       // 落回原牌组或无效位置 → 不操作（牌保持原位）。
     } catch (err: any) {
@@ -969,7 +972,7 @@ export class GameScene {
 
     // 已选中一组完整合法的顺子/刻子时，给出「可以出牌」提示。
     if (this.isCompleteMeld(rack.filter((t) => this.selectedRackIds.has(t.id)))) {
-      this.showMessage('已选好合法牌组，可点击「出牌」');
+      this.showTip('已选好合法牌组，可点击「出牌」');
     }
 
     this.markDirty();
@@ -1008,7 +1011,7 @@ export class GameScene {
         const tiles = rack.filter((t) => this.selectedRackIds.has(t.id));
         this.engine.placeTilesOnBoard(tiles.map(t => t.id), slot.groupId);
         this.selectedRackIds.clear();
-        this.showMessage('已加入牌组');
+        this.showTip('已加入牌组');
       } catch (err: any) {
         this.showMessage(err.message || '加牌失败');
       }
@@ -1024,7 +1027,7 @@ export class GameScene {
 
     try {
       this.engine.removeTilesFromBoard(slot.groupId, [tileId]);
-      this.showMessage('已拆分：牌移入工作区');
+      this.showTip('已拆分：牌移入工作区');
     } catch (err: any) {
       this.showMessage(err.message || '拆分失败');
     }
@@ -1051,10 +1054,10 @@ export class GameScene {
       if (this.highlightedGroupIds.size > 0) {
         const groupId = [...this.highlightedGroupIds][0];
         this.engine.placeWorkingAreaTilesOnBoard([tile.id], groupId);
-        this.showMessage('已合并到选中牌组');
+        this.showTip('已合并到选中牌组');
       } else {
         this.engine.createNewGroupFromWorkingArea([tile], detectGroupType([tile]));
-        this.showMessage('已从工作区取出');
+        this.showTip('已从工作区取出');
       }
     } catch (err: any) {
       this.showMessage(err.message || '操作失败');
@@ -1948,6 +1951,16 @@ export class GameScene {
       this.markDirty();
     }, duration);
     this.markDirty();
+  }
+
+  /**
+   * 辅助性提示（操作确认/引导）：仅开发版展示。
+   * 线上环境（体验版/正式版）静默，避免频繁打扰玩家；
+   * 错误、失败、阻断类必要提示请继续用 showMessage。
+   */
+  showTip(msg: string, duration: number = 2000): void {
+    if (!this.tipsEnabled) return;
+    this.showMessage(msg, duration);
   }
 
   startGame(playerNames: string[]): void {

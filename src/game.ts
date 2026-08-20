@@ -15,6 +15,7 @@ import { RoomScene } from './ui/RoomScene';
 import { OnlineCoordinator } from './ui/online';
 import { getScreenInfo, type ScreenInfo } from './ui/screen';
 import { audio } from './ui/audio';
+import { isDevEnvironment } from './ui/env';
 import type { PublicGameState } from './cloud/game';
 import {
   initCloud,
@@ -75,19 +76,6 @@ wx.onTouchStart(bgmStarter);
 
 // 本机玩家名（每次启动固定一个随机代号）。
 const myName = localPlayerName();
-
-/** 是否开发版（envVersion === 'develop'），体验版/正式版均视为线上。 */
-function isDevEnvironment(): boolean {
-  try {
-    return (
-      typeof wx.getAccountInfoSync === 'function' &&
-      wx.getAccountInfoSync().miniProgram.envVersion === 'develop'
-    );
-  } catch (e) {
-    // API 不可用时按线上处理，隐藏调试入口。
-    return false;
-  }
-}
 
 // ----------------------------------------------------------------------------
 // 场景切换
@@ -193,7 +181,7 @@ function startLocalGame(room: RoomInfo): void {
   switchScene(scene);
   scene.start();
   scene.startGame(room.players.map((p) => p.name));
-  scene.showMessage('游戏开始! 可出牌或 Pass 摸牌', 3000);
+  scene.showTip('游戏开始! 可出牌或 Pass 摸牌', 3000);
 }
 
 /**
