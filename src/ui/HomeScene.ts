@@ -15,7 +15,8 @@ import {
   hitRect,
   SceneButtonRect,
 } from './backdrop';
-import { FROST_STRONG, FROST_BORDER, GOLD, INK, INK_SOFT, GOLD_DEEP } from './constants';
+import { FROST_STRONG, FROST_BORDER, GOLD, INK, INK_SOFT, GOLD_DEEP, FONT_FAMILY } from './constants';
+import { getNickname, getAvatarColor } from './profile';
 
 export class HomeScene {
   /** 选择人数并确认后回调（创建房间请求由外部发起） */
@@ -24,6 +25,8 @@ export class HomeScene {
   onLocalPlay: (() => void) | null = null;
   /** 断线重连：回到上次未结束的对局 */
   onResume: (() => void) | null = null;
+  /** 打开个人中心（设置页） */
+  onOpenProfile: (() => void) | null = null;
 
   private ctx: CanvasRenderingContext2D;
   private canvas: HTMLCanvasElement;
@@ -54,6 +57,7 @@ export class HomeScene {
   private cancelRect: SceneButtonRect = { x: 0, y: 0, w: 0, h: 0 };
   private localPlayRect: SceneButtonRect = { x: 0, y: 0, w: 0, h: 0 };
   private resumeBtnRect: SceneButtonRect = { x: 0, y: 0, w: 0, h: 0 };
+  private profileRect: SceneButtonRect = { x: 0, y: 0, w: 0, h: 0 };
 
   /** 断线重连入口房号（外部校验房间仍在对局后调 showResume 激活） */
   private resumeCode = '';
@@ -168,6 +172,10 @@ export class HomeScene {
       this.dirty = true;
       return;
     }
+    if (this.onOpenProfile && hitRect(px, py, this.profileRect)) {
+      this.onOpenProfile();
+      return;
+    }
     if (hitRect(px, py, this.joinBtnRect)) {
       this.showInfo('开发中，敬请期待～');
       return;
@@ -214,6 +222,45 @@ export class HomeScene {
       size: 14,
       color: INK_SOFT,
     });
+
+    // 个人中心入口：居中置于副标题下方（头像 + 昵称），融入页面动线不突兀。
+    if (this.onOpenProfile) {
+      const name = getNickname();
+      const entryY = titleY + 86;
+      const avatarR = 15;
+      ctx.font = `bold 14px ${FONT_FAMILY}`;
+      const nameW = ctx.measureText(name).width;
+      const clusterW = avatarR * 2 + 8 + nameW + 12;
+      const startX = (w - clusterW) / 2;
+      this.profileRect = { x: startX - 12, y: entryY - 26, w: clusterW + 24, h: 52 };
+
+      // 头像圆片（元素色 + 白环 + 末字）
+      const avX = startX + avatarR;
+      ctx.fillStyle = getAvatarColor();
+      ctx.beginPath();
+      ctx.arc(avX, entryY, avatarR, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+      drawSceneText(ctx, avX, entryY + 0.5, name.charAt(name.length - 1), {
+        size: 13,
+        bold: true,
+        color: '#FFFFFF',
+      });
+
+      // 昵称 + 进入箭头
+      drawSceneText(ctx, avX + avatarR + 8, entryY, name, {
+        size: 14,
+        bold: true,
+        color: INK,
+        align: 'left',
+      });
+      drawSceneText(ctx, startX + clusterW - 4, entryY, '›', {
+        size: 14,
+        color: INK_SOFT,
+      });
+    }
 
     // 主按钮
     const btnW = Math.min(220, w * 0.32);

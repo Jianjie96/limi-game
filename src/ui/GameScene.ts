@@ -65,6 +65,7 @@ import {
 } from './renderer';
 import { getScreenInfo, type ScreenInfo } from './screen';
 import { audio } from './audio';
+import { vibrateIfEnabled } from './profile';
 
 /** 工作区单张牌的位置信息（用于绘制与命中检测） */
 interface WorkingAreaSlot {
@@ -193,8 +194,6 @@ export class GameScene {
 
   private buttons: ButtonState[] = [];
   private orientationButton!: ButtonState;
-  /** 右上角声音开关按钮（位于转屏按钮左侧）。 */
-  private soundButton!: ButtonState;
 
   private isLandscape = false;
 
@@ -249,7 +248,6 @@ export class GameScene {
 
     this.setupButtons();
     this.setupOrientationButton();
-    this.setupSoundButton();
     this.updateLayout();
     this.bindTouch();
     this.bindResize();
@@ -278,20 +276,6 @@ export class GameScene {
       {
         id: 'toggleOrientation',
         label: this.isLandscape ? '切竖屏' : '切横屏',
-        x: 0,
-        y: 0,
-        width: 76,
-        height: 24,
-        variant: 'secondary',
-      },
-    ])[0];
-  }
-
-  private setupSoundButton(): void {
-    this.soundButton = createButtonStates([
-      {
-        id: 'toggleSound',
-        label: audio.isMuted() ? '声音 关' : '声音 开',
         x: 0,
         y: 0,
         width: 76,
@@ -335,10 +319,6 @@ export class GameScene {
     this.orientationButton.config.x = this.screenW - this.safeRight - ow - 8;
     this.orientationButton.config.y = this.safeTop + PLAYER_INFO_HEIGHT + 3;
     this.orientationButton.config.label = this.isLandscape ? '切竖屏' : '切横屏';
-
-    // 声音开关：紧贴转屏按钮左侧。
-    this.soundButton.config.x = this.orientationButton.config.x - 76 - 8;
-    this.soundButton.config.y = this.orientationButton.config.y;
   }
 
   private updateButtonStates(): void {
@@ -393,7 +373,7 @@ export class GameScene {
         this.rangeSelectAnchor = rackSlot.index;
         this.longPressTimer = setTimeout(() => {
           this.longPressActive = true;
-          try { wx.vibrateShort({}); } catch (e) { /* 不支持则忽略 */ }
+          vibrateIfEnabled();
           audio.play('pickup');
           this.showTip('已拿起牌：拖动可重排或放到桌面');
           this.markDirty();
@@ -657,12 +637,6 @@ export class GameScene {
   }
 
   private onPointerDown(x: number, y: number): void {
-    if (hitTestButton(x, y, [this.soundButton])) {
-      const muted = audio.toggleMute();
-      this.soundButton.config.label = muted ? '声音 关' : '声音 开';
-      this.markDirty();
-      return;
-    }
     if (hitTestButton(x, y, [this.orientationButton])) {
       this.toggleOrientation();
       return;
@@ -1634,13 +1608,19 @@ export class GameScene {
     const opponents = state.players.filter((p) => p.id !== selfIndex);
     // 对手行贴着顶栏下沿，整体位于桌面区域（topY）上方，避免被桌面遮盖。
     const y = this.safeTop + PLAYER_INFO_HEIGHT + 15;
-    // 右侧止于声音开关按钮左侧，防止徽章被按钮遮挡。
-    const maxX = this.soundButton.config.x - 8;
+    // 右侧止于转屏按钮左侧，防止徽章被按钮遮挡。
+    const maxX = this.orientationButton.config.x - 8;
 
     let x = this.safeLeft + 12;
     for (const opp of opponents) {
-      if (x >= maxX) break;
       const avatarColor = AVATAR_COLORS[opp.id % AVATAR_COLORS.length];
+
+      // 先量出徽章总宽，整枚放不下时才截断，避免画到一半遮住按钮。
+      const text = `${opp.rack.length}张`;
+      ctx.font = `${FONT_SIZE_LABEL - 3}px ${FONT_FAMILY}`;
+      const tw = ctx.measureText(text).width;
+      const badgeW = 23 + tw + 14;
+      if (x + badgeW > maxX) break;
 
       // 元素风头像圆片 + 白环 + 末字。
       ctx.fillStyle = avatarColor;
@@ -1657,9 +1637,6 @@ export class GameScene {
       });
 
       // 剩余牌数磨砂胶囊。
-      const text = `${opp.rack.length}张`;
-      ctx.font = `${FONT_SIZE_LABEL - 3}px ${FONT_FAMILY}`;
-      const tw = ctx.measureText(text).width;
       ctx.fillStyle = FROST_STRONG;
       roundRectPath(ctx, x + 23, y - 9, tw + 14, 18, 9);
       ctx.fill();
@@ -1875,9 +1852,6 @@ export class GameScene {
     const { config } = this.orientationButton;
     const h = config.height ?? BUTTON_HEIGHT;
     this.drawCartoonButton(config.x, config.y, config.width, h, config.label, 'secondary', FONT_SIZE_BUTTON - 5);
-    // 声音开关与转屏按钮同行同样式。
-    const sc = this.soundButton.config;
-    this.drawCartoonButton(sc.x, sc.y, sc.width, sc.height ?? BUTTON_HEIGHT, sc.label, 'secondary', FONT_SIZE_BUTTON - 5);
   }
 
   private buildButtons(): void {

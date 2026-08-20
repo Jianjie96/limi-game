@@ -12,17 +12,18 @@ import { RummikubEngine } from './game/engine';
 import { GameScene } from './ui/GameScene';
 import { HomeScene } from './ui/HomeScene';
 import { RoomScene } from './ui/RoomScene';
+import { SettingsScene } from './ui/SettingsScene';
 import { OnlineCoordinator } from './ui/online';
 import { getScreenInfo, type ScreenInfo } from './ui/screen';
 import { audio } from './ui/audio';
 import { isDevEnvironment } from './ui/env';
+import { getNickname, applyPreferredOrientation } from './ui/profile';
 import type { PublicGameState } from './cloud/game';
 import {
   initCloud,
   createRoom,
   joinRoom,
   getRoom,
-  localPlayerName,
   getLastRoom,
   clearLastRoom,
   RoomInfo,
@@ -74,8 +75,8 @@ const bgmStarter = () => {
 };
 wx.onTouchStart(bgmStarter);
 
-// 本机玩家名（每次启动固定一个随机代号）。
-const myName = localPlayerName();
+// 屏幕方向：按个人中心偏好切换（不支持转屏的环境静默跳过）。
+applyPreferredOrientation();
 
 // ----------------------------------------------------------------------------
 // 场景切换
@@ -94,9 +95,11 @@ function switchScene(next: DisposableScene): void {
 
 /** 首页 */
 function goHome(): HomeScene {
+  // 从对局/设置页回到首页时，方向恢复到个人中心的偏好值。
+  applyPreferredOrientation();
   const home = new HomeScene(nativeCanvas, freshScreenInfo());
   home.onCreateRoom = (capacity: number) => {
-    createRoom(capacity, myName)
+    createRoom(capacity, getNickname())
       .then((result) => {
         home.closePicker();
         enterRoom(result);
@@ -104,6 +107,9 @@ function goHome(): HomeScene {
       .catch((e: Error) => {
         home.showError(e.message);
       });
+  };
+  home.onOpenProfile = () => {
+    goProfile();
   };
   // 开发后门：仅开发版显示，不依赖云开发，直接本地开一局（4 人）方便调试。
   if (isDevEnvironment()) {
@@ -114,7 +120,7 @@ function goHome(): HomeScene {
         capacity: 4,
         status: 'started',
         players: [
-          { openid: 'local-1', name: myName },
+          { openid: 'local-1', name: getNickname() },
           { openid: 'local-2', name: '玩家2' },
           { openid: 'local-3', name: '玩家3' },
           { openid: 'local-4', name: '玩家4' },
@@ -133,7 +139,7 @@ function goHome(): HomeScene {
         const inGame = room.status === 'started' || room.status === 'playing';
         if (isMember && inGame) {
           home.onResume = () => {
-            joinRoom(room.code, myName)
+            joinRoom(room.code, getNickname())
               .then((joinResult) => {
                 home.closePicker();
                 enterRoom(joinResult);
@@ -155,6 +161,15 @@ function goHome(): HomeScene {
   }
   switchScene(home);
   return home;
+}
+
+/** 个人中心（设置页）：头像昵称 + 音频/震动/方向开关 */
+function goProfile(): void {
+  const scene = new SettingsScene(nativeCanvas, freshScreenInfo());
+  scene.onExit = () => {
+    goHome();
+  };
+  switchScene(scene);
 }
 
 /** 房间等待页（创建成功后 / 加入成功后进入） */
@@ -221,7 +236,7 @@ function startOnlineGame(room: RoomInfo, selfOpenid: string): void {
 // ----------------------------------------------------------------------------
 
 function tryJoinSharedRoom(roomId: string, silent = false): void {
-  joinRoom(roomId, myName)
+  joinRoom(roomId, getNickname())
     .then((result) => {
       enterRoom(result);
     })

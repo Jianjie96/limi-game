@@ -10,7 +10,8 @@
 //   - 开局预缓存：首次启动下载到本地持久存储，之后秒播且可离线；
 //     下载完成前先用远程直链兜底，不阻塞出声
 //   - BGM 单实例循环播放；音效每个名字懒创建一个实例复用（seek 回零重播）
-//   - 静音开关持久化到本地存储（lami_sound_on）
+//   - 音乐/音效两个静音开关独立持久化（lami_bgm_on / lami_sfx_on），
+//     旧统一开关 lami_sound_on 作为首次升级的迁移初值
 // ============================================================================
 
 export type SfxName =
@@ -38,7 +39,10 @@ const SFX_FILES: SfxName[] = [
 /** 本地缓存索引（名称 → savedFilePath）的存储键。 */
 const CACHE_KEY = 'lami_audio_cache';
 
-const MUTE_KEY = 'lami_sound_on';
+const BGM_MUTE_KEY = 'lami_bgm_on';
+const SFX_MUTE_KEY = 'lami_sfx_on';
+/** 旧版统一声音开关（迁移用）。 */
+const LEGACY_MUTE_KEY = 'lami_sound_on';
 
 class AudioManager {
   /** 名称 → 当前播放源（先用远程直链，缓存就绪后逐个替换为本地路径）。 */
@@ -47,15 +51,31 @@ class AudioManager {
   private contexts = new Map<SfxName, any>();
   /** 链接是否就绪（COS 直链，init 后即就绪）。 */
   private ready = false;
-  private muted = false;
+  private bgmMuted = false;
+  private sfxMuted = false;
   /** BGM 是否已启动过（解除静音时用于恢复）。 */
   private bgmWanted = false;
 
   constructor() {
+    let bgmOn = this.readToggle(BGM_MUTE_KEY);
+    let sfxOn = this.readToggle(SFX_MUTE_KEY);
+    if (bgmOn == null && sfxOn == null) {
+      // 首次升级：两个新开关都未写入过，继承旧统一开关的设置。
+      const legacyOn = this.readToggle(LEGACY_MUTE_KEY);
+      bgmOn = legacyOn ?? true;
+      sfxOn = legacyOn ?? true;
+    }
+    this.bgmMuted = !(bgmOn ?? true);
+    this.sfxMuted = !(sfxOn ?? true);
+  }
+
+  /** 读持久化的布尔开关；未写入过返回 null。 */
+  private readToggle(key: string): boolean | null {
     try {
-      this.muted = wx.getStorageSync(MUTE_KEY) === false;
+      const v = wx.getStorageSync(key);
+      return v === true || v === false ? v : null;
     } catch (e) {
-      this.muted = false;
+      return null;
     }
   }
 
@@ -65,7 +85,7 @@ class AudioManager {
     this.ready = true;
     this.loadCache();
     // 就绪前若已请求过 BGM，此时补播。
-    if (this.bgmWanted && !this.muted) this.playBgmInternal();
+    if (this.bgmWanted && !this.bgmMuted) this.playBgmInternal();
   }
 
   // --------------------------------------------------------------------------
@@ -151,9 +171,9 @@ class AudioManager {
   // 播放
   // --------------------------------------------------------------------------
 
-  /** 播放一次性音效（静音或未就绪时忽略）。 */
+  /** 播放一次性音效（音效静音或未就绪时忽略）。 */
   play(name: Exclude<SfxName, 'bgm'>): void {
-    if (this.muted || !this.ready) return;
+    if (this.sfxMuted || !this.ready) return;
     const url = this.urls.get(name);
     if (!url) return;
     try {
@@ -186,7 +206,7 @@ class AudioManager {
   /** 启动背景音乐（循环）。通常在用户首次交互后调用。 */
   startBgm(): void {
     this.bgmWanted = true;
-    if (!this.muted) this.playBgmInternal();
+    if (!this.bgmMuted) this.playBgmInternal();
   }
 
   private playBgmInternal(): void {
@@ -207,29 +227,45 @@ class AudioManager {
   }
 
   // --------------------------------------------------------------------------
-  // 静音开关（持久化）
+  // 静音开关（音乐/音效独立，持久化）
   // --------------------------------------------------------------------------
 
-  isMuted(): boolean {
-    return this.muted;
+  isBgmMuted(): boolean {
+    return this.bgmMuted;
   }
 
-  /** 切换静音；返回切换后的静音状态。 */
-  toggleMute(): boolean {
-    this.muted = !this.muted;
+  isSfxMuted(): boolean {
+    return this.sfxMuted;
+  }
+
+  /** 切换背景音乐开关；返回切换后的静音状态。 */
+  toggleBgmMute(): boolean {
+    this.bgmMuted = !this.bgmMuted;
     try {
-      wx.setStorageSync(MUTE_KEY, !this.muted);
+      wx.setStorageSync(BGM_MUTE_KEY, !this.bgmMuted);
     } catch (e) {
       /* 静默 */
     }
-    if (this.muted) {
-      for (const ctx of this.contexts.values()) {
+    if (this.bgmMuted) {
+      const ctx = this.contexts.get('bgm');
+      if (ctx) {
         try { ctx.stop(); } catch (e) { /* 静默 */ }
       }
     } else if (this.bgmWanted) {
       this.playBgmInternal();
     }
-    return this.muted;
+    return this.bgmMuted;
+  }
+
+  /** 切换音效开关；返回切换后的静音状态。 */
+  toggleSfxMute(): boolean {
+    this.sfxMuted = !this.sfxMuted;
+    try {
+      wx.setStorageSync(SFX_MUTE_KEY, !this.sfxMuted);
+    } catch (e) {
+      /* 静默 */
+    }
+    return this.sfxMuted;
   }
 }
 

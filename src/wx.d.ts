@@ -122,6 +122,21 @@ declare namespace wx {
     fail?: (err: any) => void;
   }): void;
 
+  // 原生键盘（个人中心昵称输入）
+  function showKeyboard(options: {
+    defaultValue?: string;
+    maxLength?: number;
+    multiple?: boolean;
+    confirmHold?: boolean;
+    success?: () => void;
+    fail?: (err: any) => void;
+  }): void;
+  function hideKeyboard(options?: { success?: () => void; fail?: (err: any) => void }): void;
+  function onKeyboardConfirm(callback: (res: { value: string }) => void): void;
+  function offKeyboardConfirm(callback: (res: { value: string }) => void): void;
+  function onKeyboardComplete(callback: (res: { value: string }) => void): void;
+  function offKeyboardComplete(callback: (res: { value: string }) => void): void;
+
   // 微信云开发（最小集）
   interface CloudWatch {
     close: () => void;
