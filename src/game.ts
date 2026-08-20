@@ -13,7 +13,7 @@ import { GameScene } from './ui/GameScene';
 import { HomeScene } from './ui/HomeScene';
 import { RoomScene } from './ui/RoomScene';
 import { OnlineCoordinator } from './ui/online';
-import { getScreenInfo } from './ui/screen';
+import { getScreenInfo, type ScreenInfo } from './ui/screen';
 import { audio } from './ui/audio';
 import type { PublicGameState } from './cloud/game';
 import {
@@ -31,12 +31,36 @@ import {
 // 微信小游戏中第一次调用 createCanvas 拿到的是主屏幕画布。
 const nativeCanvas = wx.createCanvas();
 
-// 屏幕信息（逻辑像素 + 像素比 + 安全区）。
-const info = getScreenInfo(nativeCanvas);
+// 主画布创建时的默认物理尺寸由系统按真实窗口初始化，
+// 其宽高比是冷启动时「实际方向」的可靠基准（比早期屏幕 API 更可信）。
+const bootLandscape = nativeCanvas.width > nativeCanvas.height;
 
-// 主画布尺寸设为物理像素（逻辑 × 像素比），绘制时通过 ctx.setTransform 缩放。
-nativeCanvas.width = info.screenWidth * info.pixelRatio;
-nativeCanvas.height = info.screenHeight * info.pixelRatio;
+/** 读取最新屏幕信息，并把主画布后备存储同步到对应物理尺寸。 */
+function freshScreenInfo(): ScreenInfo {
+  const i = getScreenInfo(nativeCanvas);
+
+  // 冷启动兑底：部分 iOS 机型在启动早期返回的窗口方向与实际不符
+  // （曾导致首页文字失真、对局只渲染半屏）。以画布物理方向为准交换宽高，
+  // 安全区按 90° 旋转的几何关系同步换算。仅在方向不一致时触发，
+  // 不影响后续主动转屏流程（转屏走场景内的 refreshScreenInfo）。
+  if ((i.screenWidth > i.screenHeight) !== bootLandscape) {
+    const w = i.screenWidth;
+    i.screenWidth = i.screenHeight;
+    i.screenHeight = w;
+    const t = i.safeTop;
+    i.safeTop = i.safeLeft;
+    i.safeLeft = i.safeBottom;
+    i.safeBottom = i.safeRight;
+    i.safeRight = t;
+  }
+
+  nativeCanvas.width = Math.round(i.screenWidth * i.pixelRatio);
+  nativeCanvas.height = Math.round(i.screenHeight * i.pixelRatio);
+  return i;
+}
+
+// 屏幕信息（逻辑像素 + 像素比 + 安全区）。
+const info = freshScreenInfo();
 
 // 初始化云开发（失败不阻塞，调用接口时再提示）。
 initCloud();
@@ -82,7 +106,7 @@ function switchScene(next: DisposableScene): void {
 
 /** 首页 */
 function goHome(): HomeScene {
-  const home = new HomeScene(nativeCanvas, info);
+  const home = new HomeScene(nativeCanvas, freshScreenInfo());
   home.onCreateRoom = (capacity: number) => {
     createRoom(capacity, myName)
       .then((result) => {
@@ -147,7 +171,7 @@ function goHome(): HomeScene {
 
 /** 房间等待页（创建成功后 / 加入成功后进入） */
 function enterRoom(result: RoomResult): void {
-  const roomScene = new RoomScene(nativeCanvas, info, result);
+  const roomScene = new RoomScene(nativeCanvas, freshScreenInfo(), result);
   roomScene.onStart = (room: RoomInfo, selfOpenid: string) => {
     startOnlineGame(room, selfOpenid);
   };
@@ -165,7 +189,7 @@ function startLocalGame(room: RoomInfo): void {
     initialMeldMinScore: 30,
     turnTimeLimit: 60,
   });
-  const scene = new GameScene(nativeCanvas, engine, info);
+  const scene = new GameScene(nativeCanvas, engine, freshScreenInfo());
   switchScene(scene);
   scene.start();
   scene.startGame(room.players.map((p) => p.name));
@@ -188,7 +212,7 @@ function startOnlineGame(room: RoomInfo, selfOpenid: string): void {
     initialMeldMinScore: 30,
     turnTimeLimit: 60,
   });
-  const scene = new GameScene(nativeCanvas, engine, info, 'online', selfIndex);
+  const scene = new GameScene(nativeCanvas, engine, freshScreenInfo(), 'online', selfIndex);
   const coordinator = new OnlineCoordinator(
     engine,
     scene,

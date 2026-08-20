@@ -5,7 +5,7 @@
 // 人齐后房主点击「开始游戏」，其余玩家轮询到 started 状态后自动进入对局。
 // ============================================================================
 
-import { ScreenInfo } from './screen';
+import { ScreenInfo, getScreenInfo } from './screen';
 import { roundRectPath } from './renderer';
 import {
   drawBackdrop,
@@ -38,6 +38,7 @@ export class RoomScene {
   readonly code: string;
 
   private ctx: CanvasRenderingContext2D;
+  private canvas: HTMLCanvasElement;
   private screenW: number;
   private screenH: number;
   private pixelRatio: number;
@@ -73,6 +74,7 @@ export class RoomScene {
   };
 
   constructor(canvas: HTMLCanvasElement, info: ScreenInfo, result: RoomResult) {
+    this.canvas = canvas;
     this.ctx = canvas.getContext('2d') as CanvasRenderingContext2D;
     this.screenW = info.screenWidth;
     this.screenH = info.screenHeight;
@@ -188,11 +190,16 @@ export class RoomScene {
     });
   }
 
+  /** 重读屏幕信息（含像素比/安全区）并同步画布后备存储尺寸。 */
   private measure(): void {
     try {
-      const info: any = wx.getSystemInfoSync();
-      this.screenW = info.windowWidth || this.screenW;
-      this.screenH = info.windowHeight || this.screenH;
+      const fresh = getScreenInfo(this.canvas);
+      this.screenW = fresh.screenWidth;
+      this.screenH = fresh.screenHeight;
+      this.pixelRatio = fresh.pixelRatio;
+      this.safeTop = fresh.safeTop;
+      this.canvas.width = Math.round(fresh.screenWidth * fresh.pixelRatio);
+      this.canvas.height = Math.round(fresh.screenHeight * fresh.pixelRatio);
     } catch (e) {
       // 保持现有尺寸
     }

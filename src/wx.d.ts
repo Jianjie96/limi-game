@@ -22,6 +22,23 @@ declare namespace wx {
       height: number;
     };
   };
+  /** 新版窗口信息接口（基础库 2.20.1+），比 getSystemInfoSync 更可靠。 */
+  function getWindowInfo(): {
+    windowWidth: number;
+    windowHeight: number;
+    screenWidth: number;
+    screenHeight: number;
+    pixelRatio: number;
+    statusBarHeight: number;
+    safeArea: {
+      left: number;
+      right: number;
+      top: number;
+      bottom: number;
+      width: number;
+      height: number;
+    };
+  };
   function onTouchStart(callback: (res: { touches: Touch[] }) => void): void;
   function onTouchMove(callback: (res: { touches: Touch[] }) => void): void;
   function onTouchEnd(callback: (res: { changedTouches: Touch[] }) => void): void;

@@ -6,7 +6,7 @@
 // 与 GameScene 共享同一块画布，通过 dispose() 交还触控与渲染循环。
 // ============================================================================
 
-import { ScreenInfo } from './screen';
+import { ScreenInfo, getScreenInfo } from './screen';
 import { roundRectPath } from './renderer';
 import {
   drawBackdrop,
@@ -26,6 +26,7 @@ export class HomeScene {
   onResume: (() => void) | null = null;
 
   private ctx: CanvasRenderingContext2D;
+  private canvas: HTMLCanvasElement;
   private screenW: number;
   private screenH: number;
   private pixelRatio: number;
@@ -69,6 +70,7 @@ export class HomeScene {
   };
 
   constructor(canvas: HTMLCanvasElement, info: ScreenInfo) {
+    this.canvas = canvas;
     this.ctx = canvas.getContext('2d') as CanvasRenderingContext2D;
     this.screenW = info.screenWidth;
     this.screenH = info.screenHeight;
@@ -122,11 +124,16 @@ export class HomeScene {
   // 交互
   // --------------------------------------------------------------------------
 
+  /** 重读屏幕信息（含像素比/安全区）并同步画布后备存储尺寸。 */
   private measure(): void {
     try {
-      const info: any = wx.getSystemInfoSync();
-      this.screenW = info.windowWidth || this.screenW;
-      this.screenH = info.windowHeight || this.screenH;
+      const fresh = getScreenInfo(this.canvas);
+      this.screenW = fresh.screenWidth;
+      this.screenH = fresh.screenHeight;
+      this.pixelRatio = fresh.pixelRatio;
+      this.safeTop = fresh.safeTop;
+      this.canvas.width = Math.round(fresh.screenWidth * fresh.pixelRatio);
+      this.canvas.height = Math.round(fresh.screenHeight * fresh.pixelRatio);
     } catch (e) {
       // 保持现有尺寸
     }

@@ -31,7 +31,11 @@ export function getScreenInfo(
   let safeRight = 0;
 
   try {
-    const info: any = wx.getSystemInfoSync();
+    // 优先用 getWindowInfo（基础库 2.20.1+）：getSystemInfoSync 已废弃，
+    // 且在 iOS 冷启动早期调用时窗口尺寸/方向可能不准（曾导致画布只有半屏）。
+    const info: any = typeof wx.getWindowInfo === 'function'
+      ? wx.getWindowInfo()
+      : wx.getSystemInfoSync();
     pixelRatio = info.pixelRatio || fallbackDpr;
     // 微信小游戏里 windowWidth/windowHeight 均为逻辑像素。
     const w = info.windowWidth || info.screenWidth || screenWidth / pixelRatio;
