@@ -722,28 +722,35 @@ export class GameScene {
       this.buildTopBar(state);
       this.buildOpponents(state);
 
-      // 先布局桌面牌组，得到实际占用的内容高度，再据此下移工作区与牌架，
-      // 保证拆/合/重组产生大量牌组时仍能换行并全部可见。
+      const rackTiles = this.engine.getCurrentPlayer().rack;
+      const workingTiles = state.turnContext?.workingArea ?? [];
+
+      // 自底向上布局：按钮 → 牌架 → 工作区，剩余空间留给桌面，
+      // 让牌架稳定贴在底部（而非紧跟在桌面内容后面被顶到上方）。
+      const buttonTop = this.buttons[0].config.y;
+      const rackH = rackHeight(rackTiles.length, this.rackConfig);
+      const rackTop = buttonTop - rackH - 8;
+      this.rackConfig.y = rackTop;
+
+      // 工作区高度与 y 无关，先测高度再反推顶部 y（紧贴牌架上方）。
+      const waMeasured = this.workingAreaLayout(workingTiles, 0);
+      this.workingAreaHeight = waMeasured.height;
+      this.workingAreaY = rackTop - waMeasured.height - 8;
+      this.workingAreaSlots = this.workingAreaLayout(workingTiles, this.workingAreaY).slots;
+
+      // 桌面：从顶部向下铺，底部不越过工作区顶部。
       this.boardSlots = layoutBoard(state.board, this.boardConfig, this.highlightedGroupIds);
       const contentH = boardContentHeight(this.boardSlots, this.boardConfig.topY);
       const minBoardH = 72; // 空桌面也保留一个最小高度，避免布局抖动。
-      const boardBottom = this.boardConfig.topY + Math.max(contentH, minBoardH);
+      const boardBottom = Math.min(
+        this.boardConfig.topY + Math.max(contentH, minBoardH),
+        this.workingAreaY,
+      );
       this.boardBottom = boardBottom;
-      this.workingAreaY = boardBottom + 8;
-
-      const workingTiles = state.turnContext?.workingArea ?? [];
-      const wa = this.workingAreaLayout(workingTiles, this.workingAreaY);
-      this.workingAreaHeight = wa.height;
-      this.workingAreaSlots = wa.slots;
-      this.rackConfig.y = this.workingAreaY + wa.height + 8;
 
       this.buildBoard(state, boardBottom);
       this.buildWorkingArea(state);
-      this.rackSlots = layoutRack(
-        this.engine.getCurrentPlayer().rack,
-        this.rackConfig,
-        this.selectedRackIds,
-      );
+      this.rackSlots = layoutRack(rackTiles, this.rackConfig, this.selectedRackIds);
       this.buildRack();
       this.buildButtons();
       this.buildPoolInfo(state);
