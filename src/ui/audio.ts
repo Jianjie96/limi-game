@@ -1,8 +1,9 @@
 // ============================================================================
 // src/ui/audio.ts — 音频管理器（背景音乐 + 操作音效）
 // ----------------------------------------------------------------------------
-// 音频资源存放在微信云开发存储（audio/ 目录），启动时通过
-// getTempFileURL 批量换取临时链接并缓存，播放走 InnerAudioContext。
+// 音频托管在另一个小程序的付费云环境 COS（audio/ 目录），直接 HTTPS 链接播放：
+// 小游戏免费云存储无法改文件权限，且 wx.cloud 不能跨账号环境换取 fileID，
+// 故不走 getTempFileURL，直接拼链接给 InnerAudioContext。
 //
 // 设计要点：
 //   - 全部 API 静默失败：音频任何异常都不允许影响游戏主流程
@@ -23,26 +24,16 @@ export type SfxName =
   | 'victory'
   | 'result';
 
-/** 云开发存储中的音频目录（fileID 前缀 + 文件名即完整 fileID）。 */
-const CLOUD_AUDIO_PREFIX =
-  'cloud://cloud1-d1gkc2ovn71b7d2e3.636c-cloud1-d1gkc2ovn71b7d2e3-1470908906/audio/';
-
-/** 音频所在云环境 ID（显式指定，避免默认环境不一致时换取失败）。 */
-const AUDIO_CLOUD_ENV = 'cloud1-d1gkc2ovn71b7d2e3';
-
-const SFX_FILES: SfxName[] = [
-  'bgm', 'deal', 'draw', 'pickup', 'place', 'sort',
-  'submit', 'error', 'pass', 'victory', 'result',
-];
+/** COS 音频目录：目录前缀 + 文件名即完整播放链接（需对象设为公有读）。 */
+const AUDIO_BASE =
+  'https://636c-cloudbase-8ghks1chd7279bc6-1328430449.cos.ap-shanghai.myqcloud.com/audio/';
 
 const MUTE_KEY = 'lami_sound_on';
 
 class AudioManager {
-  /** 名称 → 临时播放链接（getTempFileURL 换取）。 */
-  private urls = new Map<SfxName, string>();
   /** 名称 → 复用的播放实例（懒创建）。 */
   private contexts = new Map<SfxName, any>();
-  /** 临时链接是否已就绪。 */
+  /** 链接是否就绪（COS 直链，init 后即就绪）。 */
   private ready = false;
   private muted = false;
   /** BGM 是否已启动过（解除静音时用于恢复）。 */
@@ -56,49 +47,21 @@ class AudioManager {
     }
   }
 
-  /** 启动时调用：批量换取全部音频的临时链接（失败不阻断游戏，但输出日志便于排查）。 */
+  /** 启动入口：COS 直链无需换取，直接标记就绪（保留原调用时序）。 */
   init(): void {
-    try {
-      const fileList = SFX_FILES.map((n) => CLOUD_AUDIO_PREFIX + n + '.wav');
-      wx.cloud.getTempFileURL({
-        fileList,
-        config: { env: AUDIO_CLOUD_ENV },
-        success: (res) => {
-          const failed: string[] = [];
-          for (const item of res.fileList || []) {
-            if (!item.tempFileURL || item.status !== 0) {
-              failed.push(`${item.fileID}(status=${item.status})`);
-              continue;
-            }
-            const name = this.nameOfFileID(item.fileID);
-            if (name) this.urls.set(name, item.tempFileURL);
-          }
-          this.ready = true;
-          console.log(`[audio] 音频链接就绪 ${this.urls.size}/${SFX_FILES.length}`);
-          if (failed.length > 0) {
-            console.warn('[audio] 以下音频换取失败（云存储中不存在或无权限）:', failed.join(', '));
-          }
-          // 换取完成前若已请求过 BGM，此时补播。
-          if (this.bgmWanted && !this.muted) this.playBgmInternal();
-        },
-        fail: (err) => {
-          console.warn('[audio] getTempFileURL 失败，将无音频:', err);
-        },
-      });
-    } catch (e) {
-      console.warn('[audio] init 异常:', e);
-    }
+    this.ready = true;
+    // 就绪前若已请求过 BGM，此时补播。
+    if (this.bgmWanted && !this.muted) this.playBgmInternal();
   }
 
   // --------------------------------------------------------------------------
   // 播放
   // --------------------------------------------------------------------------
 
-  /** 播放一次性音效（静音或链接未就绪时忽略）。 */
+  /** 播放一次性音效（静音或未就绪时忽略）。 */
   play(name: Exclude<SfxName, 'bgm'>): void {
     if (this.muted || !this.ready) return;
-    const url = this.urls.get(name);
-    if (!url) return;
+    const url = AUDIO_BASE + name + '.wav';
     try {
       let ctx = this.contexts.get(name);
       if (!ctx) {
@@ -133,8 +96,7 @@ class AudioManager {
   }
 
   private playBgmInternal(): void {
-    const url = this.urls.get('bgm');
-    if (!url) return; // 链接未就绪：init 成功回调里会重试
+    const url = AUDIO_BASE + 'bgm.wav';
     try {
       let ctx = this.contexts.get('bgm');
       if (!ctx) {
@@ -173,13 +135,6 @@ class AudioManager {
       this.playBgmInternal();
     }
     return this.muted;
-  }
-
-  private nameOfFileID(fileID: string): SfxName | null {
-    for (const n of SFX_FILES) {
-      if (fileID.endsWith('/' + n + '.wav')) return n;
-    }
-    return null;
   }
 }
 
