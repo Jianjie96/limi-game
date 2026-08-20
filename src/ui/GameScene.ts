@@ -175,6 +175,13 @@ export class GameScene {
   private longPressActive = false;
   private rangeSelectAnchor: number | null = null;
 
+  /**
+   * 本场景是否经历过 touchStart。
+   * 防止跨场景 tap 穿透：上个场景的点击（如首页「本地试玩」）会在场景切换后
+   * 才派发 touchEnd，若不拦截会被本场景误当成一次点击（曾导致进局即误触 Pass）。
+   */
+  private touchActive = false;
+
   private buttons: ButtonState[] = [];
   private orientationButton!: ButtonState;
 
@@ -333,6 +340,7 @@ export class GameScene {
   private touchStartHandler = (e: { touches?: Array<{ clientX: number; clientY: number }> }) => {
     const t = e.touches?.[0];
     if (!t) return;
+    this.touchActive = true;
     this.pressX = t.clientX;
     this.pressY = t.clientY;
     // 仅记录潜在拖拽来源，不立即执行点击动作（区分点击与拖拽）。
@@ -386,6 +394,9 @@ export class GameScene {
   };
 
   private touchEndHandler = (e: { changedTouches?: Array<{ clientX: number; clientY: number }> }) => {
+    // 拦截上个场景遗留的 tap：没在本场景按下过，就不算本场景的点击。
+    if (!this.touchActive) return;
+    this.touchActive = false;
     const t = e.changedTouches?.[0];
 
     // 长按多选结束：保留已选中的范围。
@@ -413,6 +424,7 @@ export class GameScene {
   };
 
   private touchCancelHandler = () => {
+    this.touchActive = false;
     this.clearLongPressTimer();
     this.longPressActive = false;
     this.rangeSelectAnchor = null;
