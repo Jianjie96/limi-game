@@ -106,6 +106,34 @@ const DRAG_THRESHOLD = 8;
 /** 长按牌架进入「连续滑动多选」的判定时长（毫秒）。 */
 const LONG_PRESS_DELAY = 300;
 
+/** 拖拽时幽灵牌的缩放系数。 */
+const DRAG_GHOST_SCALE = 1.05;
+/** 发牌/摸牌时每张牌的错峰间隔（毫秒），形成级联飞牌效果。 */
+const DEAL_STAGGER_MS = 35;
+/** 结算面板弹出动画时长（毫秒）。 */
+const GAME_OVER_ANIM_MS = 320;
+/** 牌动画平滑速度（越大越跟手，指数平滑系数）。 */
+const ANIM_SPEED = 16;
+
+/** 牌的渲染动画状态：当前位置/缩放 + 目标位置/缩放 + 出生延迟。 */
+interface TileAnim {
+  x: number;
+  y: number;
+  scale: number;
+  tx: number;
+  ty: number;
+  tscale: number;
+  /** 出生延迟（毫秒）：发牌级联时牌先停在牌池点，到时再飞出。 */
+  pending: number;
+}
+
+/** easeOutBack：带轻微回弹的缓出曲线，弹出动画更有卡通感。 */
+function easeOutBack(t: number): number {
+  const c1 = 1.70158;
+  const c3 = c1 + 1;
+  return 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2);
+}
+
 export class GameScene {
   private ctx: CanvasRenderingContext2D;
   private canvas: HTMLCanvasElement;
@@ -152,6 +180,17 @@ export class GameScene {
   private messageTimer: any = null;
 
   private dirty = true;
+
+  // 动画系统
+  /** 每张牌的渲染动画状态（当前位置 → 目标位置）。 */
+  private tileAnims = new Map<number, TileAnim>();
+  /** 飞行中牌的延迟绘制回调（置顶绘制，不被面板遮挡）。 */
+  private flyingDraws: Array<() => void> = [];
+  private lastTickAt = 0;
+  private messageAlpha = 1;
+  private messageFading = false;
+  /** 结算面板弹出动画起始时刻（0 = 未开始）。 */
+  private gameOverStart = 0;
 
   constructor(canvas: HTMLCanvasElement, engine: RummikubEngine, info: ScreenInfo) {
     this.engine = engine;
@@ -415,6 +454,7 @@ export class GameScene {
 
     this.engine.on('gameOver', (data: any) => {
       const winner = data.result.playerResults.find((r: any) => r.isWinner);
+      this.gameOverStart = Date.now();
       this.showMessage(`游戏结束! ${winner?.playerName} 获胜!`);
     });
 
@@ -541,6 +581,8 @@ export class GameScene {
 
   /** 拖拽放下：根据来源与落点执行拆分/合并/加牌/成组。 */
   private handleTileDrop(drag: DragState, x: number, y: number): void {
+    // 先把拖拽牌交给动画系统：从指尖落点飞向新槽位（操作无效时会自动飞回原位）。
+    this.releaseDragAnim(drag, x, y);
     const src = drag.source;
 
     const boardTile = hitTestBoard(x, y, this.boardSlots);
@@ -649,7 +691,7 @@ export class GameScene {
   /** 在拖拽位置绘制幽灵牌。 */
   private drawDragGhost(): void {
     if (!this.drag) return;
-    const scale = 1.05;
+    const scale = DRAG_GHOST_SCALE;
     const w = TILE_WIDTH * scale;
     const h = TILE_HEIGHT * scale;
     drawPhysicalTile(this.ctx, this.drag.source.tile, {
@@ -823,12 +865,23 @@ export class GameScene {
   }
 
   private tick = (): void => {
+    const now = Date.now();
+    const dt = this.lastTickAt > 0 ? Math.min(64, now - this.lastTickAt) : 16;
+    this.lastTickAt = now;
+
     if (this.dirty) {
       this.dirty = false;
       // 重置为逻辑坐标系（逻辑像素 × DPR = 物理像素）。
       this.ctx.setTransform(this.pixelRatio, 0, 0, this.pixelRatio, 0, 0);
-      this.rebuild();
+      this.rebuild(now);
     }
+
+    // 推进动画；还有活跃动画就继续重绘（静止时不置脏，零额外开销）。
+    let animating = this.updateAnimations(dt);
+    animating = this.updateMessageFade(dt) || animating;
+    if (this.gameOverStart > 0 && now - this.gameOverStart < GAME_OVER_ANIM_MS) animating = true;
+    if (animating) this.dirty = true;
+
     requestAnimationFrame(this.tick);
   };
 
@@ -836,7 +889,7 @@ export class GameScene {
     requestAnimationFrame(this.tick);
   }
 
-  private rebuild(): void {
+  private rebuild(now: number): void {
     const state = this.engine.getState();
     this.updateButtonStates();
 
@@ -851,7 +904,7 @@ export class GameScene {
     if (state.phase === GamePhase.WAITING) {
       this.buildWaiting();
     } else if (state.phase === GamePhase.GAME_OVER) {
-      this.buildGameOver(state);
+      this.buildGameOver(state, now);
     } else {
       this.buildTopBar(state);
       this.buildOpponents(state);
@@ -877,11 +930,18 @@ export class GameScene {
       const boardBottom = this.workingAreaY - 8;
       this.boardBottom = boardBottom;
       this.boardSlots = this.layoutBoardToFit(state.board, boardBottom);
+      this.rackSlots = layoutRack(rackTiles, this.rackConfig, this.selectedRackIds);
+
+      // 先登记全部牌的动画目标，再按当前动画位置绘制。
+      this.registerAnimTargets();
+      this.flyingDraws = [];
 
       this.buildBoard(state, boardBottom);
       this.buildWorkingArea(state);
-      this.rackSlots = layoutRack(rackTiles, this.rackConfig, this.selectedRackIds);
       this.buildRack();
+      // 飞行中的牌最后绘制：跨区飞牌不会被其它区域面板遮挡。
+      for (const draw of this.flyingDraws) draw();
+      this.flyingDraws = [];
       this.buildButtons();
       this.buildPoolInfo(state);
       if (this.message) this.buildMessage();
@@ -892,6 +952,159 @@ export class GameScene {
 
     // 拖拽幽灵牌绘制在最上层。
     this.drawDragGhost();
+  }
+
+  // =========================================================================
+  // 动画系统（牌飞行 / 发牌级联 / 气泡淡入淡出）
+  // =========================================================================
+
+  /** 牌池点：新牌出生点，发牌/摸牌时从这里逐张飞出。 */
+  private deckPoint(): { x: number; y: number } {
+    return { x: this.screenW / 2, y: this.rackConfig.y - 22 };
+  }
+
+  /**
+   * 登记所有可见牌的动画目标。
+   * - 已有牌：只更新目标位置，渲染循环自动平滑趋近
+   *   （覆盖选中抬升、理牌重排、跨区移动、桌面缩放等全部场景）。
+   * - 新牌（发牌/摸牌/回合切换）：在牌池点生成错峰出生状态。
+   */
+  private registerAnimTargets(): void {
+    const seen = new Set<number>();
+    const deck = this.deckPoint();
+
+    for (const slot of this.rackSlots) {
+      const id = slot.tile.id;
+      seen.add(id);
+      const tscale = slot.opts.selected ? 1.06 : 1; // 选中轻微放大
+      const a = this.tileAnims.get(id);
+      if (a) {
+        a.tx = slot.opts.x;
+        a.ty = slot.opts.y;
+        a.tscale = tscale;
+      } else {
+        this.tileAnims.set(id, {
+          x: deck.x, y: deck.y, scale: 0.4,
+          tx: slot.opts.x, ty: slot.opts.y, tscale,
+          pending: slot.index * DEAL_STAGGER_MS,
+        });
+      }
+    }
+
+    for (const group of this.boardSlots) {
+      for (const ts of group.tileSlots) {
+        const id = ts.logicalTile.originalTile.id;
+        seen.add(id);
+        const s = ts.opts.scale ?? 1;
+        const a = this.tileAnims.get(id);
+        if (a) {
+          a.tx = ts.opts.x;
+          a.ty = ts.opts.y;
+          a.tscale = s;
+        } else {
+          this.tileAnims.set(id, {
+            x: ts.opts.x, y: ts.opts.y, scale: s,
+            tx: ts.opts.x, ty: ts.opts.y, tscale: s,
+            pending: 0,
+          });
+        }
+      }
+    }
+
+    for (const slot of this.workingAreaSlots) {
+      const id = slot.tile.id;
+      seen.add(id);
+      const a = this.tileAnims.get(id);
+      if (a) {
+        a.tx = slot.x;
+        a.ty = slot.y;
+        a.tscale = 0.7;
+      } else {
+        this.tileAnims.set(id, {
+          x: slot.x, y: slot.y, scale: 0.7,
+          tx: slot.x, ty: slot.y, tscale: 0.7,
+          pending: 0,
+        });
+      }
+    }
+
+    // 清理不再出现在屏幕上的牌的动画状态（如回合切换到其他玩家的手牌）。
+    for (const id of [...this.tileAnims.keys()]) {
+      if (!seen.has(id)) this.tileAnims.delete(id);
+    }
+  }
+
+  /** 该牌是否正在飞行（渲染位置与目标差异明显），飞行牌置顶绘制避免被面板遮挡。 */
+  private isTileMoving(id: number): boolean {
+    const a = this.tileAnims.get(id);
+    if (!a) return false;
+    return (
+      a.pending > 0 ||
+      Math.abs(a.tx - a.x) > 1.5 ||
+      Math.abs(a.ty - a.y) > 1.5 ||
+      Math.abs(a.tscale - a.scale) > 0.01
+    );
+  }
+
+  /** 推进所有牌动画（指数平滑，帧率无关），返回是否仍有活跃动画。 */
+  private updateAnimations(dt: number): boolean {
+    if (this.tileAnims.size === 0) return false;
+    let animating = false;
+    const f = 1 - Math.exp((-dt * ANIM_SPEED) / 1000);
+    for (const a of this.tileAnims.values()) {
+      if (a.pending > 0) {
+        a.pending -= dt;
+        animating = true;
+        continue;
+      }
+      const dx = a.tx - a.x;
+      const dy = a.ty - a.y;
+      const ds = a.tscale - a.scale;
+      if (Math.abs(dx) < 0.2 && Math.abs(dy) < 0.2 && Math.abs(ds) < 0.004) {
+        a.x = a.tx;
+        a.y = a.ty;
+        a.scale = a.tscale;
+        continue;
+      }
+      a.x += dx * f;
+      a.y += dy * f;
+      a.scale += ds * f;
+      animating = true;
+    }
+    return animating;
+  }
+
+  /** 推进提示气泡的淡入/淡出，返回是否仍活跃。 */
+  private updateMessageFade(dt: number): boolean {
+    if (!this.message) return false;
+    if (this.messageFading) {
+      this.messageAlpha -= dt / 160;
+      if (this.messageAlpha <= 0) {
+        this.message = '';
+        this.messageAlpha = 0;
+        this.messageFading = false;
+      }
+      return true;
+    }
+    if (this.messageAlpha < 1) {
+      this.messageAlpha = Math.min(1, this.messageAlpha + dt / 140);
+      return true;
+    }
+    return false;
+  }
+
+  /** 拖拽松手交接：把牌的渲染状态设为指尖落点，之后由动画系统丝滑送往目标槽位。 */
+  private releaseDragAnim(drag: DragState, x: number, y: number): void {
+    const s = DRAG_GHOST_SCALE;
+    this.tileAnims.set(drag.source.tileId, {
+      x: x - (TILE_WIDTH * s) / 2,
+      y: y - (TILE_HEIGHT * s) / 2,
+      scale: s,
+      tx: x - (TILE_WIDTH * s) / 2,
+      ty: y - (TILE_HEIGHT * s) / 2,
+      tscale: s,
+      pending: 0,
+    });
   }
 
   private buildWaiting(): void {
@@ -925,12 +1138,16 @@ export class GameScene {
     }
   }
 
-  private buildGameOver(state: GameState): void {
+  private buildGameOver(state: GameState, now: number): void {
     const result = state.result;
     if (!result) return;
     const ctx = this.ctx;
 
-    this.ctx.fillStyle = 'rgba(0,0,0,0.6)';
+    // 面板弹出动画：easeOutBack 回弹 + 遮罩淡入。
+    const t = this.gameOverStart > 0 ? Math.min(1, (now - this.gameOverStart) / GAME_OVER_ANIM_MS) : 1;
+    const pop = 0.6 + 0.4 * (t >= 1 ? 1 : easeOutBack(t));
+
+    this.ctx.fillStyle = `rgba(0,0,0,${0.6 * Math.min(1, t * 2)})`;
     this.ctx.fillRect(0, 0, this.screenW, this.screenH);
 
     // 中央卡通结算面板：米色圆角卡片 + 金色描边。
@@ -939,6 +1156,12 @@ export class GameScene {
     const panelH = 150 + rows * 32;
     const px = (this.screenW - panelW) / 2;
     const py = (this.screenH - panelH) / 2;
+
+    // 以面板中心为基准缩放，做出弹出感。
+    ctx.save();
+    ctx.translate(this.screenW / 2, py + panelH / 2);
+    ctx.scale(pop, pop);
+    ctx.translate(-this.screenW / 2, -(py + panelH / 2));
 
     ctx.fillStyle = 'rgba(0,0,0,0.35)';
     roundRectPath(ctx, px + 3, py + 5, panelW, panelH, 18);
@@ -990,6 +1213,7 @@ export class GameScene {
       });
       y += 32;
     }
+    ctx.restore();
   }
 
   private buildTopBar(state: GameState): void {
@@ -1121,8 +1345,22 @@ export class GameScene {
       ctx.stroke();
 
       for (const tileSlot of slot.tileSlots) {
-        if (this.isDraggingTile('board', tileSlot.logicalTile.originalTile.id)) continue;
-        drawBoardTile(ctx, slot.group.type, slot.group.tiles, tileSlot.index, tileSlot.opts);
+        const tileId = tileSlot.logicalTile.originalTile.id;
+        if (this.isDraggingTile('board', tileId)) continue;
+        // 绘制位置取自动画状态；飞行中的牌延迟到最上层绘制。
+        const a = this.tileAnims.get(tileId);
+        const opts: TileRenderOptions = {
+          ...tileSlot.opts,
+          x: a ? a.x : tileSlot.opts.x,
+          y: a ? a.y : tileSlot.opts.y,
+          scale: a ? a.scale : tileSlot.opts.scale,
+        };
+        if (this.isTileMoving(tileId)) {
+          const g = slot.group;
+          this.flyingDraws.push(() => drawBoardTile(ctx, g.type, g.tiles, tileSlot.index, opts));
+        } else {
+          drawBoardTile(ctx, slot.group.type, slot.group.tiles, tileSlot.index, opts);
+        }
       }
     }
   }
@@ -1190,11 +1428,18 @@ export class GameScene {
 
     for (const slot of this.workingAreaSlots) {
       if (this.isDraggingTile('working', slot.tile.id)) continue;
-      drawPhysicalTile(ctx, slot.tile, {
-        x: slot.x,
-        y: slot.y,
-        scale: 0.7,
-      });
+      const a = this.tileAnims.get(slot.tile.id);
+      const opts: TileRenderOptions = {
+        x: a ? a.x : slot.x,
+        y: a ? a.y : slot.y,
+        scale: a ? a.scale : 0.7,
+      };
+      if (this.isTileMoving(slot.tile.id)) {
+        const tile = slot.tile;
+        this.flyingDraws.push(() => drawPhysicalTile(ctx, tile, opts));
+      } else {
+        drawPhysicalTile(ctx, slot.tile, opts);
+      }
     }
   }
 
@@ -1227,7 +1472,14 @@ export class GameScene {
 
     for (const slot of this.rackSlots) {
       if (this.isDraggingTile('rack', slot.tile.id)) continue;
-      drawPhysicalTile(ctx, slot.tile, slot.opts);
+      const a = this.tileAnims.get(slot.tile.id);
+      const opts: TileRenderOptions = a ? { ...slot.opts, x: a.x, y: a.y, scale: a.scale } : slot.opts;
+      if (this.isTileMoving(slot.tile.id)) {
+        const tile = slot.tile;
+        this.flyingDraws.push(() => drawPhysicalTile(ctx, tile, opts));
+      } else {
+        drawPhysicalTile(ctx, slot.tile, opts);
+      }
     }
   }
 
@@ -1312,12 +1564,16 @@ export class GameScene {
 
   private buildMessage(): void {
     const ctx = this.ctx;
+    // 淡入淡出 + 上浮 12px 的卡通气泡动效。
+    const alpha = Math.max(0, Math.min(1, this.messageAlpha));
+    ctx.save();
+    ctx.globalAlpha = alpha;
     ctx.font = `bold ${FONT_SIZE_LABEL}px ${FONT_FAMILY}`;
     const tw = ctx.measureText(this.message).width;
     const msgW = Math.min(this.screenW * 0.86, tw + 40);
     const msgH = 42;
     const x = (this.screenW - msgW) / 2;
-    const y = this.screenH * 0.45;
+    const y = this.screenH * 0.45 + (1 - alpha) * 12;
 
     // 卡通气泡提示：深色圆角 + 金色描边。
     ctx.fillStyle = 'rgba(0,0,0,0.3)';
@@ -1336,6 +1592,7 @@ export class GameScene {
       color: '#FFFFFF',
       bold: true,
     });
+    ctx.restore();
   }
 
   // =========================================================================
@@ -1368,10 +1625,13 @@ export class GameScene {
   // =========================================================================
 
   showMessage(msg: string, duration: number = 2000): void {
+    const isNew = !this.message;
     this.message = msg;
+    this.messageFading = false;
+    if (isNew) this.messageAlpha = 0;
     if (this.messageTimer) clearTimeout(this.messageTimer);
     this.messageTimer = setTimeout(() => {
-      this.message = '';
+      this.messageFading = true;
       this.markDirty();
     }, duration);
     this.markDirty();
