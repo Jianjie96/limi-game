@@ -8,14 +8,14 @@
 //   move — 出牌提交：回放客户端操作日志 → submitTurn 校验 → 写库推送
 //   pass — Pass：摸 1 张并结束回合（回滚本回合桌面操作）
 //   end  — 房主主动结束对局（关闭测试房 / 紧急终止）
-//   tick — 定时触发器（每分钟）：超时回合执行摸牌惩罚并移交；
-//          回收真人长时间无动作的机器人测试房与逾期未开始的等待测试房
+//   tick — 定时触发器（每分钟）：回收闲置测试房与逾期未开始的等待测试房，
+//          清理过期房间数据（第一版回合不限时，无超时托管）
 //
 // 机器人托管：devFill 填充的测试机器人（openid 形如 bot_*）回合由云端立即代打，
 // 回合一旦移交机器人，advanceBots 连续执行 bot.ts 的贪心 AI 直到回到真人回合。
 //
 // 数据存储（手牌/牌池严格分离，防窥屏）：
-//   lami_rooms.game     公开状态（桌面/分数/回合/version/turnDeadline）
+//   lami_rooms.game     公开状态（桌面/分数/回合/version；turnDeadline 恒为 0 = 不限时）
 //   lami_hands/{id}     私有手牌，_id = `${roomCode}_${openid}`，仅本人可读
 //   lami_secrets/{code} 完整引擎状态（含牌池顺序），仅云函数可访问
 // ============================================================================
@@ -30,10 +30,9 @@ const ROOMS = db.collection('lami_rooms');
 const HANDS = db.collection('lami_hands');
 const SECRETS = db.collection('lami_secrets');
 
-const TURN_MS = 60 * 1000;
 /** 房间数据保留时长：已结束/已废弃的房间超过该时长后由 tick 清理。 */
 const ROOM_RETAIN_MS = 3 * 24 * 3600 * 1000;
-/** 测试房闲置回收：真人玩家超过该时长无任何操作（机器人会自动托管回合）→ tick 释放房间。 */
+/** 测试房闲置回收：真人玩家超过该时长无任何操作 → tick 释放房间。 */
 const TEST_ROOM_IDLE_MS = 24 * 60 * 60 * 1000;
 /** 等待中的测试房：创建后超过该时长仍未开局 → tick 直接回收。 */
 const TEST_ROOM_WAIT_MS = 60 * 60 * 1000;
@@ -184,13 +183,11 @@ async function doInit(event, openid) {
     playerCount: room.players.length,
     initialHandSize: 14,
     initialMeldMinScore: 30,
-    turnTimeLimit: 60,
   });
   // 洗牌、发牌全部在云端完成，客户端拿不到牌池顺序。
   engine.startGame(room.players.map((p) => p.name));
 
   const version = 1;
-  const deadline = Date.now() + TURN_MS;
   await SECRETS.doc(code).set({
     data: { code, fullState: engine.serializeState(), updatedAt: Date.now() },
   });
@@ -210,17 +207,17 @@ async function doInit(event, openid) {
       status: 'playing',
       game: {
         version,
-        turnDeadline: deadline,
+        turnDeadline: 0,
         playersOpenid,
         currentPlayerIndex: 0,
-        public: buildPublic(engine, version, deadline),
+        public: buildPublic(engine, version, 0),
         // 开局由房主客户端触发，记为一次真人活跃；供 tick 回收闲置测试房判定。
         lastHumanAt: Date.now(),
       },
     },
   });
 
-  return ok(payloadFor(room, engine, version, deadline, openid));
+  return ok(payloadFor(room, engine, version, 0, openid));
 }
 
 /** 出牌提交：回放操作日志 → submitTurn 校验。 */
@@ -237,14 +234,6 @@ async function doMove(event, openid) {
   const secret = await getDoc(SECRETS, code);
   if (!secret) return fail('对局数据缺失');
   const engine = RummikubEngine.fromState(secret.fullState);
-
-  // 超时兜底：回合已过期 → 先执行惩罚并移交，再拒绝本次提交。
-  if (Date.now() > room.game.turnDeadline) {
-    engine.handleTimeout();
-    await settleAndPersist(room, engine);
-    await advanceBots(room, engine);
-    return fail('回合已超时，已自动摸牌并移交回合');
-  }
 
   try {
     applyOps(engine, ops);
@@ -308,10 +297,9 @@ async function doPass(event, openid) {
 async function settleAndPersist(room, engine) {
   const st = engine.getState();
   const version = (room.game.version || 0) + 1;
-  const deadline = Date.now() + TURN_MS;
-  await persistState(room, engine, version, deadline);
+  await persistState(room, engine, version, 0);
   room.game.version = version;
-  room.game.turnDeadline = deadline;
+  room.game.turnDeadline = 0;
   room.game.currentPlayerIndex = st.currentPlayerIndex;
   if (st.phase === 'GAME_OVER') {
     await ROOMS.doc(room.code).update({ data: { status: 'finished' } });
@@ -358,23 +346,20 @@ async function advanceBots(room, engine) {
   return turns;
 }
 
-/** 定时任务：扫描超时回合，执行摸牌惩罚并移交；顺带清理过期房间数据。 */
+/** 定时任务：回收闲置测试房、同步已结束状态；顺带清理过期房间数据。 */
 async function doTick() {
   const now = Date.now();
-  const snap = await ROOMS.where({
-    status: 'playing',
-    'game.turnDeadline': _.lt(now),
-  }).limit(50).get();
+  const snap = await ROOMS.where({ status: 'playing' }).limit(50).get();
 
   let handled = 0;
   for (const room of snap.data) {
     try {
-      // 测试房闲置回收：真人长时间无操作时机器人回合会被超时托管无限续命，
-      // 这里按最后真人活跃时间判定，直接释放房间，不再陪跑。
+      // 测试房闲置回收：真人长时间无操作 → 直接释放房间，不再陪跑。
       if (hasBots(room)) {
         const lastHuman = (room.game && room.game.lastHumanAt) || room.startedAt || 0;
         if (now - lastHuman > TEST_ROOM_IDLE_MS) {
           await finishAndCleanup(room);
+          handled++;
           continue;
         }
       }
@@ -383,13 +368,8 @@ async function doTick() {
       const engine = RummikubEngine.fromState(secret.fullState);
       if (engine.getState().phase !== 'PLAYING') {
         await ROOMS.doc(room.code).update({ data: { status: 'finished' } });
-        continue;
+        handled++;
       }
-      engine.handleTimeout();
-      await settleAndPersist(room, engine);
-      // 超时移交后若轮到机器人 → 立即代打，不等下一分钟 tick。
-      await advanceBots(room, engine);
-      handled++;
     } catch (e) {
       // 单个房间失败不影响其他房间
     }

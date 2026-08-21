@@ -224,7 +224,6 @@ function startOnlineGame(room: RoomInfo, selfOpenid: string): void {
     playerCount: room.capacity,
     initialHandSize: 14,
     initialMeldMinScore: 30,
-    turnTimeLimit: 60,
   });
   const scene = new GameScene(nativeCanvas, engine, freshScreenInfo(), selfIndex);
   const coordinator = new OnlineCoordinator(
