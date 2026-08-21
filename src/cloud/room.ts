@@ -46,6 +46,8 @@ export interface RoomResult {
 
 type RoomResponse = RoomResult & { ok: boolean };
 
+type MyRoomResponse = { ok: boolean; room: RoomInfo | null; self: string };
+
 // ----------------------------------------------------------------------------
 // 初始化
 // ----------------------------------------------------------------------------
@@ -136,6 +138,18 @@ export function startRoom(code: string): Promise<RoomResult> {
 /** 开发调试：房主用测试机器人补满空位，单人即可开局联调实时对战。 */
 export function fillDevBots(code: string): Promise<RoomResult> {
   return callRoom<RoomResponse>('devFill', { code });
+}
+
+/**
+ * 查询本人进行中的房间（云端权威）。
+ * 本地房间记忆（lastRoom）被清除后的兜底：从数据库恢复房号，
+ * 保证清缓存不会导致进不去对局。未找到时 room 为 null。
+ */
+export function findMyActiveRoom(): Promise<{ room: RoomInfo | null; self: string }> {
+  return callRoom<MyRoomResponse>('myRoom').then((result) => {
+    if (result.room) saveLastRoom(result.room.code); // 回写本地，下次免查
+    return { room: result.room, self: result.self };
+  });
 }
 
 // ----------------------------------------------------------------------------

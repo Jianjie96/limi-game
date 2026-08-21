@@ -236,7 +236,7 @@ export class SettingsScene {
     vibrateIfEnabled();
     wx.showModal({
       title: '清除缓存',
-      content: '将清除房间记忆与音频本地缓存，昵称、头像与各项设置不受影响。',
+      content: '将清除房间记忆与音频本地缓存（进行中的对局仍可从云端恢复），昵称、头像与各项设置不受影响。',
       confirmText: '清除',
       cancelText: '取消',
       success: (res) => {

@@ -8,6 +8,7 @@
 //   start   — 房主在人齐后开始游戏
 //   devFill — 开发调试：房主用测试机器人补满空位，单人即可开局；
 //             机器人回合由 lami-game 定时触发器超时自动摸牌托管
+//   myRoom  — 查询本人进行中的房间（断线重连的云端兼容，本地缓存被清也可恢复）
 // 数据集合：lami_rooms（以 5 位房号作为文档 _id）
 // ============================================================================
 
@@ -161,6 +162,19 @@ exports.main = async (event) => {
           });
           room.players = room.players.concat(bots);
         }
+        return ok({ room, self: OPENID });
+      }
+
+      // 查询本人进行中的房间（等待中/已开始/对局中）：本地房间记忆被清后的云端兼容。
+      case 'myRoom': {
+        const snap = await COL.where({
+          'players.openid': OPENID,
+          status: db.command.in(['waiting', 'started', 'playing']),
+        })
+          .orderBy('createdAt', 'desc')
+          .limit(1)
+          .get();
+        const room = snap && snap.data && snap.data.length > 0 ? snap.data[0] : null;
         return ok({ room, self: OPENID });
       }
 
