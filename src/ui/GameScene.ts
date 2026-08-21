@@ -730,7 +730,7 @@ export class GameScene {
   }
 
   // =========================================================================
-  // 拖拽交互（破冰后自由拆牌 / 组合）
+  // 拖拽交互（桌面即草稿，未破冰也可自由拆牌/组合，出牌时才校验）
   // =========================================================================
 
   /** 命中某个可拖拽的牌（牌架 / 桌面），返回其来源。 */
@@ -820,13 +820,9 @@ export class GameScene {
         }
       }
 
-      // 牌架 → 桌面：加到已有牌组（需破冰）/ 空白处成新草稿组（始终允许，出牌时才校验）。
+      // 牌架 → 桌面：加到已有牌组 / 空白处成新草稿组（都是草稿，出牌时才校验）。
       if (src.kind === 'rack') {
         if (targetGroupId) {
-          if (!this.canManipulateBoard()) {
-            this.showMessage('破冰后才能给桌面牌组加牌');
-            return;
-          }
           this.engine.placeTilesOnBoard([src.tileId], targetGroupId);
           this.selectedRackIds.delete(src.tileId);
           audio.play('place');
@@ -841,22 +837,6 @@ export class GameScene {
 
       // 桌面 → 其它地方：拆分 / 移动 / 合并 / 成立新组（桌面即草稿，出牌时才校验）。
       const sourceGroupId = src.sourceGroupId!;
-
-      // 未破冰时，仅能操作本回合从牌架放下的牌：放回牌架。
-      if (!this.canManipulateBoard()) {
-        if (!this.isRackPlacedThisTurn(src.tileId)) {
-          this.showMessage('破冰后才能操作桌面牌');
-          return;
-        }
-        if (onRack) {
-          this.engine.returnTilesToRack([src.tileId]);
-          audio.play('pickup');
-          this.showTip('已放回牌架');
-        } else {
-          this.showMessage('破冰前只能把自己的草稿牌放回牌架');
-        }
-        return;
-      }
 
       if (targetGroupId === sourceGroupId) {
         // 同组内理牌 → 插入实时预览缺口处（或目标牌位置）（Joker 显示值随位置变化）。
@@ -977,28 +957,12 @@ export class GameScene {
     return splitIntoMelds(tiles) !== null;
   }
 
-  /** 当前玩家是否已完成破冰（可自由操作桌面牌）。 */
-  private canManipulateBoard(): boolean {
-    const state = this.engine.getState();
-    return state.phase === GamePhase.PLAYING && this.getSelfPlayer().hasMadeInitialMeld;
-  }
-
-  /** 该牌是否是本回合从牌架放下桌面的牌（未破冰时可拿回自己的牌）。 */
-  private isRackPlacedThisTurn(tileId: number): boolean {
-    const ctx = this.engine.getState().turnContext;
-    return !!ctx && ctx.rackTilesPlacedThisTurn.some(t => t.id === tileId);
-  }
-
   /** 点击桌面上的某张牌：有选中牌架牌时加牌，否则拆回牌架。 */
   private onBoardTileTap(slot: BoardTileSlot): void {
     const tileId = slot.logicalTile.originalTile.id;
 
-    // 有选中牌架牌 → 把它们加到这个牌组（给已有牌组加牌，需破冰）。
+    // 有选中牌架牌 → 把它们加到这个牌组（草稿操作，出牌时才校验）。
     if (this.selectedRackIds.size > 0) {
-      if (!this.canManipulateBoard()) {
-        this.showMessage('破冰后才能给桌面牌组加牌');
-        return;
-      }
       try {
         const rack = this.getSelfPlayer().rack;
         const tiles = rack.filter((t) => this.selectedRackIds.has(t.id));
@@ -1012,12 +976,7 @@ export class GameScene {
       return;
     }
 
-    // 否则拆回牌架（未破冰时仅允许拿回本回合从牌架放下的牌）。
-    if (!this.canManipulateBoard() && !this.isRackPlacedThisTurn(tileId)) {
-      this.showMessage('破冰后才能操作桌面牌');
-      return;
-    }
-
+    // 否则拆回牌架。
     try {
       this.engine.returnTilesToRack([tileId]);
       this.showTip('已拆分：牌放回牌架');
