@@ -114,7 +114,7 @@ export const LAYOUT = {
 /** 工作区样式 */
 export const WORKING_AREA_BG = 'rgba(18,32,42,0.35)';
 export const WORKING_AREA_BORDER = '#D3BC8E';
-export const WORKING_AREA_LABEL = '工作区 (点击牌放回桌面)';
+export const WORKING_AREA_LABEL = '工作区 (拖牌入盒分组，拖到空白拆出)';
 /**
  * 工作区最小高度：至少容纳标签 + 一行 0.7 倍缩放牌（16 + 56*0.7 + 6），
  * 避免被压成一条细缝，也保证单行牌不会溢出面板下边缘。

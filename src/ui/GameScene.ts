@@ -11,8 +11,8 @@ import { GamePhase } from '../game/types';
 import { RummikubEngine } from '../game/engine';
 import type { OnlineCoordinator } from './online';
 import { drawCapsuleButton } from './backdrop';
-import { canFormMelds, splitIntoMelds } from '../game/validate';
-import { detectGroupType } from '../game/tiles';
+import { canFormMelds, splitIntoMelds, isValidRun, isValidGroupTiles } from '../game/validate';
+import { detectGroupType, toLogical } from '../game/tiles';
 import {
   LAYOUT,
   FONT_FAMILY,
@@ -72,11 +72,20 @@ import { vibrateIfEnabled } from './profile';
 /** 工作区单张牌的位置信息（用于绘制与命中检测） */
 interface WorkingAreaSlot {
   tile: Tile;
-  index: number;
+  index: number; // 组内索引（仅展示用）
   x: number;
   y: number;
   w: number;
   h: number;
+}
+
+/** 工作区分组盒的位置信息（与桌面牌组托盘观感一致，用于绘制与命中） */
+interface WaGroupBox {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  groupIndex: number; // 对应 waGroups 中的下标
 }
 
 /** 拖拽来源 */
@@ -183,6 +192,14 @@ export class GameScene {
   private rackSlots: RackTileSlot[] = [];
   private boardSlots: BoardGroupSlot[] = [];
   private workingAreaSlots: WorkingAreaSlot[] = [];
+  private workingAreaBoxes: WaGroupBox[] = [];
+
+  /**
+   * 工作区分组（纯 UI 本地状态）：工作区所有牌 id 的有序划分，每子数组是一个分组盒。
+   * 交互与桌面一致：拖入盒内合并/调序，拖到空白处独立成新盒；出牌时≥3 张的盒按原样成组。
+   * 引擎里工作区仍是平铺牌列，分组只影响展示与出牌拆分顺序，无需云端同步。
+   */
+  private waGroups: number[][] = [];
 
   private selectedRackIds: Set<number> = new Set();
   private highlightedGroupIds: Set<string> = new Set();
@@ -202,8 +219,8 @@ export class GameScene {
   private rangeSelectAnchor: number | null = null;
   /** 理牌实时预览：拖拽牌架牌时牌架中开出的缺口索引（排除后序列），null 表示无预览。 */
   private previewGapIndex: number | null = null;
-  /** 理牌实时预览：拖拽工作区牌时工作区中开出的缺口索引（排除后序列）。 */
-  private previewWaGapIndex: number | null = null;
+  /** 理牌实时预览：拖拽工作区牌时悬停分组盒内开出的缺口（组下标 + 索引）。 */
+  private previewWaGap: { groupIndex: number; gapIndex: number } | null = null;
   /** 理牌实时预览：拖拽桌面牌时同组内开出的缺口（组 id + 索引），null 表示无预览。 */
   private previewBoardGap: { groupId: string; gapIndex: number } | null = null;
 
@@ -476,15 +493,15 @@ export class GameScene {
         this.previewGapIndex = this.isInRackRegion(t.clientX, t.clientY)
           ? rackGapIndexAt(t.clientX, t.clientY, this.getSelfPlayer().rack.length - 1, this.rackConfig)
           : null;
-        this.previewWaGapIndex = null;
+        this.previewWaGap = null;
         this.previewBoardGap = null;
       } else if (kind === 'working') {
-        this.previewWaGapIndex = this.isInWorkingAreaRegion(t.clientX, t.clientY)
-          ? this.workingAreaGapIndexAt(
-              t.clientX,
-              t.clientY,
-              this.engine.getTurnContext().workingArea.length - 1,
-            )
+        // 悬停在某个分组盒上 → 盒内实时开缺口；空白处/区域外 → 无缺口（松手独立成新盒）。
+        const box = this.isInWorkingAreaRegion(t.clientX, t.clientY)
+          ? this.hitTestWaGroupBox(t.clientX, t.clientY)
+          : null;
+        this.previewWaGap = box
+          ? { groupIndex: box.groupIndex, gapIndex: this.waGapIndexInBox(t.clientX, box, this.drag.source.tileId) }
           : null;
         this.previewGapIndex = null;
         this.previewBoardGap = null;
@@ -496,7 +513,7 @@ export class GameScene {
             ? { groupId: group.groupId, gapIndex: this.boardGapIndexAt(t.clientX, group) }
             : null;
         this.previewGapIndex = null;
-        this.previewWaGapIndex = null;
+        this.previewWaGap = null;
       }
     }
     this.markDirty();
@@ -523,7 +540,7 @@ export class GameScene {
       this.longPressActive = false;
       this.rangeSelectAnchor = null;
       this.previewGapIndex = null;
-      this.previewWaGapIndex = null;
+      this.previewWaGap = null;
       this.previewBoardGap = null;
       this.pressSource = null;
       this.markDirty();
@@ -534,7 +551,7 @@ export class GameScene {
       this.handleTileDrop(this.drag, this.drag.curX, this.drag.curY);
       this.drag = null;
       this.previewGapIndex = null;
-      this.previewWaGapIndex = null;
+      this.previewWaGap = null;
       this.previewBoardGap = null;
       this.pressSource = null;
       this.markDirty();
@@ -554,7 +571,7 @@ export class GameScene {
     this.sweepSelectActive = false;
     this.rangeSelectAnchor = null;
     this.previewGapIndex = null;
-    this.previewWaGapIndex = null;
+    this.previewWaGap = null;
     this.previewBoardGap = null;
     this.drag = null;
     this.pressSource = null;
@@ -882,13 +899,15 @@ export class GameScene {
 
       // 工作区 → 牌架 / 桌面。
       if (src.kind === 'working') {
-        // 落在工作区内 → 插入实时预览缺口处（或另一张牌上），仅调整顺序（理牌），不受破冰限制。
+        // 落在工作区内 → 分组理牌：缺口处插入目标盒（合并/调序）；空白处独立成新盒。不受破冰限制。
         if (onWorkingArea) {
-          const insertAt = this.previewWaGapIndex ?? workingHit?.index;
-          if (insertAt != null && (!workingHit || workingHit.tile.id !== src.tileId)) {
-            this.engine.reorderWorkingAreaTile(src.tileId, insertAt);
+          if (this.previewWaGap) {
+            this.moveWaTileToGroup(src.tileId, this.previewWaGap.groupIndex, this.previewWaGap.gapIndex);
             audio.play('sort');
-            this.showTip('已调整顺序');
+            this.showTip('已调整分组');
+          } else {
+            this.isolateWaTile(src.tileId);
+            audio.play('sort');
           }
           return;
         }
@@ -981,17 +1000,45 @@ export class GameScene {
   private onButtonTap(buttonId: string): void {
     switch (buttonId) {
       case 'submit': {
-        // 工作区牌 + 选中牌架牌 → 拆分组成新牌组后提交（破冰可一次打多组）。
+        // 工作区牌 + 选中牌架牌 → 组成新牌组后提交（破冰可一次打多组）。
+        // 手动分组优先：≥3 张的分组盒按原样成组；零散牌 + 选中牌架牌自动拆分。
         const rack = this.getSelfPlayer().rack;
         const selTiles = rack.filter((t) => this.selectedRackIds.has(t.id));
         const waTiles = [...this.engine.getTurnContext().workingArea];
         if (selTiles.length > 0 || waTiles.length > 0) {
-          const melds = splitIntoMelds([...waTiles, ...selTiles]);
-          if (!melds || melds.length === 0) {
+          const byId = new Map(waTiles.map((t) => [t.id, t]));
+          const manualMelds: Tile[][] = [];
+          const pool: Tile[] = [];
+          for (const ids of this.waGroups) {
+            const tiles = ids.map((id) => byId.get(id)).filter((t): t is Tile => !!t);
+            if (tiles.length >= 3) manualMelds.push(tiles);
+            else pool.push(...tiles);
+          }
+
+          // 手动分组必须各自是完整的合法顺子/刻子（一盒 = 一组）。
+          const isMeld = (tiles: Tile[]) => {
+            const logicals = tiles.map(toLogical);
+            return isValidRun(logicals) || isValidGroupTiles(logicals);
+          };
+          const badIndex = manualMelds.findIndex((m) => !isMeld(m));
+          if (badIndex >= 0) {
             audio.play('error');
-            this.showMessage('工作区与选中的牌无法组成合法顺子/刻子');
+            this.showMessage(`工作区第 ${badIndex + 1} 个分组不是合法的顺子/刻子`);
             return;
           }
+
+          let melds = manualMelds;
+          const rest = [...pool, ...selTiles];
+          if (rest.length > 0) {
+            const auto = splitIntoMelds(rest);
+            if (!auto || auto.length === 0) {
+              audio.play('error');
+              this.showMessage('剩余的牌无法组成合法顺子/刻子');
+              return;
+            }
+            melds = [...manualMelds, ...auto];
+          }
+
           try {
             // 选中牌架牌先移入工作区，统一走「工作区成新组」路径。
             if (selTiles.length > 0) {
@@ -1001,6 +1048,7 @@ export class GameScene {
               this.engine.createNewGroupFromWorkingArea(meld, detectGroupType(meld));
             }
             this.selectedRackIds.clear();
+            this.waGroups = [];
             audio.play('place');
           } catch (err: any) {
             audio.play('error');
@@ -1118,9 +1166,7 @@ export class GameScene {
     if (state.phase !== GamePhase.PLAYING) return;
 
     try {
-      const ctx = this.engine.getTurnContext();
-      const tile = ctx.workingArea[slot.index];
-      if (!tile) return;
+      const tile = slot.tile;
 
       // 未破冰时工作区牌只来自牌架：点击直接放回牌架（桌面操作需破冰）。
       if (!this.canManipulateBoard()) {
@@ -1221,16 +1267,23 @@ export class GameScene {
       this.rackConfig.y = rackTop;
 
       // 工作区高度与 y 无关，先测高度再反推顶部 y（紧贴牌架上方）。
-      // 理牌实时预览：拖工作区牌且缺口开着时，用含缺口的预览布局（邻牌让位）。
+      // 分组同步 + 理牌实时预览：拖工作区牌且悬停盒开着缺口时，用含缺口的预览布局（盒内邻牌让位）。
+      this.syncWaGroups(workingTiles);
       const draggingWaId = this.drag?.source.kind === 'working' ? this.drag.source.tileId : null;
       const waPreview =
-        draggingWaId != null && this.previewWaGapIndex != null
-          ? { excludeId: draggingWaId, gapIndex: this.previewWaGapIndex }
+        draggingWaId != null && this.previewWaGap != null
+          ? {
+              excludeId: draggingWaId,
+              targetGroupIndex: this.previewWaGap.groupIndex,
+              gapIndex: this.previewWaGap.gapIndex,
+            }
           : undefined;
       const waMeasured = this.workingAreaLayout(workingTiles, 0, waPreview);
       this.workingAreaHeight = waMeasured.height;
       this.workingAreaY = rackTop - waMeasured.height - 8;
-      this.workingAreaSlots = this.workingAreaLayout(workingTiles, this.workingAreaY, waPreview).slots;
+      const waFinal = this.workingAreaLayout(workingTiles, this.workingAreaY, waPreview);
+      this.workingAreaSlots = waFinal.slots;
+      this.workingAreaBoxes = waFinal.boxes;
 
       // 桌面：顶部预留出对手信息行（顶栏 + 一行徽章高度），向下填满到工作区上方。
       this.boardConfig.topY = this.safeTop + PLAYER_INFO_HEIGHT + 30;
@@ -1889,88 +1942,136 @@ export class GameScene {
     }
   }
 
-  /** 计算工作区布局（自动换行），返回牌位与所需高度。 */
+  /**
+   * 工作区布局：按 waGroups 渲染成一个个分组盒（与桌面牌组托盘观感一致），
+   * 盒子流式排列自动换行；preview 开启时目标盒排除被拖牌并在 gapIndex 留空槽。
+   */
   private workingAreaLayout(
     tiles: Tile[],
     baseY: number,
-    preview?: { excludeId: number; gapIndex: number },
-  ): { slots: WorkingAreaSlot[]; height: number } {
+    preview?: { excludeId: number; targetGroupIndex: number; gapIndex: number },
+  ): { slots: WorkingAreaSlot[]; boxes: WaGroupBox[]; height: number } {
     const scale = 0.7;
     const tw = TILE_WIDTH * scale;
     const th = TILE_HEIGHT * scale;
     const gapX = TILE_GAP + 2;
-    const gapY = 4;
-    const contentLeft = this.safeLeft + 12;
-    const contentRight = this.screenW - this.safeRight - 12;
-    const usableW = contentRight - contentLeft;
-    const perRow = Math.max(1, Math.floor((usableW + gapX) / (tw + gapX)));
+    const pad = 6;
+    const boxGap = 10;
+    const rowGapY = 8;
     const topOffset = 16; // 顶部留出标签高度
+    const contentLeft = this.safeLeft + 12;
+    const right = this.screenW - this.safeRight - 12;
+    const boxH = th + pad * 2;
+    const byId = new Map(tiles.map((t) => [t.id, t]));
 
-    // 理牌预览：排除被拖牌并在 gapIndex 留空槽；行数按含占位的完整数量计算，避免行结构抽动。
-    const filtered = preview ? tiles.filter((t) => t.id !== preview.excludeId) : tiles;
-    const gapIndex = preview?.gapIndex ?? -1;
-    const total = filtered.length + (preview ? 1 : 0);
+    const slots: WorkingAreaSlot[] = [];
+    const boxes: WaGroupBox[] = [];
+    let curX = contentLeft;
+    let rowY = baseY + topOffset;
+    let rowCount = 0;
 
-    const slots: WorkingAreaSlot[] = filtered.map((tile, i) => {
-      const v = preview && i >= gapIndex ? i + 1 : i; // 虚拟位置（跳过占位槽）
-      const row = Math.floor(v / perRow);
-      const col = v % perRow;
-      return {
-        tile,
-        index: i, // 排除后序列的索引，与 reorderWorkingAreaTile 的 toIndex 语义一致
-        x: contentLeft + col * (tw + gapX),
-        y: baseY + topOffset + row * (th + gapY),
-        w: tw,
-        h: th,
-      };
+    this.waGroups.forEach((ids, gi) => {
+      const isTarget = !!preview && preview.targetGroupIndex === gi;
+      // 预览时目标盒排除被拖牌并计入占位槽；被拖空的盒暂不渲染（松手取消会回来）。
+      const filteredIds = preview ? ids.filter((id) => id !== preview.excludeId) : ids;
+      const total = filteredIds.length + (isTarget ? 1 : 0);
+      if (total === 0) return;
+
+      const boxW = total * tw + (total - 1) * gapX + pad * 2;
+      // 放不下则换行（当前行已有内容时才换，避免单盒过宽死循环）。
+      if (curX + boxW > right && curX > contentLeft) {
+        curX = contentLeft;
+        rowY += boxH + rowGapY;
+      }
+      if (curX === contentLeft) rowCount++;
+
+      boxes.push({ x: curX, y: rowY, w: boxW, h: boxH, groupIndex: gi });
+      filteredIds.forEach((id, i) => {
+        const tile = byId.get(id);
+        if (!tile) return;
+        const v = isTarget && i >= preview!.gapIndex ? i + 1 : i; // 虚拟位置（跳过占位槽）
+        slots.push({
+          tile,
+          index: i,
+          x: curX + pad + v * (tw + gapX),
+          y: rowY + pad,
+          w: tw,
+          h: th,
+        });
+      });
+      curX += boxW + boxGap;
     });
 
-    const rows = total === 0 ? 0 : Math.ceil(total / perRow);
     const height =
-      total === 0
+      boxes.length === 0
         ? WORKING_AREA_HEIGHT
-        : Math.max(WORKING_AREA_HEIGHT, topOffset + rows * th + (rows - 1) * gapY + 6);
+        : Math.max(WORKING_AREA_HEIGHT, topOffset + rowCount * boxH + (rowCount - 1) * rowGapY + 6);
 
-    return { slots, height };
+    return { slots, boxes, height };
+  }
+
+  /** 分组同步：剔除已离开工作区的牌；未归组的新牌各自成为单牌盒（追加到末尾）。幂等，可逐帧调用。 */
+  private syncWaGroups(workingTiles: Tile[]): void {
+    const ids = new Set(workingTiles.map((t) => t.id));
+    this.waGroups = this.waGroups
+      .map((g) => g.filter((id) => ids.has(id)))
+      .filter((g) => g.length > 0);
+    const covered = new Set<number>();
+    for (const g of this.waGroups) for (const id of g) covered.add(id);
+    for (const t of workingTiles) if (!covered.has(t.id)) this.waGroups.push([t.id]);
+  }
+
+  /** 分组操作：把牌插入目标盒的 gapIndex 处（排除后序列语义），源盒变空自动删除。 */
+  private moveWaTileToGroup(tileId: number, groupIndex: number, gapIndex: number): void {
+    const target = this.waGroups[groupIndex];
+    if (!target) return;
+    for (const g of this.waGroups) {
+      const i = g.indexOf(tileId);
+      if (i >= 0) {
+        g.splice(i, 1);
+        break;
+      }
+    }
+    target.splice(Math.max(0, Math.min(gapIndex, target.length)), 0, tileId);
+    this.waGroups = this.waGroups.filter((g) => g.length > 0);
+  }
+
+  /** 分组操作：把牌从所在盒取出独立成新盒（追加到末尾）；已是单牌盒则不动。 */
+  private isolateWaTile(tileId: number): void {
+    const owner = this.waGroups.find((g) => g.includes(tileId));
+    if (!owner || owner.length === 1) return;
+    owner.splice(owner.indexOf(tileId), 1);
+    this.waGroups.push([tileId]);
+    this.waGroups = this.waGroups.filter((g) => g.length > 0);
+  }
+
+  /** 命中检测：点击/拖拽位置对应工作区哪个分组盒。 */
+  private hitTestWaGroupBox(px: number, py: number): WaGroupBox | null {
+    for (let i = this.workingAreaBoxes.length - 1; i >= 0; i--) {
+      const b = this.workingAreaBoxes[i];
+      if (px >= b.x && px <= b.x + b.w && py >= b.y && py <= b.y + b.h) return b;
+    }
+    return null;
   }
 
   /**
-   * 拖拽预览时，由手指位置求工作区插入索引（排除后序列中的位置）。
-   * 基于含占位的完整虚拟布局计算，结果与当前缺口位置无关，不会抖动。
+   * 拖拽预览时，由手指横向位置求盒内插入索引（排除后序列中的位置）。
+   * 含占位的虚拟布局与完整布局槽位位置一致、不随缺口变化，不会抖动。
    */
-  private workingAreaGapIndexAt(px: number, py: number, filteredCount: number): number {
-    if (filteredCount <= 0) return 0;
+  private waGapIndexInBox(px: number, box: WaGroupBox, dragId: number): number {
+    const g = this.waGroups[box.groupIndex];
+    if (!g || g.length === 0) return 0;
     const scale = 0.7;
     const tw = TILE_WIDTH * scale;
-    const th = TILE_HEIGHT * scale;
-    const gapX = TILE_GAP + 2;
-    const gapY = 4;
-    const contentLeft = this.safeLeft + 12;
-    const usableW = this.screenW - this.safeRight - 12 - contentLeft;
-    const perRow = Math.max(1, Math.floor((usableW + gapX) / (tw + gapX)));
-    const topOffset = 16;
-    const total = filteredCount + 1;
-    const rows = Math.max(1, Math.ceil(total / perRow));
-
-    // 取离手指最近的一行。
-    let row = 0;
-    let best = Infinity;
-    for (let r = 0; r < rows; r++) {
-      const cy = this.workingAreaY + topOffset + r * (th + gapY) + th / 2;
-      const d = Math.abs(py - cy);
-      if (d < best) {
-        best = d;
-        row = r;
-      }
+    const step = tw + TILE_GAP + 2;
+    const pad = 6;
+    // 牌在目标盒内 → 虚拟槽位数 = 组大小；从别处拖入 → +1（占位）。
+    const n = g.includes(dragId) ? g.length : g.length + 1;
+    let idx = 0;
+    for (let i = 0; i < n; i++) {
+      if (px > box.x + pad + i * step + tw / 2) idx = i + 1;
     }
-
-    // 手指越过几个槽位中心 → 插入到第几个位置（工作区左对齐不居中）。
-    let local = 0;
-    for (let c = 0; c < perRow; c++) {
-      if (row * perRow + c >= total) break;
-      if (px > contentLeft + c * (tw + gapX) + tw / 2) local = c + 1;
-    }
-    return Math.max(0, Math.min(row * perRow + local, filteredCount));
+    return Math.max(0, Math.min(idx, n - 1));
   }
 
   /**
@@ -2013,6 +2114,18 @@ export class GameScene {
       align: 'left',
       baseline: 'top',
     });
+
+    // 分组盒托盘（与桌面牌组同款）：拖拽悬停的目标盒用暖金高亮提示合并。
+    for (const box of this.workingAreaBoxes) {
+      const isTarget =
+        this.drag?.source.kind === 'working' && this.previewWaGap?.groupIndex === box.groupIndex;
+      ctx.fillStyle = isTarget ? BOARD_GROUP_HIGHLIGHT_BG : BOARD_GROUP_BG;
+      ctx.strokeStyle = isTarget ? BOARD_GROUP_HIGHLIGHT_BORDER : BOARD_GROUP_BORDER;
+      ctx.lineWidth = isTarget ? 2 : 1;
+      roundRectPath(ctx, box.x, box.y, box.w, box.h, 8);
+      ctx.fill();
+      ctx.stroke();
+    }
 
     for (const slot of this.workingAreaSlots) {
       if (this.isDraggingTile('working', slot.tile.id)) continue;
@@ -2130,20 +2243,21 @@ export class GameScene {
     const text = `牌池剩余: ${state.pool.length} 张`;
     ctx.font = `bold ${FONT_SIZE_LABEL - 2}px ${FONT_FAMILY}`;
     const tw = ctx.measureText(text).width;
-    // 徽章底边止于牌架上方、与工作区（底边 = rackTop - 8）保持间距，避免互相压盖。
-    const cy = this.rackConfig.y - 22;
+    // 悬浮在桌面面板右下角（牌组从左上流式排布，右下角通常留白，也不挤占工作区）。
+    const cy = this.boardBottom - 20;
+    const cx = this.screenW - this.safeRight - 18 - (tw / 2 + 12);
 
-    // 磨砂胶囊徽章（香槟金描边 + 光斑），居中悬浮在牌架上方。
+    // 磨砂胶囊徽章（香槟金描边 + 光斑）。
     ctx.fillStyle = FROST_STRONG;
-    roundRectPath(ctx, this.screenW / 2 - tw / 2 - 12, cy - 11, tw + 24, 22, 11);
+    roundRectPath(ctx, cx - tw / 2 - 12, cy - 11, tw + 24, 22, 11);
     ctx.fill();
     ctx.strokeStyle = GOLD;
     ctx.lineWidth = 1.5;
-    roundRectPath(ctx, this.screenW / 2 - tw / 2 - 12, cy - 11, tw + 24, 22, 11);
+    roundRectPath(ctx, cx - tw / 2 - 12, cy - 11, tw + 24, 22, 11);
     ctx.stroke();
 
-    this.drawSparkle(this.screenW / 2 - tw / 2 - 2, cy, 3, GOLD_SOFT);
-    this.drawText(this.screenW / 2 + 4, cy, text, {
+    this.drawSparkle(cx - tw / 2 - 2, cy, 3, GOLD_SOFT);
+    this.drawText(cx + 4, cy, text, {
       size: FONT_SIZE_LABEL - 2,
       color: INK,
       bold: true,
