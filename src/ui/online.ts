@@ -30,6 +30,8 @@ export interface OnlineSceneHost {
   showMessage(msg: string, duration?: number): void;
   /** 辅助提示：仅开发版展示，线上静默。 */
   showTip(msg: string, duration?: number): void;
+  /** 发牌动画开关（一次性）：断线重连首次全量加载前置 false，原地全量展示。 */
+  setDealAnimEnabled(enabled: boolean): void;
 }
 
 /** 占位牌：仅用于填充他人牌架数量与牌池数量，不参与任何规则计算。 */
@@ -126,7 +128,7 @@ export class OnlineCoordinator {
   /** 正在等待云端响应（期间 watch 推送仅缓存）。 */
   private busy = false;
   private hostRetry = 0;
-  /** 首次应用云端状态时播放发牌音效。 */
+  /** 首次应用云端状态时播放发牌音效（仅真正开局，断线重连跳过）。 */
   private firstApply = true;
 
   constructor(
@@ -308,13 +310,19 @@ export class OnlineCoordinator {
     this.appliedVersion = pub.version;
     this.appliedHandKey = handIdsKey(hand);
 
+    // 首次加载是否为「真正开局」：第 1 回合且桌面为空。
+    // 断线重连/中途进局不满足 → 跳过发牌仪式，全量原地展示。
+    const freshDeal =
+      pub.phase === 'PLAYING' && pub.turnNumber <= 1 && pub.board.length === 0;
+    if (this.firstApply && !freshDeal) this.scene.setDealAnimEnabled(false);
+
     const json = buildMaskedStateJson(pub, hand, this.selfIndex);
     this.engine.loadState(json);
 
-    // 首次拿到云端状态：开局发牌音效。
+    // 首次拿到云端状态：开局发牌音效（重连跳过）。
     if (this.firstApply) {
       this.firstApply = false;
-      if (pub.phase === 'PLAYING') audio.play('deal');
+      if (freshDeal) audio.play('deal');
     }
 
     const myTurn = pub.phase === 'PLAYING' && pub.currentPlayerIndex === this.selfIndex;

@@ -243,6 +243,8 @@ export class GameScene {
   private selfIndex: number;
   /** 在线同步协调器（由入口注入）。 */
   coordinator: OnlineCoordinator | null = null;
+  /** 下一次全量加载是否播放发牌动画（断线重连置 false，全量原地展示）。 */
+  private dealAnimEnabled = true;
 
   constructor(
     canvas: HTMLCanvasElement,
@@ -350,6 +352,11 @@ export class GameScene {
   private getSelfPlayer(): PlayerState {
     const state = this.engine.getState();
     return state.players[this.selfIndex] ?? this.engine.getCurrentPlayer();
+  }
+
+  /** 发牌动画开关（一次性）：断线重连首次全量加载前置 false，跳过发牌仪式。 */
+  setDealAnimEnabled(enabled: boolean): void {
+    this.dealAnimEnabled = enabled;
   }
 
   /** 当前是否允许本人操作（非本人回合仅可观看）。 */
@@ -1226,29 +1233,44 @@ export class GameScene {
       }
     }
 
-    // 发牌节奏：一次出现大量新牌（开局发牌/换手）时一张一张慢发，
-    // 让玩家看清每张牌并堆叠对后续牌的期待；摸牌等少量增补快进快出。
-    const bulkDeal = newRackSlots.length >= DEAL_BULK_THRESHOLD;
-    const stagger = bulkDeal ? DEAL_STAGGER_MS : DEAL_QUICK_STAGGER_MS;
-    if (bulkDeal) audio.play('deal');
-    for (let i = 0; i < newRackSlots.length; i++) {
-      const slot = newRackSlots[i];
-      // 待发的牌先在牌池点堆成牌堆（轻微错位模拟牌堆厚度），到点后拱形飞入牌架。
-      const sx = deck.x + ((i % 3) - 1) * 1.5;
-      const sy = deck.y - Math.min(i, 10) * 1.2;
-      const dist = Math.hypot(slot.opts.x - sx, slot.opts.y - sy);
-      this.tileAnims.set(slot.tile.id, {
-        x: sx, y: sy, scale: 0.42,
-        tx: slot.opts.x, ty: slot.opts.y,
-        tscale: slot.opts.selected ? 1.06 : 1,
-        pending: i * stagger,
-        arc: {
-          sx, sy, ss: 0.42, t: 0,
-          dur: DEAL_FLIGHT_MS + Math.min(140, dist * 0.25),
-          delay: 0,
-          back: bulkDeal,
-        },
-      });
+    // 断线重连/中途进局的首次全量加载：跳过发牌仪式，新牌直接原地展示。
+    // 一次性开关，消费后恢复，后续摸牌等增补仍走飞行动画。
+    const suppressDeal = !this.dealAnimEnabled && newRackSlots.length > 0;
+    if (suppressDeal) {
+      this.dealAnimEnabled = true;
+      for (const slot of newRackSlots) {
+        const s = slot.opts.selected ? 1.06 : 1;
+        this.tileAnims.set(slot.tile.id, {
+          x: slot.opts.x, y: slot.opts.y, scale: s,
+          tx: slot.opts.x, ty: slot.opts.y, tscale: s,
+          pending: 0,
+        });
+      }
+    } else {
+      // 发牌节奏：一次出现大量新牌（开局发牌/换手）时一张一张慢发，
+      // 让玩家看清每张牌并堆叠对后续牌的期待；摸牌等少量增补快进快出。
+      const bulkDeal = newRackSlots.length >= DEAL_BULK_THRESHOLD;
+      const stagger = bulkDeal ? DEAL_STAGGER_MS : DEAL_QUICK_STAGGER_MS;
+      if (bulkDeal) audio.play('deal');
+      for (let i = 0; i < newRackSlots.length; i++) {
+        const slot = newRackSlots[i];
+        // 待发的牌先在牌池点堆成牌堆（轻微错位模拟牌堆厚度），到点后拱形飞入牌架。
+        const sx = deck.x + ((i % 3) - 1) * 1.5;
+        const sy = deck.y - Math.min(i, 10) * 1.2;
+        const dist = Math.hypot(slot.opts.x - sx, slot.opts.y - sy);
+        this.tileAnims.set(slot.tile.id, {
+          x: sx, y: sy, scale: 0.42,
+          tx: slot.opts.x, ty: slot.opts.y,
+          tscale: slot.opts.selected ? 1.06 : 1,
+          pending: i * stagger,
+          arc: {
+            sx, sy, ss: 0.42, t: 0,
+            dur: DEAL_FLIGHT_MS + Math.min(140, dist * 0.25),
+            delay: 0,
+            back: bulkDeal,
+          },
+        });
+      }
     }
 
     // 让位动效保持轻快：统一短时长、无错峰，避免眼花缭乱。
