@@ -32,6 +32,8 @@ export interface OnlineSceneHost {
   showTip(msg: string, duration?: number): void;
   /** 发牌动画开关（一次性）：断线重连首次全量加载前置 false，原地全量展示。 */
   setDealAnimEnabled(enabled: boolean): void;
+  /** 云端操作进行中：锁定出牌/Pass 按钮并给出「处理中」即时反馈，防止重复点击。 */
+  setSubmitting(busy: boolean): void;
 }
 
 /** 占位牌：仅用于填充他人牌架数量与牌池数量，不参与任何规则计算。 */
@@ -190,7 +192,13 @@ export class OnlineCoordinator {
   // 出牌 / Pass
   // --------------------------------------------------------------------------
 
-  /** 出牌：本地克隆预校验（即时反馈）→ 云端回放校验（权威裁决）。 */
+  /** 切换 busy 并同步通知场景锁/解锁按钮（即时反馈，防重复点击）。 */
+  private setBusy(v: boolean): void {
+    this.busy = v;
+    this.scene.setSubmitting(v);
+  }
+
+  /** 出牌：本地克隆预校验（即时反馈）→ 乐观提交 → 云端回放校验（权威裁决）。 */
   submit(): void {
     if (this.busy) return;
     const st = this.engine.getState();
@@ -216,22 +224,45 @@ export class OnlineCoordinator {
       return;
     }
 
-    this.busy = true;
+    this.setBusy(true);
+
+    // 乐观提交：本地已校验通过，立即在可见引擎上确认回合——牌落桌面、回合移交，
+    // 用户无需等待云端往返即看到结果（消除卡顿感）。云端响应到达后 loadState
+    // 整体对齐（成功/否决带权威态）或回滚（网络失败）；引擎 turnEnd/turnStart
+    // 事件已触发音效与提示，此处不再重复。
+    try {
+      const opt = this.engine.submitTurn();
+      if (!opt.valid) {
+        // 复核未通过（理论上与克隆一致）→ 回滚并放弃提交。
+        this.setBusy(false);
+        if (this.turnStartJson) this.engine.loadState(this.turnStartJson);
+        audio.play('error');
+        this.scene.showMessage('出牌失败', 2400);
+        return;
+      }
+    } catch (e) {
+      // 异常同样回滚并放弃提交。
+      this.setBusy(false);
+      if (this.turnStartJson) this.engine.loadState(this.turnStartJson);
+      audio.play('error');
+      this.scene.showMessage('出牌失败', 2400);
+      return;
+    }
+
     sendMove(this.code, ops)
       .then((resp) => {
-        this.busy = false;
+        this.setBusy(false);
         const pl = payloadOf(resp);
         if (resp.ok && pl) {
+          // 云端确认：用权威状态对齐（通常与乐观态一致）。
           this.applyPayload(pl.public, pl.hand);
-          audio.play('submit');
-          this.scene.showTip('出牌成功');
         } else {
           const msg =
             resp.errors?.map((er) => er.message).join('; ') ||
             resp.message ||
             '出牌失败';
           if (pl) {
-            // 云端返回权威状态 → 按其对齐（等价于回滚）。
+            // 云端否决并返回权威状态 → 按其对齐（等价于回滚乐观提交）。
             this.applyPayload(pl.public, pl.hand);
           } else if (this.turnStartJson) {
             this.engine.loadState(this.turnStartJson);
@@ -242,23 +273,25 @@ export class OnlineCoordinator {
         this.tryApply(); // 消费 busy 期间缓存的推送
       })
       .catch((e: Error) => {
-        this.busy = false;
-        // 网络失败：保留草稿不回滚，提示重试。
+        this.setBusy(false);
+        // 网络失败：回滚乐观提交到回合开始，保留草稿可重试。
+        if (this.turnStartJson) this.engine.loadState(this.turnStartJson);
         audio.play('error');
         this.scene.showMessage(e.message || '网络异常，请重试', 3000);
       });
   }
 
-  /** Pass：摸一张并结束回合（云端执行）。 */
+  /** Pass：摸一张并结束回合（云端执行）。摸到的牌云端才可知，故不做乐观提交，
+   *  仅以按钮锁定 + 「摸牌中…」给出即时反馈并防重复点击。 */
   pass(): void {
     if (this.busy) return;
     const st = this.engine.getState();
     if (st.phase !== 'PLAYING' || st.currentPlayerIndex !== this.selfIndex) return;
 
-    this.busy = true;
+    this.setBusy(true);
     sendPass(this.code)
       .then((resp) => {
-        this.busy = false;
+        this.setBusy(false);
         const pl = payloadOf(resp);
         if (resp.ok && pl) {
           this.applyPayload(pl.public, pl.hand);
@@ -271,7 +304,7 @@ export class OnlineCoordinator {
         this.tryApply();
       })
       .catch((e: Error) => {
-        this.busy = false;
+        this.setBusy(false);
         audio.play('error');
         this.scene.showMessage(e.message || '网络异常，请重试', 3000);
       });

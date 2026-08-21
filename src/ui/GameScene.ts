@@ -266,6 +266,8 @@ export class GameScene {
   private selfIndex: number;
   /** 在线同步协调器（由入口注入）。 */
   coordinator: OnlineCoordinator | null = null;
+  /** 云端操作进行中（出牌/Pass 请求在飞）：锁定操作按钮并展示「处理中」，防重复点击。 */
+  private submitting = false;
   /** 下一次全量加载是否播放发牌动画（断线重连置 false，全量原地展示）。 */
   private dealAnimEnabled = true;
 
@@ -365,10 +367,19 @@ export class GameScene {
   }
 
   private updateButtonStates(): void {
+    // 云端处理中：锁定两个操作按钮并显示「处理中」，即时反馈且彻底挡住重复点击。
+    if (this.submitting) {
+      for (const btn of this.buttons) {
+        btn.config.enabled = false;
+        btn.config.label = btn.config.id === 'submit' ? '出牌中…' : '摸牌中…';
+      }
+      return;
+    }
     // 仅本人回合处于可操作阶段：玩家可随时「出牌」或选择「Pass 摸牌」。
     const canAct = this.canAct();
     for (const btn of this.buttons) {
       btn.config.enabled = canAct;
+      btn.config.label = btn.config.id === 'submit' ? '出牌' : 'Pass 摸牌';
     }
   }
 
@@ -380,6 +391,13 @@ export class GameScene {
   /** 发牌动画开关（一次性）：断线重连首次全量加载前置 false，跳过发牌仪式。 */
   setDealAnimEnabled(enabled: boolean): void {
     this.dealAnimEnabled = enabled;
+  }
+
+  /** 云端操作进行中：锁定操作按钮并即时重绘，防重复点击并给出「处理中」反馈。 */
+  setSubmitting(busy: boolean): void {
+    if (this.submitting === busy) return;
+    this.submitting = busy;
+    this.markDirty();
   }
 
   /** 当前是否允许本人操作（非本人回合仅可观看）。 */
@@ -708,6 +726,8 @@ export class GameScene {
   }
 
   private onPointerDown(x: number, y: number): void {
+    // 云端操作进行中：屏蔽一切交互，避免重复提交或在请求在飞时误动牌面。
+    if (this.submitting) return;
     const er = this.endGameRect;
     if (er && x >= er.x && x <= er.x + er.w && y >= er.y && y <= er.y + er.h) {
       this.onRequestEndGame?.();
