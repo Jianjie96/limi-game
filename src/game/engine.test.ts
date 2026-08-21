@@ -168,6 +168,37 @@ describe('RummikubEngine', () => {
       expect(result.valid).toBe(true);
       expect(p.hasMadeInitialMeld).toBe(true);
     });
+
+    it('提交确认后桌面牌组自动理成规范顺序', () => {
+      engine.startGame(['P1', 'P2']);
+      const p = engine.getCurrentPlayer();
+      // 刻子颜色乱序（黄红蓝）+ 顺子乱序存放（5、3、Joker）。
+      const deck: Tile[] = [
+        { id: 9201, color: 'yellow', number: 8 },
+        { id: 9202, color: 'red', number: 8 },
+        { id: 9203, color: 'blue', number: 8 },
+        { id: 9204, color: 'black', number: 9 }, // 余牌避免直接出完
+        { id: 9205, color: 'red', number: 5 },
+        { id: 9206, color: 'red', number: 3 },
+        { id: 9207, color: 'joker', number: 0 },
+      ];
+      p.rack = deck;
+      const ctx = engine.getTurnContext();
+      (ctx as unknown as { rackAtTurnStart: Tile[] }).rackAtTurnStart = deck.map((t) => ({ ...t }));
+      p.hasMadeInitialMeld = true; // 跳过破冰分数约束，专注理牌行为
+
+      engine.createNewGroupOnBoard([deck[0], deck[1], deck[2]], 'group');
+      engine.createNewGroupOnBoard([deck[4], deck[5], deck[6]], 'run');
+      const result = engine.submitTurn();
+
+      expect(result.valid).toBe(true);
+      const board = engine.getState().board;
+      const setGroup = board.find((g) => g.type === 'group')!;
+      expect(setGroup.tiles.map((t) => t.logicalColor)).toEqual(['red', 'blue', 'yellow']);
+      const runGroup = board.find((g) => g.type === 'run')!;
+      // 理成升序 3、4、5，Joker 归位到中间代表 4。
+      expect(runGroup.tiles.map((t) => t.originalTile.id)).toEqual([9206, 9207, 9205]);
+    });
   });
 
   describe('桌面草稿（牌架↔桌面直连）', () => {

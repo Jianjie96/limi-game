@@ -1089,7 +1089,12 @@ export class GameScene {
       this.boardSlots = this.layoutBoardToFit(state.board, boardBottom, boardGap);
       // 理牌实时预览：拖拽牌架牌且缺口开着时，用含缺口的预览布局（邻牌让位）。
       // 从桌面拿回的牌（不在回合开始手牌快照中）用斜体 + 双下划线标记，出牌校验失败时供辨认。
-      const rackAtStart = state.turnContext?.rackAtTurnStart;
+      // 仅本人回合比对：联机模式他人回合的快照是占位牌，乐观提交后回合立即移交，
+      // 若拿占位快照比对手牌会把整手牌误标为「借来的」。
+      const rackAtStart =
+        state.currentPlayerIndex === this.selfIndex
+          ? state.turnContext?.rackAtTurnStart
+          : undefined;
       const fromBoardIds = rackAtStart
         ? new Set(rackTiles.filter((t) => !rackAtStart.some((s) => s.id === t.id)).map((t) => t.id))
         : undefined;

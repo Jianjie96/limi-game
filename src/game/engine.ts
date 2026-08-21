@@ -25,6 +25,7 @@ import {
   createFullSet,
   shuffle,
   isJoker,
+  isLogicalJoker,
   toLogical,
   getTileValue,
   findTileById,
@@ -57,6 +58,54 @@ function maxGroupIdFromBoard(board: readonly TileGroup[]): number {
     if (m) max = Math.max(max, parseInt(m[1], 10));
   }
   return max;
+}
+
+/** 刻子理牌的固定颜色顺序（Joker 殿后）。 */
+const SET_COLOR_ORDER: Record<string, number> = {
+  red: 0,
+  blue: 1,
+  yellow: 2,
+  black: 3,
+  joker: 4,
+};
+
+/**
+ * 顺子理牌：按数字升序排列，Joker 先填中间缺口、再向上延伸（与渲染层
+ * 「首=向下延伸、尾=向上延伸」的位置推断一致）。不改 Joker 逻辑值，
+ * 仅重排存储（显示）顺序。合法性已由提交前校验保证。
+ */
+function tidyRunTiles(tiles: LogicalTile[]): LogicalTile[] {
+  const jokers = tiles.filter((t) => isLogicalJoker(t));
+  const reals = tiles.filter((t) => !isLogicalJoker(t));
+  if (reals.length === 0 || jokers.length === 0) {
+    // 无 Joker 直接升序；纯 Joker 防御性原样返回。
+    return [...tiles].sort(
+      (a, b) => a.logicalNumber - b.logicalNumber ||
+        (SET_COLOR_ORDER[a.logicalColor] ?? 9) - (SET_COLOR_ORDER[b.logicalColor] ?? 9),
+    );
+  }
+
+  reals.sort((a, b) => a.logicalNumber - b.logicalNumber);
+  const min = reals[0].logicalNumber;
+  const max = reals[reals.length - 1].logicalNumber;
+
+  // Joker 承担的数值：中间缺口优先，剩余优先向上延伸，不够再向下。
+  const jokerValues: number[] = [];
+  for (let v = min; v <= max; v++) {
+    if (!reals.some((t) => t.logicalNumber === v)) jokerValues.push(v);
+  }
+  let remaining = jokers.length - jokerValues.length;
+  for (let v = max + 1; remaining > 0 && v <= 13; v++, remaining--) jokerValues.push(v);
+  for (let v = min - 1; remaining > 0 && v >= 1; v--, remaining--) jokerValues.push(v);
+
+  // 按升序逐位分配：真实牌占本数值位，其余由 Joker 填充。
+  const values = [...reals.map((t) => t.logicalNumber), ...jokerValues].sort((a, b) => a - b);
+  const realQueue = [...reals];
+  const jokerQueue = [...jokers];
+  return values.map((v) => {
+    const idx = realQueue.findIndex((t) => t.logicalNumber === v);
+    return idx >= 0 ? realQueue.splice(idx, 1)[0] : jokerQueue.shift()!;
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -656,8 +705,31 @@ export class RummikubEngine {
     ctx.justDrawnTilePlaced = false;
   }
 
+  /**
+   * 把桌面所有牌组理成规范展示顺序（出牌确认后调用）：
+   * - 顺子：数字升序，Joker 归位到其承担的数值位
+   * - 刻子：固定颜色顺序（红蓝黄黑，Joker 殿后）
+   * 仅重排顺序，不改变牌组集合与 Joker 逻辑值；牌组类型不变。
+   */
+  private tidyBoardGroups(): void {
+    this.state.board = this.state.board.map((group) => {
+      const tiles =
+        group.type === 'run'
+          ? tidyRunTiles([...group.tiles])
+          : [...group.tiles].sort(
+              (a, b) =>
+                (SET_COLOR_ORDER[a.logicalColor] ?? 9) - (SET_COLOR_ORDER[b.logicalColor] ?? 9),
+            );
+      return { ...group, tiles };
+    });
+  }
+
   /** 确认回合 (验证通过) */
   private confirmTurn(): SubmitResult {
+    // 出牌成立后把桌面所有牌组理成规范顺序（顺子升序、刻子按颜色序），
+    // 客户端乐观提交与云端回放校验都会执行，两侧结果一致。
+    this.tidyBoardGroups();
+
     const player = this.getCurrentPlayer();
     const ctx = this.getTurnContext();
 

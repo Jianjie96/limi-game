@@ -343,6 +343,42 @@ function maxGroupIdFromBoard(board) {
   }
   return max;
 }
+var SET_COLOR_ORDER = {
+  red: 0,
+  blue: 1,
+  yellow: 2,
+  black: 3,
+  joker: 4
+};
+function tidyRunTiles(tiles) {
+  const jokers = tiles.filter((t) => isLogicalJoker(t));
+  const reals = tiles.filter((t) => !isLogicalJoker(t));
+  if (reals.length === 0 || jokers.length === 0) {
+    return [...tiles].sort(
+      (a, b) => {
+        var _a, _b;
+        return a.logicalNumber - b.logicalNumber || ((_a = SET_COLOR_ORDER[a.logicalColor]) != null ? _a : 9) - ((_b = SET_COLOR_ORDER[b.logicalColor]) != null ? _b : 9);
+      }
+    );
+  }
+  reals.sort((a, b) => a.logicalNumber - b.logicalNumber);
+  const min = reals[0].logicalNumber;
+  const max = reals[reals.length - 1].logicalNumber;
+  const jokerValues = [];
+  for (let v = min; v <= max; v++) {
+    if (!reals.some((t) => t.logicalNumber === v)) jokerValues.push(v);
+  }
+  let remaining = jokers.length - jokerValues.length;
+  for (let v = max + 1; remaining > 0 && v <= 13; v++, remaining--) jokerValues.push(v);
+  for (let v = min - 1; remaining > 0 && v >= 1; v--, remaining--) jokerValues.push(v);
+  const values = [...reals.map((t) => t.logicalNumber), ...jokerValues].sort((a, b) => a - b);
+  const realQueue = [...reals];
+  const jokerQueue = [...jokers];
+  return values.map((v) => {
+    const idx = realQueue.findIndex((t) => t.logicalNumber === v);
+    return idx >= 0 ? realQueue.splice(idx, 1)[0] : jokerQueue.shift();
+  });
+}
 var RummikubEngine = class _RummikubEngine {
   constructor(config) {
     /** 本回合桌面操作日志（在线对战：提交时发云端回放校验） */
@@ -806,8 +842,26 @@ var RummikubEngine = class _RummikubEngine {
     ctx.hasPlacedFromRack = false;
     ctx.justDrawnTilePlaced = false;
   }
+  /**
+   * 把桌面所有牌组理成规范展示顺序（出牌确认后调用）：
+   * - 顺子：数字升序，Joker 归位到其承担的数值位
+   * - 刻子：固定颜色顺序（红蓝黄黑，Joker 殿后）
+   * 仅重排顺序，不改变牌组集合与 Joker 逻辑值；牌组类型不变。
+   */
+  tidyBoardGroups() {
+    this.state.board = this.state.board.map((group) => {
+      const tiles = group.type === "run" ? tidyRunTiles([...group.tiles]) : [...group.tiles].sort(
+        (a, b) => {
+          var _a, _b;
+          return ((_a = SET_COLOR_ORDER[a.logicalColor]) != null ? _a : 9) - ((_b = SET_COLOR_ORDER[b.logicalColor]) != null ? _b : 9);
+        }
+      );
+      return { ...group, tiles };
+    });
+  }
   /** 确认回合 (验证通过) */
   confirmTurn() {
+    this.tidyBoardGroups();
     const player = this.getCurrentPlayer();
     const ctx = this.getTurnContext();
     if (!player.hasMadeInitialMeld && ctx.rackTilesPlacedThisTurn.length > 0) {
