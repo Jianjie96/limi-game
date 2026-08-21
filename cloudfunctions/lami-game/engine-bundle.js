@@ -326,8 +326,11 @@ function recordJokerReplacement(ctx, jokerTile, originalGroupId, realTileUsed) {
   ctx.replacedJokers.push({ jokerTile, originalGroupId, realTileUsed });
 }
 function recordRackTilesPlaced(ctx, tiles) {
+  const startIds = new Set(ctx.rackAtTurnStart.map((t) => t.id));
+  const ownTiles = tiles.filter((t) => startIds.has(t.id));
+  if (ownTiles.length === 0) return;
   ctx.hasPlacedFromRack = true;
-  ctx.rackTilesPlacedThisTurn.push(...tiles);
+  ctx.rackTilesPlacedThisTurn.push(...ownTiles);
 }
 function hasPlacedFromRack(ctx) {
   return ctx.hasPlacedFromRack;

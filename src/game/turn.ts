@@ -60,8 +60,13 @@ export function getReplacedJokers(ctx: TurnContext): readonly ReplacedJoker[] {
 // ---------------------------------------------------------------------------
 
 export function recordRackTilesPlaced(ctx: TurnContext, tiles: Tile[]): void {
+  // 只统计回合开始时就在牌架的牌：桌面跨组移动走「退回牌架 + 重新放置」
+  // 两步实现，若不过滤会把纯桌面整理误判为「从牌架出了牌」，导致没出牌也能提交。
+  const startIds = new Set(ctx.rackAtTurnStart.map(t => t.id));
+  const ownTiles = tiles.filter(t => startIds.has(t.id));
+  if (ownTiles.length === 0) return;
   ctx.hasPlacedFromRack = true;
-  ctx.rackTilesPlacedThisTurn.push(...tiles);
+  ctx.rackTilesPlacedThisTurn.push(...ownTiles);
 }
 
 export function hasPlacedFromRack(ctx: TurnContext): boolean {

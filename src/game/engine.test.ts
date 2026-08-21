@@ -2,8 +2,9 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { GamePhase, TurnPhase } from './types';
 import type { Tile } from './types';
 import { RummikubEngine, applyOps } from './engine';
-import { detectGroupType } from './tiles';
+import { detectGroupType, toLogical } from './tiles';
 import { isValidGroup } from './validate';
+import { snapshotBoard } from './snapshot';
 
 function createEngine(): RummikubEngine {
   return new RummikubEngine({ playerCount: 2, initialHandSize: 5 });
@@ -198,6 +199,47 @@ describe('RummikubEngine', () => {
       const runGroup = board.find((g) => g.type === 'run')!;
       // 理成升序 3、4、5，Joker 归位到中间代表 4。
       expect(runGroup.tiles.map((t) => t.originalTile.id)).toEqual([9206, 9207, 9205]);
+    });
+
+    it('纯桌面整理（跨组移动）不算出牌，不能提交', () => {
+      engine.startGame(['P1', 'P2']);
+      const state = engine.getState() as any;
+      const p = state.players[0];
+      p.hasMadeInitialMeld = true;
+      p.rack = [{ id: 9301, color: 'red', number: 1 }]; // 余牌，本回合未打出
+      // 桌面已有两个合法牌组。
+      state.board = [
+        {
+          id: 'g1',
+          type: 'run',
+          tiles: [
+            toLogical({ id: 9311, color: 'red', number: 3 }),
+            toLogical({ id: 9312, color: 'red', number: 4 }),
+            toLogical({ id: 9313, color: 'red', number: 5 }),
+            toLogical({ id: 9314, color: 'red', number: 6 }),
+          ],
+        },
+        {
+          id: 'g2',
+          type: 'group',
+          tiles: [
+            toLogical({ id: 9321, color: 'blue', number: 3 }),
+            toLogical({ id: 9322, color: 'yellow', number: 3 }),
+            toLogical({ id: 9323, color: 'black', number: 3 }),
+          ],
+        },
+      ];
+      const ctx = engine.getTurnContext() as any;
+      ctx.rackAtTurnStart = p.rack.map((t: Tile) => ({ ...t }));
+      ctx.boardSnapshot = snapshotBoard(state.board);
+
+      // 跨组移动（客户端以「退回牌架 + 重新放置」两步实现）：仅桌面整理，移动后全桌仍合法。
+      engine.returnTilesToRack([9311]);
+      engine.placeTilesOnBoard([9311], 'g2');
+
+      const result = engine.submitTurn();
+      expect(result.valid).toBe(false);
+      expect(result.errors.some((e) => e.code === 'NO_TILE_PLACED')).toBe(true);
     });
   });
 
