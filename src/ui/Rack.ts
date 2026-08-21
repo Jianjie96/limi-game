@@ -53,11 +53,13 @@ export function rackHeight(tileCount: number, config: RackConfig): number {
   return Math.max(RACK_MIN_HEIGHT, RACK_PADDING * 2 + content);
 }
 
-/** 计算牌架布局（自动换行，逐行在安全区内居中） */
+/** 计算牌架布局（自动换行，逐行在安全区内居中）。
+ *  fromBoardIds：本回合从桌面拿回的牌，渲染时加琥珀色标记。 */
 export function layoutRack(
   tiles: Tile[],
   config: RackConfig,
   selectedIds: Set<number>,
+  fromBoardIds?: Set<number>,
 ): RackTileSlot[] {
   const perRow = rackTilesPerRow(config);
   const leftEdge = config.left + RACK_PADDING;
@@ -78,6 +80,7 @@ export function layoutRack(
         x: startX + col * STEP_X,
         y: config.y + RACK_PADDING + row * (TILE_HEIGHT + ROW_GAP_Y) - (selected ? SELECTED_LIFT : 0),
         selected,
+        fromBoard: fromBoardIds?.has(tile.id),
       },
     };
   });
@@ -108,6 +111,7 @@ export function layoutRackWithGap(
   gapIndex: number,
   config: RackConfig,
   selectedIds: Set<number>,
+  fromBoardIds?: Set<number>,
 ): RackTileSlot[] {
   const filtered = tiles.filter((t) => t.id !== excludeId);
   const total = filtered.length + 1; // 含占位的虚拟数量
@@ -132,6 +136,7 @@ export function layoutRackWithGap(
         x: startX + col * STEP_X,
         y: config.y + RACK_PADDING + row * (TILE_HEIGHT + ROW_GAP_Y) - (selected ? SELECTED_LIFT : 0),
         selected,
+        fromBoard: fromBoardIds?.has(tile.id),
       },
     });
   });

@@ -1072,11 +1072,16 @@ export class GameScene {
           : undefined;
       this.boardSlots = this.layoutBoardToFit(state.board, boardBottom, boardGap);
       // 理牌实时预览：拖拽牌架牌且缺口开着时，用含缺口的预览布局（邻牌让位）。
+      // 从桌面拿回的牌（不在回合开始手牌快照中）加琥珀色标记，出牌校验失败时供辨认。
+      const rackAtStart = state.turnContext?.rackAtTurnStart;
+      const fromBoardIds = rackAtStart
+        ? new Set(rackTiles.filter((t) => !rackAtStart.some((s) => s.id === t.id)).map((t) => t.id))
+        : undefined;
       const draggingRackId = this.drag?.source.kind === 'rack' ? this.drag.source.tileId : null;
       this.rackSlots =
         draggingRackId != null && this.previewGapIndex != null
-          ? layoutRackWithGap(rackTiles, draggingRackId, this.previewGapIndex, this.rackConfig, this.selectedRackIds)
-          : layoutRack(rackTiles, this.rackConfig, this.selectedRackIds);
+          ? layoutRackWithGap(rackTiles, draggingRackId, this.previewGapIndex, this.rackConfig, this.selectedRackIds, fromBoardIds)
+          : layoutRack(rackTiles, this.rackConfig, this.selectedRackIds, fromBoardIds);
 
       // 先登记全部牌的动画目标，再按当前动画位置绘制。
       this.registerAnimTargets();

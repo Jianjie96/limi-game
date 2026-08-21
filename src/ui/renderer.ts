@@ -33,6 +33,8 @@ export interface TileRenderOptions {
   dimmed?: boolean;
   scale?: number;
   showLabel?: string;
+  /** 本回合从桌面拿进牌架的牌（非本人手牌）：中央数字放大加粗，出牌校验失败时供用户辨认。 */
+  fromBoard?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -145,10 +147,18 @@ function drawTileBody(
   ctx.fill();
 }
 
-/** 带白色描边的卡通大数字（先描边后填充，醒目且与牌色融合）。 */
-function drawCartoonNumber(ctx: CanvasRenderingContext2D, number: number, color: string, cx: number, cy: number): void {
+/** 带白色描边的卡通大数字（先描边后填充，醒目且与牌色融合）。
+ *  italic：斜体（「从桌面拿回」的牌用斜体 + 双下划线以示区分）。 */
+function drawCartoonNumber(
+  ctx: CanvasRenderingContext2D,
+  number: number,
+  color: string,
+  cx: number,
+  cy: number,
+  italic = false,
+): void {
   const size = number >= 10 ? FONT_SIZE_TILE_SMALL : FONT_SIZE_TILE;
-  setFont(ctx, size, true);
+  ctx.font = `${italic ? 'italic ' : ''}bold ${size}px ${FONT_FAMILY}`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.lineWidth = 3;
@@ -194,8 +204,30 @@ export function drawNumberTile(
 
   drawTileBody(ctx, TILE_COLORS_RGB[color], opts);
 
-  // 中央大号卡通数字。
-  drawCartoonNumber(ctx, number, TILE_COLORS_RGB[color], TILE_WIDTH / 2, TILE_HEIGHT / 2 + 3);
+  // 中央大号卡通数字；「从桌面拿回」的牌用斜体，与本人手牌区分。
+  drawCartoonNumber(
+    ctx,
+    number,
+    TILE_COLORS_RGB[color],
+    TILE_WIDTH / 2,
+    TILE_HEIGHT / 2 + 3,
+    !!opts.fromBoard,
+  );
+
+  // 「借来的牌」：数字下方两条牌色下划线。
+  if (opts.fromBoard) {
+    ctx.strokeStyle = TILE_COLORS_RGB[color];
+    ctx.lineWidth = 2;
+    ctx.lineCap = 'round';
+    const x0 = TILE_WIDTH / 2 - 11;
+    const x1 = TILE_WIDTH / 2 + 11;
+    ctx.beginPath();
+    ctx.moveTo(x0, TILE_HEIGHT / 2 + 16);
+    ctx.lineTo(x1, TILE_HEIGHT / 2 + 16);
+    ctx.moveTo(x0, TILE_HEIGHT / 2 + 20);
+    ctx.lineTo(x1, TILE_HEIGHT / 2 + 20);
+    ctx.stroke();
+  }
 
   // 左上角小数字 + 色点（放大时才绘制，缩小牌保持干净）。
   if (scale >= 0.9) {
@@ -260,10 +292,27 @@ export function drawJokerTile(
     ctx.fill();
 
     ctx.fillStyle = TILE_COLORS_RGB.joker;
-    setFont(ctx, 8.5, true);
+    // 「借来的」Joker：JOKER 文字用斜体，与本人手牌区分。
+    if (opts.fromBoard) ctx.font = `italic bold 8.5px ${FONT_FAMILY}`;
+    else setFont(ctx, 8.5, true);
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillText('JOKER', TILE_WIDTH / 2, TILE_HEIGHT - 11);
+
+    // 「借来的」Joker：文字下方两条紫色下划线（与数字牌的双下划线同款标记）。
+    if (opts.fromBoard) {
+      ctx.strokeStyle = TILE_COLORS_RGB.joker;
+      ctx.lineWidth = 1.5;
+      ctx.lineCap = 'round';
+      const x0 = TILE_WIDTH / 2 - 11;
+      const x1 = TILE_WIDTH / 2 + 11;
+      ctx.beginPath();
+      ctx.moveTo(x0, TILE_HEIGHT - 6);
+      ctx.lineTo(x1, TILE_HEIGHT - 6);
+      ctx.moveTo(x0, TILE_HEIGHT - 3);
+      ctx.lineTo(x1, TILE_HEIGHT - 3);
+      ctx.stroke();
+    }
   }
 
   ctx.restore();
