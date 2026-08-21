@@ -6,7 +6,7 @@
 // 与 GameScene 共享同一块画布，通过 dispose() 交还触控与渲染循环。
 // ============================================================================
 
-import { ScreenInfo, getScreenInfo } from './screen';
+import { ScreenInfo, getScreenInfo, applyCanvasSize } from './screen';
 import { roundRectPath } from './renderer';
 import {
   drawBackdrop,
@@ -68,8 +68,8 @@ export class HomeScene {
     this.handleTap(t.clientX, t.clientY);
   };
 
-  private resizeHandler = () => {
-    this.measure();
+  private resizeHandler = (res?: { windowWidth?: number; windowHeight?: number }) => {
+    this.measure(res);
     this.dirty = true;
   };
 
@@ -129,15 +129,14 @@ export class HomeScene {
   // --------------------------------------------------------------------------
 
   /** 重读屏幕信息（含像素比/安全区）并同步画布后备存储尺寸。 */
-  private measure(): void {
+  private measure(res?: { windowWidth?: number; windowHeight?: number }): void {
     try {
-      const fresh = getScreenInfo(this.canvas);
+      const fresh = getScreenInfo(this.canvas, res);
       this.screenW = fresh.screenWidth;
       this.screenH = fresh.screenHeight;
       this.pixelRatio = fresh.pixelRatio;
       this.safeTop = fresh.safeTop;
-      this.canvas.width = Math.round(fresh.screenWidth * fresh.pixelRatio);
-      this.canvas.height = Math.round(fresh.screenHeight * fresh.pixelRatio);
+      applyCanvasSize(this.canvas, fresh);
     } catch (e) {
       // 保持现有尺寸
     }

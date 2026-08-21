@@ -6,7 +6,7 @@
 // 与 HomeScene 共享画布与 backdrop 视觉语言，通过 dispose() 交还。
 // ============================================================================
 
-import { ScreenInfo, getScreenInfo, getScreenInfoAfterRotation } from './screen';
+import { ScreenInfo, getScreenInfo, getScreenInfoAfterRotation, applyCanvasSize } from './screen';
 import { roundRectPath } from './renderer';
 import {
   drawBackdrop,
@@ -76,8 +76,8 @@ export class SettingsScene {
     this.handleTap(t.clientX, t.clientY);
   };
 
-  private resizeHandler = () => {
-    this.measure();
+  private resizeHandler = (res?: { windowWidth?: number; windowHeight?: number }) => {
+    this.measure(res);
     this.dirty = true;
   };
 
@@ -146,17 +146,16 @@ export class SettingsScene {
   // 交互
   // --------------------------------------------------------------------------
 
-  private measure(): void {
+  private measure(res?: { windowWidth?: number; windowHeight?: number }): void {
     try {
-      const fresh = getScreenInfo(this.canvas);
+      const fresh = getScreenInfo(this.canvas, res);
       this.screenW = fresh.screenWidth;
       this.screenH = fresh.screenHeight;
       this.pixelRatio = fresh.pixelRatio;
       this.safeTop = fresh.safeTop;
       this.safeLeft = fresh.safeLeft;
       this.safeRight = fresh.safeRight;
-      this.canvas.width = Math.round(fresh.screenWidth * fresh.pixelRatio);
-      this.canvas.height = Math.round(fresh.screenHeight * fresh.pixelRatio);
+      applyCanvasSize(this.canvas, fresh);
     } catch (e) {
       // 保持现有尺寸
     }
@@ -269,8 +268,7 @@ export class SettingsScene {
     this.safeTop = info.safeTop;
     this.safeLeft = info.safeLeft;
     this.safeRight = info.safeRight;
-    this.canvas.width = Math.round(info.screenWidth * info.pixelRatio);
-    this.canvas.height = Math.round(info.screenHeight * info.pixelRatio);
+    applyCanvasSize(this.canvas, info);
   }
 
   // --------------------------------------------------------------------------

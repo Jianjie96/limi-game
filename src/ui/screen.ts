@@ -18,6 +18,7 @@ export interface ScreenInfo {
 
 export function getScreenInfo(
   canvas?: { width?: number; height?: number },
+  resizeOverride?: { windowWidth?: number; windowHeight?: number },
   fallbackW = 375,
   fallbackH = 667,
   fallbackDpr = 1,
@@ -70,7 +71,58 @@ export function getScreenInfo(
     pixelRatio = 1;
   }
 
+  // resize 事件携带的尺寸是窗口变化瞬间的最新值，优先于窗口 API（真机上可能滞后）。
+  const ow = resizeOverride?.windowWidth ?? 0;
+  const oh = resizeOverride?.windowHeight ?? 0;
+  if (ow > 0 && oh > 0) {
+    screenWidth = Math.round(ow);
+    screenHeight = Math.round(oh);
+  } else if (
+    canvas &&
+    canvas.width &&
+    canvas.height &&
+    (screenWidth > screenHeight) !== (canvas.width > canvas.height)
+  ) {
+    // 真机基准校正：主画布后备存储由系统随窗口（转屏）自动同步，其物理宽高比
+    // 比窗口 API 更可靠——真机转屏后 getWindowInfo 可能短暂报告旧方向尺寸
+    // （开发工具转屏是瞬时的，不会复现），直接写入画布会导致半屏/拉伸。
+    // 方向不一致时以画布为准交换宽高，安全区按 90° 几何关系同步换算。
+    const w = screenWidth;
+    screenWidth = screenHeight;
+    screenHeight = w;
+    const t = safeTop;
+    safeTop = safeLeft;
+    safeLeft = safeBottom;
+    safeBottom = safeRight;
+    safeRight = t;
+  }
+
   return { screenWidth, screenHeight, pixelRatio, safeTop, safeBottom, safeLeft, safeRight };
+}
+
+/**
+ * 把画布后备存储同步到指定逻辑尺寸（× 像素比）。
+ * 部分真机在转屏窗口未就绪时会把后备存储裁剪到旧窗口尺寸，之后画布一直停在
+ * 错误尺寸（表现为半屏）；这里设完后逐帧校验重试若干次，确保最终生效。
+ */
+export function applyCanvasSize(
+  canvas: { width: number; height: number },
+  info: ScreenInfo,
+): void {
+  const W = Math.round(info.screenWidth * info.pixelRatio);
+  const H = Math.round(info.screenHeight * info.pixelRatio);
+  canvas.width = W;
+  canvas.height = H;
+  let tries = 10;
+  const verify = () => {
+    if (tries-- <= 0) return;
+    if (canvas.width !== W || canvas.height !== H) {
+      canvas.width = W;
+      canvas.height = H;
+      requestAnimationFrame(verify);
+    }
+  };
+  requestAnimationFrame(verify);
 }
 
 /**

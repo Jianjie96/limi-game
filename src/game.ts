@@ -14,7 +14,7 @@ import { HomeScene } from './ui/HomeScene';
 import { RoomScene } from './ui/RoomScene';
 import { SettingsScene } from './ui/SettingsScene';
 import { OnlineCoordinator } from './ui/online';
-import { getScreenInfo, getScreenInfoAfterRotation, type ScreenInfo } from './ui/screen';
+import { getScreenInfo, getScreenInfoAfterRotation, applyCanvasSize, type ScreenInfo } from './ui/screen';
 import { audio } from './ui/audio';
 import { isDevEnvironment } from './ui/env';
 import { getNickname, applyPreferredOrientation, getPreferredOrientation } from './ui/profile';
@@ -38,28 +38,10 @@ const nativeCanvas = wx.createCanvas();
 
 /** 读取最新屏幕信息，并把主画布后备存储同步到对应物理尺寸。 */
 function freshScreenInfo(): ScreenInfo {
-  // 以画布当前物理方向为基准（冷启动时由系统按真实窗口初始化；
-  // 之后每次转屏都已被上一个场景同步到正确方向）。
-  const canvasLandscape = nativeCanvas.width > nativeCanvas.height;
+  // getScreenInfo 内含真机基准校正（窗口 API 与画布物理方向不符时以画布为准）；
+  // applyCanvasSize 带校验重试，防真机转屏窗口未就绪时后备存储被裁剪成半屏。
   const i = getScreenInfo(nativeCanvas);
-
-  // 冷启动兜底：部分 iOS 机型在启动早期返回的窗口方向与实际不符
-  // （曾导致首页文字失真、对局只渲染半屏）。以画布物理方向为准交换宽高，
-  // 安全区按 90° 旋转的几何关系同步换算。仅在方向不一致时触发；
-  // 主动转屏后画布已同步新方向，不会被误判回旧方向。
-  if ((i.screenWidth > i.screenHeight) !== canvasLandscape) {
-    const w = i.screenWidth;
-    i.screenWidth = i.screenHeight;
-    i.screenHeight = w;
-    const t = i.safeTop;
-    i.safeTop = i.safeLeft;
-    i.safeLeft = i.safeBottom;
-    i.safeBottom = i.safeRight;
-    i.safeRight = t;
-  }
-
-  nativeCanvas.width = Math.round(i.screenWidth * i.pixelRatio);
-  nativeCanvas.height = Math.round(i.screenHeight * i.pixelRatio);
+  applyCanvasSize(nativeCanvas, i);
   return i;
 }
 

@@ -65,7 +65,7 @@ import {
   roundRectPath,
   type TileRenderOptions,
 } from './renderer';
-import { getScreenInfo, getScreenInfoAfterRotation, type ScreenInfo } from './screen';
+import { getScreenInfo, getScreenInfoAfterRotation, applyCanvasSize, type ScreenInfo } from './screen';
 import { audio } from './audio';
 import { vibrateIfEnabled } from './profile';
 
@@ -578,8 +578,8 @@ export class GameScene {
     this.markDirty();
   };
 
-  private resizeHandler = () => {
-    this.refreshScreenInfo();
+  private resizeHandler = (res?: { windowWidth?: number; windowHeight?: number }) => {
+    this.refreshScreenInfo(res);
   };
 
   private bindTouch(): void {
@@ -609,9 +609,10 @@ export class GameScene {
     this.coordinator = null;
   }
 
-  private refreshScreenInfo(): void {
-    // 转屏后重新读取全量屏幕信息（含更新后的逻辑尺寸与安全区）。
-    this.applyScreenInfo(getScreenInfo(this.canvas));
+  private refreshScreenInfo(res?: { windowWidth?: number; windowHeight?: number }): void {
+    // 转屏后重新读取全量屏幕信息（含更新后的逻辑尺寸与安全区）；
+    // resize 事件携带的尺寸最新鲜，优先采用（真机 getWindowInfo 可能滞后）。
+    this.applyScreenInfo(getScreenInfo(this.canvas, res));
   }
 
   private toggleOrientation(): void {
@@ -646,8 +647,7 @@ export class GameScene {
     this.safeLeft = info.safeLeft;
     this.safeRight = info.safeRight;
     this.isLandscape = this.screenW > this.screenH;
-    this.canvas.width = Math.round(this.screenW * this.pixelRatio);
-    this.canvas.height = Math.round(this.screenH * this.pixelRatio);
+    applyCanvasSize(this.canvas, info);
     this.updateLayout();
     this.markDirty();
   }
