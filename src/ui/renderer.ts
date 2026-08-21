@@ -367,17 +367,52 @@ export function inferJokerDisplayValue(
   const hasAfter = tiles.slice(jokerIndex + 1).some(t => !isJokerTile(t));
 
   if (hasBefore && hasAfter) {
-    // 中间填充：以左侧紧邻非 Joker 为基准，向左连续 Joker 依次 +1。
-    let left: LogicalTile | null = null;
-    for (let i = jokerIndex - 1; i >= 0; i--) {
-      if (!isJokerTile(tiles[i])) {
-        left = tiles[i];
-        break;
+    // 中间填充：对所有「两侧都有真实牌」的 Joker 从左到右连续分配，
+    // 保证显示值既不与真实牌重复、也不与其它 Joker 的显示值重复：
+    //   如 9-joker-10 左推 = 10 与右邻重复 → 向上取 11；
+    //   如 5-joker-joker-7 依次分配 6、8（第二个左推 7 重复、右推 6 也重复）。
+    const usedNums = new Set(nonJokers.map(t => t.logicalNumber));
+    let result = min;
+    for (let i = 0; i < tiles.length; i++) {
+      if (!isJokerTile(tiles[i])) continue;
+      const before = tiles.slice(0, i).some(t => !isJokerTile(t));
+      const after = tiles.slice(i + 1).some(t => !isJokerTile(t));
+      if (!before || !after) continue;
+
+      let left: LogicalTile | null = null;
+      for (let j = i - 1; j >= 0; j--) {
+        if (!isJokerTile(tiles[j])) {
+          left = tiles[j];
+          break;
+        }
       }
+      let right: LogicalTile | null = null;
+      for (let j = i + 1; j < tiles.length; j++) {
+        if (!isJokerTile(tiles[j])) {
+          right = tiles[j];
+          break;
+        }
+      }
+      let jokersBefore = 0;
+      for (let j = i; j >= 0 && isJokerTile(tiles[j]); j--) jokersBefore++;
+      let jokersAfter = 0;
+      for (let j = i; j < tiles.length && isJokerTile(tiles[j]); j++) jokersAfter++;
+
+      const fromLeft = (left?.logicalNumber ?? min) + jokersBefore;
+      const fromRight = (right?.logicalNumber ?? max) - jokersAfter;
+      let pick = fromLeft;
+      if (pick < 1 || pick > 13 || usedNums.has(pick)) pick = fromRight;
+      if (pick < 1 || pick > 13 || usedNums.has(pick)) {
+        // 两端推算都重复：从左侧推算值出发向上/向下找第一个不重复的数字。
+        pick = -1;
+        for (let n = fromLeft + 1; n <= 13 && pick < 0; n++) if (!usedNums.has(n)) pick = n;
+        for (let n = fromLeft - 1; n >= 1 && pick < 0; n--) if (!usedNums.has(n)) pick = n;
+        if (pick < 0) pick = fromLeft;
+      }
+      usedNums.add(pick);
+      if (i === jokerIndex) result = pick;
     }
-    let jokersBefore = 0;
-    for (let i = jokerIndex; i >= 0 && isJokerTile(tiles[i]); i--) jokersBefore++;
-    return { color, number: (left?.logicalNumber ?? min) + jokersBefore };
+    return { color, number: result };
   }
   if (hasAfter) {
     // 左端延伸：默认 min 向小延伸；越过 1 时（如 joker-1-2 只能取 3）改为 max 向大延伸。

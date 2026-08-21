@@ -74,6 +74,36 @@ describe('inferJokerDisplayValue', () => {
     expect(inferJokerDisplayValue('run', tiles, 1)).toEqual({ color: 'blue', number: 6 });
   });
 
+  it('中间填充防撞：9-joker-10 显示 11（不能与两侧的 9/10 重复）', () => {
+    const tiles = [
+      makeTile(0, 'red', 9),
+      makeJoker(104),
+      makeTile(1, 'red', 10),
+    ];
+    expect(inferJokerDisplayValue('run', tiles, 1)).toEqual({ color: 'red', number: 11 });
+  });
+
+  it('中间填充防撞：1-joker-2 显示 3（左右推算都重复，向上找不重复值）', () => {
+    const tiles = [
+      makeTile(0, 'red', 1),
+      makeJoker(104),
+      makeTile(1, 'red', 2),
+    ];
+    expect(inferJokerDisplayValue('run', tiles, 1)).toEqual({ color: 'red', number: 3 });
+  });
+
+  it('中间填充防撞连续分配：5-joker-joker-7 显示 6、8（互不重复）', () => {
+    // 第一个左推 6 可用；第二个左推 7 与右邻重复、右推 6 与前者重复 → 向上取 8。
+    const tiles = [
+      makeTile(0, 'red', 5),
+      makeJoker(104),
+      makeJoker(105),
+      makeTile(1, 'red', 7),
+    ];
+    expect(inferJokerDisplayValue('run', tiles, 1)).toEqual({ color: 'red', number: 6 });
+    expect(inferJokerDisplayValue('run', tiles, 2)).toEqual({ color: 'red', number: 8 });
+  });
+
   it('刻子中的 Joker 取缺失颜色与同数字', () => {
     const tiles = [
       makeTile(0, 'red', 8),
