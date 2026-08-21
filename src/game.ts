@@ -111,7 +111,7 @@ function goHome(): void {
   });
 }
 
-/** 首页各入口接线：建房 / 个人中心 / 本地试玩 / 断线重连。 */
+/** 首页各入口接线：建房 / 个人中心 / 联机测试房 / 断线重连。 */
 function wireHome(home: HomeScene): void {
   home.onCreateRoom = (capacity: number) => {
     createRoom(capacity, getNickname())
@@ -126,25 +126,9 @@ function wireHome(home: HomeScene): void {
   home.onOpenProfile = () => {
     goProfile();
   };
-  // 开发后门：仅开发版显示，不依赖云开发，直接本地开一局（4 人）方便调试。
+  // 开发后门：仅开发版显示。联机测试房：真实云房间 + 测试机器人补位，
+  // 机器人回合由云端 AI 立即代打，单人即可联调实时对战全流程。
   if (isDevEnvironment()) {
-    home.onLocalPlay = () => {
-      const demo: RoomInfo = {
-        code: 'LOCAL',
-        host: 'local',
-        capacity: 4,
-        status: 'started',
-        players: [
-          { openid: 'local-1', name: getNickname() },
-          { openid: 'local-2', name: '玩家2' },
-          { openid: 'local-3', name: '玩家3' },
-          { openid: 'local-4', name: '玩家4' },
-        ],
-      };
-      startLocalGame(demo);
-    };
-    // 联机测试房：真实云房间 + 测试机器人补位，单人即可联调实时对战全流程。
-    // 机器人回合由 lami-game 定时触发器超时自动摸牌托管（每回合约 1 分钟）。
     home.onDevRoom = () => {
       createRoom(2, getNickname())
         .then((result) => fillDevBots(result.room.code))
@@ -209,21 +193,6 @@ function enterRoom(result: RoomResult): void {
   switchScene(roomScene);
 }
 
-/** 本地试玩（仅开发后门）：引擎完全离线运行，热座轮流操作。 */
-function startLocalGame(room: RoomInfo): void {
-  const engine = new RummikubEngine({
-    playerCount: room.capacity,
-    initialHandSize: 14,
-    initialMeldMinScore: 30,
-    turnTimeLimit: 60,
-  });
-  const scene = new GameScene(nativeCanvas, engine, freshScreenInfo());
-  switchScene(scene);
-  scene.start();
-  scene.startGame(room.players.map((p) => p.name));
-  scene.showTip('游戏开始! 可出牌或 Pass 摸牌', 3000);
-}
-
 /**
  * 在线对战：云端权威引擎 + 数据库实时推送。
  * 房主负责调 initGame 开局（幂等）；所有客户端通过 watch 订阅
@@ -240,7 +209,7 @@ function startOnlineGame(room: RoomInfo, selfOpenid: string): void {
     initialMeldMinScore: 30,
     turnTimeLimit: 60,
   });
-  const scene = new GameScene(nativeCanvas, engine, freshScreenInfo(), 'online', selfIndex);
+  const scene = new GameScene(nativeCanvas, engine, freshScreenInfo(), selfIndex);
   const coordinator = new OnlineCoordinator(
     engine,
     scene,

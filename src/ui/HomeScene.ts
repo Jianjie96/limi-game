@@ -21,8 +21,6 @@ import { getNickname, drawAvatar } from './profile';
 export class HomeScene {
   /** 选择人数并确认后回调（创建房间请求由外部发起） */
   onCreateRoom: ((capacity: number) => void) | null = null;
-  /** 本地试玩（开发后门，不依赖云开发） */
-  onLocalPlay: (() => void) | null = null;
   /** 开发后门：联机测试房（机器人补位），单人即可联调实时对战。 */
   onDevRoom: (() => void) | null = null;
   /** 断线重连：回到上次未结束的对局 */
@@ -57,7 +55,6 @@ export class HomeScene {
   private optionRects: SceneButtonRect[] = [];
   private confirmRect: SceneButtonRect = { x: 0, y: 0, w: 0, h: 0 };
   private cancelRect: SceneButtonRect = { x: 0, y: 0, w: 0, h: 0 };
-  private localPlayRect: SceneButtonRect = { x: 0, y: 0, w: 0, h: 0 };
   private devRoomRect: SceneButtonRect = { x: 0, y: 0, w: 0, h: 0 };
   private resumeBtnRect: SceneButtonRect = { x: 0, y: 0, w: 0, h: 0 };
   private profileRect: SceneButtonRect = { x: 0, y: 0, w: 0, h: 0 };
@@ -189,10 +186,6 @@ export class HomeScene {
       this.onResume?.();
       return;
     }
-    if (this.onLocalPlay && hitRect(px, py, this.localPlayRect)) {
-      this.onLocalPlay();
-      return;
-    }
     if (this.onDevRoom && hitRect(px, py, this.devRoomRect)) {
       this.busy = true;
       this.dirty = true;
@@ -288,32 +281,19 @@ export class HomeScene {
     drawCapsuleButton(ctx, this.createBtnRect, this.busy ? '创建中…' : '创建房间', 'primary', 18);
     drawCapsuleButton(ctx, this.joinBtnRect, '加入房间', 'secondary', 18);
 
-    // 底部开发入口（仅开发版）：本地试玩（离线）/ 联机测试房（机器人补位）
-    if (this.onLocalPlay || this.onDevRoom) {
+    // 底部开发入口（仅开发版）：联机测试房（机器人补位）
+    if (this.onDevRoom) {
       const lpH = 26;
       const y = h - this.safeTop - lpH - 8;
       ctx.font = `13px ${FONT_FAMILY}`;
-      const localLabel = '本地试玩 ›';
       const devLabel = '联机测试房 ›';
-      const localW = this.onLocalPlay ? ctx.measureText(localLabel).width + 16 : 0;
-      const devW = this.onDevRoom ? ctx.measureText(devLabel).width + 16 : 0;
-      const gap = this.onLocalPlay && this.onDevRoom ? 28 : 0;
-      let x = (w - (localW + gap + devW)) / 2;
-      if (this.onLocalPlay) {
-        this.localPlayRect = { x, y, w: localW, h: lpH };
-        drawSceneText(ctx, x + localW / 2, y + lpH / 2, localLabel, {
-          size: 13,
-          color: INK_SOFT,
-        });
-        x += localW + gap;
-      }
-      if (this.onDevRoom) {
-        this.devRoomRect = { x, y, w: devW, h: lpH };
-        drawSceneText(ctx, x + devW / 2, y + lpH / 2, this.busy ? '创建中…' : devLabel, {
-          size: 13,
-          color: INK_SOFT,
-        });
-      }
+      const devW = ctx.measureText(devLabel).width + 16;
+      const x = (w - devW) / 2;
+      this.devRoomRect = { x, y, w: devW, h: lpH };
+      drawSceneText(ctx, x + devW / 2, y + lpH / 2, this.busy ? '创建中…' : devLabel, {
+        size: 13,
+        color: INK_SOFT,
+      });
     }
 
     if (this.pickerVisible) this.drawPicker();

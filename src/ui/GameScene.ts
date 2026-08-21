@@ -204,7 +204,7 @@ export class GameScene {
 
   /**
    * 本场景是否经历过 touchStart。
-   * 防止跨场景 tap 穿透：上个场景的点击（如首页「本地试玩」）会在场景切换后
+   * 防止跨场景 tap 穿透：上个场景的点击（如首页「联机测试房」）会在场景切换后
    * 才派发 touchEnd，若不拦截会被本场景误当成一次点击（曾导致进局即误触 Pass）。
    */
   private touchActive = false;
@@ -239,21 +239,17 @@ export class GameScene {
   /** 结算面板弹出动画起始时刻（0 = 未开始）。 */
   private gameOverStart = 0;
 
-  /** 场景模式：local 本地热座；online 在线对战（底部牌架固定为自己）。 */
-  private mode: 'local' | 'online';
-  /** 在线模式下本人的玩家索引。 */
+  /** 本人的玩家索引。 */
   private selfIndex: number;
-  /** 在线同步协调器（仅 online 模式，由入口注入）。 */
+  /** 在线同步协调器（由入口注入）。 */
   coordinator: OnlineCoordinator | null = null;
 
   constructor(
     canvas: HTMLCanvasElement,
     engine: RummikubEngine,
     info: ScreenInfo,
-    mode: 'local' | 'online' = 'local',
     selfIndex = 0
   ) {
-    this.mode = mode;
     this.selfIndex = selfIndex;
     this.engine = engine;
     this.screenW = info.screenWidth;
@@ -351,21 +347,16 @@ export class GameScene {
     }
   }
 
-  /** 底部牌架归属：local 跟随当前回合（热座），online 固定为自己。 */
-  private getSelfIndex(): number {
-    return this.mode === 'online' ? this.selfIndex : this.engine.getState().currentPlayerIndex;
-  }
-
   private getSelfPlayer(): PlayerState {
     const state = this.engine.getState();
-    return state.players[this.getSelfIndex()] ?? this.engine.getCurrentPlayer();
+    return state.players[this.selfIndex] ?? this.engine.getCurrentPlayer();
   }
 
-  /** 当前是否允许本人操作（在线模式下非本人回合仅可观看）。 */
+  /** 当前是否允许本人操作（非本人回合仅可观看）。 */
   private canAct(): boolean {
     const state = this.engine.getState();
     if (state.phase !== GamePhase.PLAYING) return false;
-    return this.mode === 'local' || state.currentPlayerIndex === this.selfIndex;
+    return state.currentPlayerIndex === this.selfIndex;
   }
 
   // =========================================================================
@@ -646,7 +637,6 @@ export class GameScene {
     this.engine.on('gameOver', (data: any) => {
       const winner = data.result.playerResults.find((r: any) => r.isWinner);
       this.gameOverStart = Date.now();
-      // 本地热座无明确「本人」，统一用胜利彩带。
       audio.play('victory');
       this.showMessage(`游戏结束! ${winner?.playerName} 获胜!`);
     });
@@ -953,27 +943,13 @@ export class GameScene {
           }
         }
 
-        if (this.mode === 'online') {
-          // 在线模式：提交操作日志给云端回放校验（云端是唯一裁判）。
-          this.coordinator?.submit();
-          break;
-        }
-
-        const result = this.engine.submitTurn();
-        if (!result.valid) {
-          audio.play('error');
-          const errMsg = result.errors.map((er) => er.message).join('; ');
-          this.showMessage(`出牌失败: ${errMsg}`);
-        }
+        // 提交操作日志给云端回放校验（云端是唯一裁判）。
+        this.coordinator?.submit();
         break;
       }
 
       case 'pass':
-        if (this.mode === 'online') {
-          this.coordinator?.pass();
-        } else {
-          this.engine.pass();
-        }
+        this.coordinator?.pass();
         break;
     }
   }
@@ -1677,9 +1653,8 @@ export class GameScene {
 
   private buildOpponents(state: GameState): void {
     const ctx = this.ctx;
-    // 在线模式固定以自己为视角；本地热座模式跟随当前回合玩家。
-    const selfIndex = this.getSelfIndex();
-    const opponents = state.players.filter((p) => p.id !== selfIndex);
+    // 固定以自己为视角。
+    const opponents = state.players.filter((p) => p.id !== this.selfIndex);
     // 对手行贴着顶栏下沿，整体位于桌面区域（topY）上方，避免被桌面遮盖。
     const y = this.safeTop + PLAYER_INFO_HEIGHT + 15;
     // 右侧止于转屏按钮左侧，防止徽章被按钮遮挡。
