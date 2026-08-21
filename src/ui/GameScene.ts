@@ -168,6 +168,17 @@ export class GameScene {
   private rackSlots: RackTileSlot[] = [];
   private boardSlots: BoardGroupSlot[] = [];
 
+  /** 桌面纵向滚动偏移（内容上移量）：内容超高时保持原尺寸，上下滑动查看。 */
+  private boardScrollY = 0;
+  /** 桌面最大可滚距离（0 = 内容未溢出，无需滚动）。 */
+  private boardMaxScroll = 0;
+  /** 单指竖滑滚动手势状态（按在桌面空白处启动）。 */
+  private boardScrollDrag: { lastY: number } | null = null;
+  /** 本次按下是否起始于桌面空白区（单指滚动判定前提）。 */
+  private pressOnBoardEmpty = false;
+  /** 双指滚动手势状态（桌面铺满牌面时的兜底，可在牌面上启动）。 */
+  private boardTwoFingerScroll: { lastMidY: number } | null = null;
+
   private selectedRackIds: Set<number> = new Set();
   private highlightedGroupIds: Set<string> = new Set();
 
@@ -403,9 +414,31 @@ export class GameScene {
     this.touchActive = true;
     this.pressX = t.clientX;
     this.pressY = t.clientY;
+
+    // 桌面双指按下 → 进入双指滚动（牌面上也可启动）；取消单指手势。
+    if (e.touches && e.touches.length >= 2 && !this.drag && this.boardMaxScroll > 0) {
+      const a = e.touches[0];
+      const b = e.touches[1];
+      if (this.isInBoardRegion(a.clientX, a.clientY) && this.isInBoardRegion(b.clientX, b.clientY)) {
+        this.clearLongPressTimer();
+        this.longPressActive = false;
+        this.sweepSelectActive = false;
+        this.pressSource = null;
+        this.boardScrollDrag = null;
+        this.boardTwoFingerScroll = { lastMidY: (a.clientY + b.clientY) / 2 };
+        return;
+      }
+    }
+    this.boardTwoFingerScroll = null;
+    this.boardScrollDrag = null;
+    this.pressOnBoardEmpty = false;
+
     // 仅记录潜在拖拽来源，不立即执行点击动作（区分点击与拖拽）。
     // 在线模式非本人回合：禁用一切牌面交互（保留观看）。
     this.pressSource = this.canAct() ? this.findTileSource(t.clientX, t.clientY) : null;
+    // 按在桌面空白处（非牌面）：允许后续竖滑进入滚动。仅内容溢出时启用。
+    this.pressOnBoardEmpty =
+      !this.pressSource && this.boardMaxScroll > 0 && this.isInBoardRegion(t.clientX, t.clientY);
     this.markDirty();
 
     // 牌架长按 → 「拿起」该牌（震动反馈），之后任意方向拖动都可拖拽（含牌架内横向重排）。
@@ -431,7 +464,32 @@ export class GameScene {
 
   private touchMoveHandler = (e: { touches?: Array<{ clientX: number; clientY: number }> }) => {
     const t = e.touches?.[0];
-    if (!t || !this.pressSource) return;
+    if (!t) return;
+
+    // 双指滚动：按两指中点位移平移桌面内容（下拖看上、上拖看下）。
+    if (this.boardTwoFingerScroll && e.touches && e.touches.length >= 2) {
+      const midY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+      this.scrollBoardBy(midY - this.boardTwoFingerScroll.lastMidY);
+      this.boardTwoFingerScroll.lastMidY = midY;
+      return;
+    }
+
+    // 单指在桌面空白处竖滑 → 滚动查看（不影响牌面点击/拖拽）。
+    if (this.pressOnBoardEmpty && !this.pressSource) {
+      if (!this.boardScrollDrag) {
+        const dx = t.clientX - this.pressX;
+        const dy = t.clientY - this.pressY;
+        if (Math.abs(dy) > DRAG_THRESHOLD && Math.abs(dy) > Math.abs(dx)) {
+          this.boardScrollDrag = { lastY: t.clientY };
+        }
+      } else {
+        this.scrollBoardBy(t.clientY - this.boardScrollDrag.lastY);
+        this.boardScrollDrag.lastY = t.clientY;
+      }
+      return;
+    }
+
+    if (!this.pressSource) return;
 
     // 横扫连选模式：滑动划过牌架时连续选中范围。
     if (this.sweepSelectActive) {
@@ -501,7 +559,7 @@ export class GameScene {
         this.previewBoardGap = null;
       } else if (kind === 'board') {
         // 同组内实时开缺口理牌预览；离开牌组或跨组则闭合缺口。
-        const group = hitTestBoardGroup(t.clientX, t.clientY, this.boardSlots);
+        const group = hitTestBoardGroup(t.clientX, this.boardContentY(t.clientY), this.boardSlots);
         this.previewBoardGap =
           group && group.groupId === this.drag.source.sourceGroupId
             ? { groupId: group.groupId, gapIndex: this.boardGapIndexAt(t.clientX, group) }
@@ -517,6 +575,24 @@ export class GameScene {
     if (!this.touchActive) return;
     this.touchActive = false;
     const t = e.changedTouches?.[0];
+
+    // 双指滚动结束：同时吞掉第二根手指的 touchEnd，防止误判为点击。
+    if (this.boardTwoFingerScroll) {
+      this.boardTwoFingerScroll = null;
+      this.touchActive = false;
+      this.pressSource = null;
+      this.markDirty();
+      return;
+    }
+
+    // 滚动手势结束：不算点击（避免误清选中/误触牌组高亮）。
+    if (this.boardScrollDrag) {
+      this.boardScrollDrag = null;
+      this.pressOnBoardEmpty = false;
+      this.pressSource = null;
+      this.markDirty();
+      return;
+    }
 
     // 横扫连选结束：保留已选中的范围。
     if (this.sweepSelectActive) {
@@ -563,6 +639,9 @@ export class GameScene {
     this.rangeSelectAnchor = null;
     this.previewGapIndex = null;
     this.previewBoardGap = null;
+    this.boardScrollDrag = null;
+    this.boardTwoFingerScroll = null;
+    this.pressOnBoardEmpty = false;
     this.drag = null;
     this.pressSource = null;
     this.markDirty();
@@ -725,13 +804,13 @@ export class GameScene {
       return;
     }
 
-    const boardSlot = hitTestBoard(x, y, this.boardSlots);
+    const boardSlot = hitTestBoard(x, this.boardContentY(y), this.boardSlots);
     if (boardSlot) {
       this.onBoardTileTap(boardSlot);
       return;
     }
 
-    const groupSlot = hitTestBoardGroup(x, y, this.boardSlots);
+    const groupSlot = hitTestBoardGroup(x, this.boardContentY(y), this.boardSlots);
     if (groupSlot) {
       this.onBoardGroupTap(groupSlot);
       return;
@@ -756,7 +835,7 @@ export class GameScene {
       return { kind: 'rack', tile: rackSlot.tile, tileId: rackSlot.tile.id };
     }
 
-    const boardSlot = hitTestBoard(x, y, this.boardSlots);
+    const boardSlot = hitTestBoard(x, this.boardContentY(y), this.boardSlots);
     if (boardSlot) {
       return {
         kind: 'board',
@@ -798,6 +877,18 @@ export class GameScene {
     return y >= this.boardConfig.topY && y <= this.boardBottom;
   }
 
+  /** 屏幕坐标 → 桌面内容坐标（补偿纵向滚动偏移，供命中检测使用）。 */
+  private boardContentY(y: number): number {
+    return y + this.boardScrollY;
+  }
+
+  /** 平移桌面内容 dy（正值内容下移 = 查看上方），夹取在可滚范围内。 */
+  private scrollBoardBy(dy: number): void {
+    if (this.boardMaxScroll <= 0 || dy === 0) return;
+    this.boardScrollY = Math.max(0, Math.min(this.boardMaxScroll, this.boardScrollY - dy));
+    this.markDirty();
+  }
+
   /** 判断点是否落在牌架区域（用于把牌拖回牌架，无需精确命中某张手牌）。 */
   private isInRackRegion(x: number, y: number): boolean {
     const left = this.safeLeft + 8;
@@ -818,8 +909,8 @@ export class GameScene {
     this.releaseDragAnim(drag, x, y);
     const src = drag.source;
 
-    const boardTile = hitTestBoard(x, y, this.boardSlots);
-    const boardGroupSlot = boardTile ? null : hitTestBoardGroup(x, y, this.boardSlots);
+    const boardTile = hitTestBoard(x, this.boardContentY(y), this.boardSlots);
+    const boardGroupSlot = boardTile ? null : hitTestBoardGroup(x, this.boardContentY(y), this.boardSlots);
     const targetGroupId = boardTile?.groupId ?? boardGroupSlot?.groupId ?? null;
     const onBoardEmpty = this.isInBoardRegion(x, y) && !targetGroupId;
     const rackTarget = hitTestRack(x, y, this.rackSlots);
@@ -1640,7 +1731,8 @@ export class GameScene {
     }
   }
 
-  /** 计算桌面布局：内容超出可用高度时整体缩放假面，保证不与牌架重叠。 */
+  /** 计算桌面布局：内容超出可用高度时适度缩放（不低于 0.8），
+   *  仍放不下则保持该尺寸溢出，改由上下滑动查看（避免缩得太小看不清）。 */
   private layoutBoardToFit(
     groups: TileGroup[],
     boardBottom: number,
@@ -1653,9 +1745,17 @@ export class GameScene {
     for (let i = 0; i < 6; i++) {
       const h = boardContentHeight(slots, this.boardConfig.topY);
       if (groups.length === 0 || h <= availableH) break;
-      scale = Math.max(0.5, scale * (availableH / h));
+      const next = scale * (availableH / h);
+      if (next >= scale - 1e-3) break; // 已到最小缩放，余下交给滚动
+      scale = Math.max(0.8, next);
       slots = layoutBoard(groups, this.boardConfig, this.highlightedGroupIds, scale, gapPreview);
+      if (scale <= 0.8) break;
     }
+
+    // 溢出量 → 滚动范围；内容变化时把当前偏移夹回合法区间。
+    const contentH = boardContentHeight(slots, this.boardConfig.topY);
+    this.boardMaxScroll = Math.max(0, contentH - availableH);
+    if (this.boardScrollY > this.boardMaxScroll) this.boardScrollY = this.boardMaxScroll;
     return slots;
   }
 
@@ -1688,6 +1788,15 @@ export class GameScene {
     ctx.lineTo(bcx + 46, top + 3);
     ctx.stroke();
     this.drawDiamond(bcx, top + 3, 4, GOLD_SOFT);
+
+    // 纵向滚动：内容溢出时裁剪绘制区域并上移内容，避免盖到牌架。
+    const scrolled = this.boardMaxScroll > 0;
+    if (scrolled) {
+      ctx.save();
+      roundRectPath(ctx, 6, top, this.screenW - 12, h, 14);
+      ctx.clip();
+      ctx.translate(0, -this.boardScrollY);
+    }
 
     for (const slot of this.boardSlots) {
       const { x, y, w, h: gh } = slot.bounds;
@@ -1724,6 +1833,30 @@ export class GameScene {
         }
       }
     }
+
+    if (scrolled) {
+      ctx.restore();
+      this.drawBoardScrollIndicator(top, h);
+    }
+  }
+
+  /** 桌面滚动指示条：内容溢出时右侧显示小滑块，提示已滚动到的位置。 */
+  private drawBoardScrollIndicator(top: number, h: number): void {
+    const max = this.boardMaxScroll;
+    if (max <= 0) return;
+    const ctx = this.ctx;
+    const trackX = this.screenW - 8;
+    const trackY = top + 10;
+    const trackH = Math.max(24, h - 20);
+    ctx.fillStyle = 'rgba(255,255,255,0.14)';
+    roundRectPath(ctx, trackX, trackY, 3, trackH, 1.5);
+    ctx.fill();
+    // 滑块高度约等于可视比例，位置随滚动进度移动。
+    const thumbH = Math.max(18, trackH * (trackH / (trackH + max)));
+    const thumbY = trackY + (this.boardScrollY / max) * (trackH - thumbH);
+    ctx.fillStyle = 'rgba(233,201,127,0.85)';
+    roundRectPath(ctx, trackX, thumbY, 3, thumbH, 1.5);
+    ctx.fill();
   }
 
   /**
