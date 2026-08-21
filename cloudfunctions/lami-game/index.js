@@ -264,7 +264,8 @@ async function doMove(event, openid) {
   await advanceBots(room, engine);
   // 真人成功出牌：刷新活跃时间（机器人不会调 move，tick 据此回收闲置测试房）。
   try { await ROOMS.doc(code).update({ data: { 'game.lastHumanAt': Date.now() } }); } catch (e) { /* 忽略 */ }
-  return ok(payloadFor(room, engine, room.game.version, room.game.turnDeadline, openid));
+  // 客户端 MoveResponse 约定成功态携带 payload（与校验失败路径一致）。
+  return ok({ payload: payloadFor(room, engine, room.game.version, room.game.turnDeadline, openid) });
 }
 
 /** 结束对局：房主主动终止（开发调试关闭测试房 / 紧急终止），
@@ -299,7 +300,7 @@ async function doPass(event, openid) {
   await advanceBots(room, engine);
   // 真人成功 Pass：刷新活跃时间（机器人不会调 pass）。
   try { await ROOMS.doc(code).update({ data: { 'game.lastHumanAt': Date.now() } }); } catch (e) { /* 忽略 */ }
-  return ok(payloadFor(room, engine, room.game.version, room.game.turnDeadline, openid));
+  return ok({ payload: payloadFor(room, engine, room.game.version, room.game.turnDeadline, openid) });
 }
 
 /** 出牌/Pass 成功后统一落库；若分出胜负则收尾。

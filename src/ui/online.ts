@@ -20,6 +20,8 @@ import {
   sendPass,
   watchGame,
   type PublicGameState,
+  type GameSyncPayload,
+  type MoveResponse,
 } from '../cloud/game';
 import { audio } from './audio';
 
@@ -37,6 +39,14 @@ function placeholderTiles(count: number, baseId: number): Tile[] {
     tiles.push({ id: baseId + i, color: 'red', number: 1 });
   }
   return tiles;
+}
+
+/** 兼容云端两种响应形态：标准 {payload:{public,hand}} 与旧版扁平 {public,hand}，
+ * 避免部署不同步时成功响应被误判为失败。 */
+function payloadOf(resp: MoveResponse): GameSyncPayload | null {
+  if (resp.payload) return resp.payload;
+  if (resp.public) return { public: resp.public, hand: resp.hand || [] };
+  return null;
 }
 
 function handIdsKey(hand: readonly Tile[]): string {
@@ -208,8 +218,9 @@ export class OnlineCoordinator {
     sendMove(this.code, ops)
       .then((resp) => {
         this.busy = false;
-        if (resp.ok && resp.payload) {
-          this.applyPayload(resp.payload.public, resp.payload.hand);
+        const pl = payloadOf(resp);
+        if (resp.ok && pl) {
+          this.applyPayload(pl.public, pl.hand);
           audio.play('submit');
           this.scene.showTip('出牌成功');
         } else {
@@ -217,9 +228,9 @@ export class OnlineCoordinator {
             resp.errors?.map((er) => er.message).join('; ') ||
             resp.message ||
             '出牌失败';
-          if (resp.payload) {
+          if (pl) {
             // 云端返回权威状态 → 按其对齐（等价于回滚）。
-            this.applyPayload(resp.payload.public, resp.payload.hand);
+            this.applyPayload(pl.public, pl.hand);
           } else if (this.turnStartJson) {
             this.engine.loadState(this.turnStartJson);
           }
@@ -246,8 +257,9 @@ export class OnlineCoordinator {
     sendPass(this.code)
       .then((resp) => {
         this.busy = false;
-        if (resp.ok && resp.payload) {
-          this.applyPayload(resp.payload.public, resp.payload.hand);
+        const pl = payloadOf(resp);
+        if (resp.ok && pl) {
+          this.applyPayload(pl.public, pl.hand);
           audio.play('pass');
           this.scene.showTip('Pass 成功，摸牌 1 张');
         } else {
