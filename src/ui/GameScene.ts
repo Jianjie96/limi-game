@@ -64,7 +64,7 @@ import {
 import { getScreenInfo, getScreenInfoAfterRotation, applyCanvasSize, type ScreenInfo } from './screen';
 import { requestOrientation, orientationSupported } from './orientation';
 import { audio } from './audio';
-import { vibrateIfEnabled, getPreferredOrientation, setPreferredOrientation } from './profile';
+import { vibrateIfEnabled, isVibrateEnabled, setVibrateEnabled, getPreferredOrientation, setPreferredOrientation } from './profile';
 
 /** 拖拽来源 */
 type DragSourceKind = 'rack' | 'board';
@@ -212,7 +212,7 @@ export class GameScene {
   onRequestEndGame: (() => void) | null = null;
   private endGameRect: { x: number; y: number; w: number; h: number } | null = null;
 
-  /** 设置弹窗（背景音/音效/横屏）：打开时屏蔽一切牌面交互。 */
+  /** 设置弹窗（背景音/音效/震动/横屏）：打开时屏蔽一切牌面交互。 */
   private settingsPanelOpen = false;
   private settingsButtonRect: { x: number; y: number; w: number; h: number } | null = null;
   private settingsPanelRect: { x: number; y: number; w: number; h: number } | null = null;
@@ -1981,7 +1981,7 @@ export class GameScene {
 
     const rowH = 42;
     const panelW = Math.min(280, this.screenW * 0.86);
-    const panelH = 44 + rowH * 3 + 12;
+    const panelH = 44 + rowH * 4 + 12;
     const px = (this.screenW - panelW) / 2;
     const py = (this.screenH - panelH) / 2;
     this.settingsPanelRect = { x: px, y: py, w: panelW, h: panelH };
@@ -2003,6 +2003,7 @@ export class GameScene {
     const rows = [
       { label: '背景音', on: !audio.isBgmMuted() },
       { label: '音效', on: !audio.isSfxMuted() },
+      { label: '震动反馈', on: isVibrateEnabled() },
       { label: '横屏模式', on: getPreferredOrientation() === 'landscape' },
     ];
     this.settingsRowRects = [];
@@ -2033,12 +2034,12 @@ export class GameScene {
     ctx.fill();
   }
 
-  /** 设置弹窗命中：三个开关行优先，点在卡片外则关闭。 */
+  /** 设置弹窗命中：四个开关行优先，点在卡片外则关闭。 */
   private handleSettingsPanelTap(x: number, y: number): void {
     const rows = this.settingsRowRects;
     const inRect = (r: { x: number; y: number; w: number; h: number }) =>
       x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h;
-    if (rows.length === 3) {
+    if (rows.length === 4) {
       if (inRect(rows[0])) {
         const muted = audio.toggleBgmMute();
         if (!muted) vibrateIfEnabled();
@@ -2052,6 +2053,13 @@ export class GameScene {
         return;
       }
       if (inRect(rows[2])) {
+        const on = !isVibrateEnabled();
+        setVibrateEnabled(on);
+        if (on) vibrateIfEnabled(); // 开启时震一下作为确认
+        this.markDirty();
+        return;
+      }
+      if (inRect(rows[3])) {
         this.toggleOrientationPref();
         return;
       }
