@@ -17,7 +17,8 @@ import { OnlineCoordinator } from './ui/online';
 import { getScreenInfo, getScreenInfoAfterRotation, applyCanvasSize, type ScreenInfo } from './ui/screen';
 import { audio } from './ui/audio';
 import { isDevEnvironment } from './ui/env';
-import { getNickname, applyPreferredOrientation, getPreferredOrientation } from './ui/profile';
+import { getNickname, getPreferredOrientation, setPreferredOrientation } from './ui/profile';
+import { requestOrientation, orientationSupported } from './ui/orientation';
 import type { PublicGameState } from './cloud/game';
 import { endGame } from './cloud/game';
 import {
@@ -60,8 +61,30 @@ const bgmStarter = () => {
 };
 wx.onTouchStart(bgmStarter);
 
-// 屏幕方向：按个人中心偏好切换（不支持转屏的环境静默跳过）。
-applyPreferredOrientation();
+// 屏幕方向：启动期方向生效（带验证，见 bootOrientation）。
+// 不再在这里直接同步切屏：真机转屏异步，未验证的切换 + 持久化偏好会造成
+// 「启动就横屏错乱 → 无法点击 → 下次启动依旧」的死循环。
+let bootOrientationDone: Promise<void>;
+function bootOrientation(): Promise<void> {
+  if (getPreferredOrientation() !== 'landscape' || !orientationSupported()) {
+    // 竖屏偏好或不支持转屏：保持 game.json 的静态竖屏，零风险。
+    return Promise.resolve();
+  }
+  return requestOrientation('landscape').then((final) => {
+    if (final !== 'landscape') {
+      // 横屏切换失败（机型不支持/窗口未就绪）：清除坏偏好，
+      // 下次启动自动回竖屏——最多坏一次，永不死循环。
+      setPreferredOrientation('portrait');
+      try {
+        wx.showToast({ title: '当前设备不支持横屏，已切回竖屏', icon: 'none', duration: 2500 });
+      } catch (e) {
+        // 提示不可用则静默
+      }
+    }
+    // 成功时不重建首页：各场景的 onWindowResize 会自动重排。
+  });
+}
+bootOrientationDone = bootOrientation();
 
 // ----------------------------------------------------------------------------
 // 场景切换
@@ -78,21 +101,26 @@ function switchScene(next: DisposableScene): void {
   current = next;
 }
 
-/** 首页（等待转屏完成后再构建，避免用旧方向尺寸布局） */
+/** 首页（等方向切换验证完成后再构建，避免用旧方向尺寸布局） */
 let goHomeToken = 0;
 function goHome(): void {
   // 从对局/设置页回到首页时，方向恢复到个人中心的偏好值。
+  // 首次调用先等启动期方向尝试落定，避免与其并发发起第二次转屏。
   const target = getPreferredOrientation();
-  applyPreferredOrientation();
-  // setDeviceOrientation 是异步的：立即读窗口尺寸拿到的还是旧方向的值，
-  // 会导致首页拉伸、点击错位。等系统真正完成转屏（或已在目标方向）再构建。
   const token = ++goHomeToken;
-  getScreenInfoAfterRotation(target, nativeCanvas).then((info) => {
-    if (token !== goHomeToken) return; // 期间又发生了跳转，丢弃过期的构建
-    const home = new HomeScene(nativeCanvas, info);
-    wireHome(home);
-    switchScene(home);
-  });
+  bootOrientationDone
+    .then(() => requestOrientation(target))
+    .then((final) => {
+      // requestOrientation 已验证方向稳定（失败时已回滚），
+      // 再取一次含安全区的完整尺寸后构建。
+      return getScreenInfoAfterRotation(final, nativeCanvas);
+    })
+    .then((info) => {
+      if (token !== goHomeToken) return; // 期间又发生了跳转，丢弃过期的构建
+      const home = new HomeScene(nativeCanvas, info);
+      wireHome(home);
+      switchScene(home);
+    });
 }
 
 /** 首页各入口接线：建房 / 个人中心 / 联机测试房 / 断线重连。 */

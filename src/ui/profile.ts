@@ -293,22 +293,3 @@ export function setPreferredOrientation(pref: OrientationPref): void {
     // 静默
   }
 }
-
-/**
- * 把设备方向切到偏好值（启动 / 回首页时调用）。
- * 不支持转屏的环境静默跳过；成功回调可选（用于延迟刷新布局）。
- */
-export function applyPreferredOrientation(onApplied?: () => void): void {
-  if (typeof wx.setDeviceOrientation !== 'function') return;
-  try {
-    wx.setDeviceOrientation({
-      value: getPreferredOrientation(),
-      success: () => onApplied?.(),
-      fail: () => {
-        // 静默：保持当前方向
-      },
-    });
-  } catch (e) {
-    // 静默
-  }
-}

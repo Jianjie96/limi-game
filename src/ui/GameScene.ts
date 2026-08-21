@@ -66,6 +66,7 @@ import {
   type TileRenderOptions,
 } from './renderer';
 import { getScreenInfo, getScreenInfoAfterRotation, applyCanvasSize, type ScreenInfo } from './screen';
+import { requestOrientation, orientationSupported } from './orientation';
 import { audio } from './audio';
 import { vibrateIfEnabled } from './profile';
 
@@ -616,24 +617,22 @@ export class GameScene {
   }
 
   private toggleOrientation(): void {
-    if (typeof wx.setDeviceOrientation !== 'function') {
+    if (!orientationSupported()) {
       this.showMessage('当前环境不支持转屏');
       return;
     }
     const target = this.isLandscape ? 'portrait' : 'landscape';
-    wx.setDeviceOrientation({
-      value: target,
-      success: () => {
-        // 转屏是异步的：等宽高真正交换后再刷新布局，
-        // 固定延时不可靠（会拿到旧尺寸导致拉伸/点击错位）。
-        getScreenInfoAfterRotation(target, this.canvas).then((info) => {
-          if (this.disposed) return;
-          this.applyScreenInfo(info);
-        });
-      },
-      fail: () => {
-        this.showMessage('转屏失败');
-      },
+    // 统一网关：切完验证窗口方向真正稳定，失败自动回滚（对局内切屏是
+    // 临时覆盖，不落盘偏好）。
+    requestOrientation(target).then((final) => {
+      if (this.disposed) return;
+      if (final !== target) {
+        this.showMessage('转屏失败，已恢复原方向');
+      }
+      return getScreenInfoAfterRotation(final, this.canvas);
+    }).then((info) => {
+      if (!info || this.disposed) return;
+      this.applyScreenInfo(info);
     });
   }
 

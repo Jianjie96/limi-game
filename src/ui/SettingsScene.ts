@@ -17,6 +17,7 @@ import {
 } from './backdrop';
 import { FROST_STRONG, FROST_BORDER, GOLD, INK, INK_SOFT, AVATAR_COLORS } from './constants';
 import { audio } from './audio';
+import { requestOrientation, orientationSupported } from './orientation';
 import { clearLastRoom } from '../cloud/room';
 import {
   getNickname,
@@ -32,7 +33,6 @@ import {
   vibrateIfEnabled,
   getPreferredOrientation,
   setPreferredOrientation,
-  applyPreferredOrientation,
 } from './profile';
 
 const ROW_H = 48;
@@ -211,18 +211,7 @@ export class SettingsScene {
       return;
     }
     if (hitRect(px, py, this.landscapeRowRect)) {
-      const next = getPreferredOrientation() === 'landscape' ? 'portrait' : 'landscape';
-      setPreferredOrientation(next);
-      vibrateIfEnabled();
-      // 立即切设备方向；转屏是异步的，等尺寸真正交换后再重排布局，
-      // 固定延时不可靠（会导致拉伸/点击错位）。
-      applyPreferredOrientation();
-      getScreenInfoAfterRotation(next, this.canvas).then((info) => {
-        if (this.disposed) return;
-        this.applyScreenInfo(info);
-        this.dirty = true;
-      });
-      this.dirty = true;
+      this.toggleOrientationPref();
       return;
     }
     if (hitRect(px, py, this.clearCacheRowRect)) {
@@ -247,6 +236,34 @@ export class SettingsScene {
         this.dirty = true;
       },
     });
+  }
+
+  /**
+   * 横屏开关：先切屏验证成功再落盘偏好（防「切屏失败 + 偏好持久化」造成
+   * 下次启动直接坏在横屏的死循环）；失败时开关自动弹回并提示。
+   */
+  private toggleOrientationPref(): void {
+    if (!orientationSupported()) {
+      this.showInfo('当前环境不支持转屏');
+      return;
+    }
+    const target = getPreferredOrientation() === 'landscape' ? 'portrait' : 'landscape';
+    vibrateIfEnabled();
+    requestOrientation(target).then((final) => {
+      if (this.disposed) return null;
+      if (final === target) {
+        setPreferredOrientation(target);
+      } else {
+        this.showInfo(target === 'landscape' ? '横屏切换失败，已保持竖屏' : '竖屏切换失败');
+      }
+      // 方向已验证稳定（或已回滚），取完整尺寸重排布局。
+      return getScreenInfoAfterRotation(final, this.canvas);
+    }).then((info) => {
+      if (!info || this.disposed) return;
+      this.applyScreenInfo(info);
+      this.dirty = true;
+    });
+    this.dirty = true;
   }
 
   /** 拉起微信原生选择器更换头像（相册/拍照），随时可再点重选。 */
