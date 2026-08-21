@@ -108,6 +108,20 @@ export async function endGame(code: string): Promise<void> {
   }
 }
 
+/** 单个玩家的得分详情（结算时快照）。 */
+export interface MatchScoreEntry {
+  /** 玩家昵称。 */
+  name: string;
+  /** 本局加减分：胜者得其余家之和，其余家扣自己剩余分。 */
+  scoreDelta: number;
+  /** 结算时手牌剩余分值（胜者为 0）。 */
+  remainingScore: number;
+  /** 结算时手牌剩余张数。 */
+  remainingCount: number;
+  /** 是否冠军。 */
+  isWinner: boolean;
+}
+
 /** 单条历史战绩（云端 lami_history 查询结果，已按本人视角加工）。 */
 export interface MatchHistoryRecord {
   /** 对局结束时间戳（毫秒）。 */
@@ -120,6 +134,8 @@ export interface MatchHistoryRecord {
   winnerName: string;
   /** 本人是否夺冠。 */
   selfWon: boolean;
+  /** 得分详情（部署前的老局可能为空数组）。 */
+  scores: MatchScoreEntry[];
 }
 
 /** 查询本人历史战绩（云端权威，最新在前，上限 50 条）。 */

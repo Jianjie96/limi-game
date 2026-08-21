@@ -3,7 +3,7 @@
 // ----------------------------------------------------------------------------
 // 从首页「个人中心」进入：头像（微信相册/拍照选择，元素色兜底）+
 // 昵称（原生键盘修改）+ 历史战绩列表（云端 lami_history 查库：
-// 日期/耗时/参与者/是否冠军），以及 背景音 / 音效 / 震动反馈 / 横屏模式 四个开关。
+// 日期/耗时/参与者/是否冠军/各家得分详情），以及 背景音 / 音效 / 震动反馈 / 横屏模式 四个开关。
 // 与 HomeScene 共享画布与 backdrop 视觉语言，通过 dispose() 交还。
 // ============================================================================
 
@@ -523,7 +523,7 @@ export class ProfileScene {
     if (histW >= 160) this.drawHistoryCard(cardX + cardW + 16, cardY, histW, cardH);
   }
 
-  /** 历史战绩卡片：标题 + 最近对局记录（日期/耗时/参与者/冠军，夺冠行金色底）。 */
+  /** 历史战绩卡片：标题 + 最近对局记录（日期/耗时/参与者/冠军/得分详情，夺冠行金色底）。 */
   private drawHistoryCard(x: number, y: number, w: number, h: number): void {
     const ctx = this.ctx;
     ctx.fillStyle = 'rgba(6,14,22,0.4)';
@@ -560,13 +560,14 @@ export class ProfileScene {
       return;
     }
 
-    // 每条两行：上行日期/耗时 + 冠军，下行参与者（小字）。
-    const rowH = 36;
-    const maxRows = Math.max(1, Math.floor((h - 44) / rowH));
+    // 每条三行：日期/耗时 + 冠军、参与者（小字）、得分详情（老局无 scores 则两行）。
     let ry = y + 36;
-    for (let i = 0; i < Math.min(records.length, maxRows); i++) {
-      const r = records[i];
-      const cy = ry + rowH / 2;
+    const bottomLimit = y + h - 8;
+    for (const r of records) {
+      const hasScores = r.scores && r.scores.length > 0;
+      const rowH = hasScores ? 52 : 36;
+      if (ry + rowH > bottomLimit) break;
+      const cy = ry + (hasScores ? 16 : rowH / 2);
       if (r.selfWon) {
         ctx.fillStyle = 'rgba(233,201,127,0.18)';
         roundRectPath(ctx, x + 10, ry + 2, w - 20, rowH - 4, 8);
@@ -582,13 +583,36 @@ export class ProfileScene {
         color: r.selfWon ? GOLD : INK,
         align: 'right',
       });
-      drawSceneText(ctx, x + 16, cy + 9, this.fitParticipantText(r, w - 32), {
+      drawSceneText(ctx, x + 16, cy + 8, this.fitParticipantText(r, w - 32), {
         size: 10,
         color: INK_SOFT,
         align: 'left',
       });
+      if (hasScores) {
+        drawSceneText(ctx, x + 16, cy + 26, this.fitScoreText(r, w - 32), {
+          size: 10,
+          color: INK_SOFT,
+          align: 'left',
+        });
+      }
       ry += rowH;
     }
+  }
+
+  /** 得分详情行：各家「昵称 ±本局分（余N张/M分）」，按可用宽度截断。 */
+  private fitScoreText(r: MatchHistoryRecord, maxWidth: number): string {
+    this.ctx.font = `10px ${FONT_FAMILY}`;
+    const parts = r.scores.map((s) => {
+      const delta = s.scoreDelta > 0 ? `+${s.scoreDelta}` : `${s.scoreDelta}`;
+      const detail = s.isWinner ? '出完' : `余${s.remainingCount}张/${s.remainingScore}分`;
+      return `${s.name} ${delta}（${detail}）`;
+    });
+    let text = `得分：${parts.join(' ')}`;
+    while (parts.length > 1 && this.ctx.measureText(text).width > maxWidth) {
+      parts.pop();
+      text = `得分：${parts.join(' ')}…`;
+    }
+    return text;
   }
 
   /** 参与者行按可用宽度截断（超出补省略号）。 */

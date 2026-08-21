@@ -135,7 +135,10 @@ async function persistState(room, engine, version, deadline) {
       'game.version': version,
       'game.turnDeadline': deadline,
       'game.currentPlayerIndex': engine.getState().currentPlayerIndex,
-      'game.public': buildPublic(engine, version, deadline),
+      // 必须用 _.set 整体替换：update 传纯对象会被展开成点路径逐字段更新，
+      // 对局结束时 result 从 null 变成对象，展开写 game.public.result.playerResults
+      // 会报「Cannot create field in element {result: null}」导致落库失败。
+      'game.public': _.set(buildPublic(engine, version, deadline)),
     },
   });
 
@@ -361,6 +364,15 @@ async function recordMatchResult(room, engine) {
     endedAt: Date.now(),
     playersOpenid: openids,
     playerNames: st.players.map((p) => p.name),
+    // 得分详情：scoreDelta 本局加减分（胜者得其余家之和，其余家扣剩余分），
+    // remainingScore 结算时手牌剩余分值；不存 remainingTiles 具体牌面（体积大）。
+    playerResults: result.playerResults.map((r) => ({
+      name: r.playerName,
+      scoreDelta: r.scoreDelta,
+      remainingScore: r.remainingScore,
+      remainingCount: r.remainingTiles.length,
+      isWinner: r.isWinner,
+    })),
     winnerIndex,
     winnerOpenid: winnerIndex >= 0 ? openids[winnerIndex] : '',
     winnerName: winner ? winner.playerName : '',
@@ -399,6 +411,16 @@ async function doHistory(event, openid) {
     players: h.playerNames || [],
     winnerName: h.winnerName || '',
     selfWon: h.winnerOpenid === openid,
+    // 得分详情（部署前结束的老局无此字段 → 空数组，前端不渲染该行）。
+    scores: Array.isArray(h.playerResults)
+      ? h.playerResults.map((r) => ({
+        name: r.name || '',
+        scoreDelta: r.scoreDelta || 0,
+        remainingScore: r.remainingScore || 0,
+        remainingCount: r.remainingCount || 0,
+        isWinner: !!r.isWinner,
+      }))
+      : [],
   }));
   return ok({ records });
 }
