@@ -675,6 +675,29 @@ var RummikubEngine = class _RummikubEngine {
     this.removeTilesFromBoard(groupId, tileIds);
   }
   /**
+   * 把牌架牌移入工作区（暂存/理牌，无论是否破冰都允许）。
+   * 工作区的牌可放回牌架，出牌时与其他工作区牌统一拆分组成新牌组。
+   */
+  moveRackTilesToWorkingArea(tileIds) {
+    this.assertPhase("PLAY" /* PLAY */);
+    const player = this.getCurrentPlayer();
+    const ctx = this.getTurnContext();
+    const idSet = new Set(tileIds);
+    const moved = player.rack.filter((t) => idSet.has(t.id));
+    if (moved.length !== tileIds.length) {
+      throw new Error("\u90E8\u5206\u724C\u4E0D\u5728\u724C\u67B6\u4E2D");
+    }
+    if (ctx.drawnTileId !== null && idSet.has(ctx.drawnTileId)) {
+      markDrawnTilePlaced(ctx);
+    }
+    player.rack = player.rack.filter((t) => !idSet.has(t.id));
+    addToWorkingArea(ctx, moved);
+    recordRackTilesPlaced(ctx, moved);
+    this.recordOp({ op: "RACK_TO_WA", tileIds });
+    this.emit("boardManipulated", { action: "rackToWorkingArea", tileIds });
+    return moved;
+  }
+  /**
    * 在同一牌组内调整某张牌的顺序（拖拽重排）。
    * 不改变牌组内的牌集合，仅改变展示顺序；Joker 的代表值由渲染层按位置动态推断，
    * 提交时仍按「是否存在合法赋值」动态校验。
@@ -1112,6 +1135,9 @@ function applyOps(engine, ops) {
         break;
       case "PLACE_WA_ON_BOARD":
         engine.placeWorkingAreaTilesOnBoard(op.tileIds, op.groupId, op.position);
+        break;
+      case "RACK_TO_WA":
+        engine.moveRackTilesToWorkingArea(op.tileIds);
         break;
       default:
         throw new Error(`\u672A\u77E5\u64CD\u4F5C\u7C7B\u578B: ${op.op}`);

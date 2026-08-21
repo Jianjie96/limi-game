@@ -818,6 +818,15 @@ export class GameScene {
         }
       }
 
+      // 牌架 → 工作区：暂存理牌（无论是否破冰），出牌时统一拆分组成新牌组。
+      if (src.kind === 'rack' && onWorkingArea) {
+        this.engine.moveRackTilesToWorkingArea([src.tileId]);
+        this.selectedRackIds.delete(src.tileId);
+        audio.play('pickup');
+        this.showTip('已移入工作区');
+        return;
+      }
+
       // 牌架 → 桌面：加到已有牌组 / 空白处成新组。
       if (src.kind === 'rack') {
         if (targetGroupId) {
@@ -830,6 +839,10 @@ export class GameScene {
           audio.play('place');
           this.showTip('已加入牌组');
         } else if (onBoardEmpty) {
+          if (!this.canManipulateBoard()) {
+            this.showMessage('破冰前请把牌放入工作区理好，再点「出牌」');
+            return;
+          }
           this.engine.createNewGroupOnBoard([src.tile], detectGroupType([src.tile]));
           this.selectedRackIds.delete(src.tileId);
           audio.play('place');
@@ -847,7 +860,7 @@ export class GameScene {
           return;
         }
 
-        // 未破冰：工作区里本回合放下的牌可放回牌架。
+        // 未破冰：工作区里本回合放下的牌可放回牌架；不能放到桌面。
         if (!this.canManipulateBoard()) {
           if (onRack && !targetGroupId && !onWorkingArea && this.isRackPlacedThisTurn(src.tileId)) {
             this.engine.returnTilesToRack([src.tileId]);
@@ -855,7 +868,7 @@ export class GameScene {
             this.showTip('已放回牌架');
             return;
           }
-          this.showMessage('破冰后才能操作桌面牌');
+          this.showMessage('破冰前不能把牌放到桌面，可直接点「出牌」');
           return;
         }
         if (targetGroupId) {
@@ -934,19 +947,24 @@ export class GameScene {
   private onButtonTap(buttonId: string): void {
     switch (buttonId) {
       case 'submit': {
-        // 若有选中的牌架牌，拆成若干合法牌组逐一新建（破冰可一次打多组）。
-        if (this.selectedRackIds.size > 0) {
-          const rack = this.getSelfPlayer().rack;
-          const tiles = rack.filter((t) => this.selectedRackIds.has(t.id));
-          const melds = splitIntoMelds(tiles);
+        // 工作区牌 + 选中牌架牌 → 拆分组成新牌组后提交（破冰可一次打多组）。
+        const rack = this.getSelfPlayer().rack;
+        const selTiles = rack.filter((t) => this.selectedRackIds.has(t.id));
+        const waTiles = [...this.engine.getTurnContext().workingArea];
+        if (selTiles.length > 0 || waTiles.length > 0) {
+          const melds = splitIntoMelds([...waTiles, ...selTiles]);
           if (!melds || melds.length === 0) {
             audio.play('error');
-            this.showMessage('所选牌无法组成合法顺子/刻子');
+            this.showMessage('工作区与选中的牌无法组成合法顺子/刻子');
             return;
           }
           try {
+            // 选中牌架牌先移入工作区，统一走「工作区成新组」路径。
+            if (selTiles.length > 0) {
+              this.engine.moveRackTilesToWorkingArea(selTiles.map((t) => t.id));
+            }
             for (const meld of melds) {
-              this.engine.createNewGroupOnBoard(meld, detectGroupType(meld));
+              this.engine.createNewGroupFromWorkingArea(meld, detectGroupType(meld));
             }
             this.selectedRackIds.clear();
             audio.play('place');
@@ -1069,6 +1087,15 @@ export class GameScene {
       const ctx = this.engine.getTurnContext();
       const tile = ctx.workingArea[slot.index];
       if (!tile) return;
+
+      // 未破冰时工作区牌只来自牌架：点击直接放回牌架（桌面操作需破冰）。
+      if (!this.canManipulateBoard()) {
+        this.engine.returnTilesToRack([tile.id]);
+        audio.play('pickup');
+        this.showTip('已放回牌架');
+        this.markDirty();
+        return;
+      }
 
       if (this.highlightedGroupIds.size > 0) {
         const groupId = [...this.highlightedGroupIds][0];

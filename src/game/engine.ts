@@ -465,6 +465,36 @@ export class RummikubEngine {
   }
 
   /**
+   * 把牌架牌移入工作区（暂存/理牌，无论是否破冰都允许）。
+   * 工作区的牌可放回牌架，出牌时与其他工作区牌统一拆分组成新牌组。
+   */
+  moveRackTilesToWorkingArea(tileIds: number[]): Tile[] {
+    this.assertPhase(TurnPhase.PLAY);
+    const player = this.getCurrentPlayer();
+    const ctx = this.getTurnContext();
+
+    const idSet = new Set(tileIds);
+    const moved = player.rack.filter(t => idSet.has(t.id));
+    if (moved.length !== tileIds.length) {
+      throw new Error('部分牌不在牌架中');
+    }
+
+    // 刚摸到的牌不能当回合打出：提前标记，提交校验时拒绝。
+    if (ctx.drawnTileId !== null && idSet.has(ctx.drawnTileId)) {
+      markDrawnTilePlaced(ctx);
+    }
+
+    player.rack = player.rack.filter(t => !idSet.has(t.id));
+    addToWorkingArea(ctx, moved);
+    // 记为「本回合从牌架放下」：未破冰可放回牌架，提交时也满足「至少放 1 张」。
+    recordRackTilesPlaced(ctx, moved);
+
+    this.recordOp({ op: 'RACK_TO_WA', tileIds });
+    this.emit('boardManipulated', { action: 'rackToWorkingArea', tileIds });
+    return moved;
+  }
+
+  /**
    * 在同一牌组内调整某张牌的顺序（拖拽重排）。
    * 不改变牌组内的牌集合，仅改变展示顺序；Joker 的代表值由渲染层按位置动态推断，
    * 提交时仍按「是否存在合法赋值」动态校验。
@@ -1027,6 +1057,9 @@ export function applyOps(engine: RummikubEngine, ops: readonly EngineOp[]): void
         break;
       case 'PLACE_WA_ON_BOARD':
         engine.placeWorkingAreaTilesOnBoard(op.tileIds, op.groupId, op.position);
+        break;
+      case 'RACK_TO_WA':
+        engine.moveRackTilesToWorkingArea(op.tileIds);
         break;
       default:
         throw new Error(`未知操作类型: ${(op as any).op}`);

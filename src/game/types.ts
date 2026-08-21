@@ -253,4 +253,5 @@ export type EngineOp =
   | { op: 'RETURN_TO_RACK'; tileIds: number[] }
   | { op: 'REPLACE_JOKER'; groupId: string; jokerPosition: number; realTileId: number }
   | { op: 'MOVE_WITHIN_GROUP'; groupId: string; tileId: number; toIndex: number }
-  | { op: 'PLACE_WA_ON_BOARD'; tileIds: number[]; groupId: string; position: number };
+  | { op: 'PLACE_WA_ON_BOARD'; tileIds: number[]; groupId: string; position: number }
+  | { op: 'RACK_TO_WA'; tileIds: number[] };

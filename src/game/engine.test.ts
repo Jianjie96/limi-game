@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { GamePhase, TurnPhase } from './types';
 import type { Tile } from './types';
-import { RummikubEngine } from './engine';
+import { RummikubEngine, applyOps } from './engine';
 
 function createEngine(): RummikubEngine {
   return new RummikubEngine({ playerCount: 2, initialHandSize: 5 });
@@ -165,6 +165,92 @@ describe('RummikubEngine', () => {
       expect(result.errors).toEqual([]);
       expect(result.valid).toBe(true);
       expect(p.hasMadeInitialMeld).toBe(true);
+    });
+  });
+
+  describe('工作区（牌架暂存）', () => {
+    it('牌架牌可移入工作区，也可放回牌架', () => {
+      engine.startGame(['P1', 'P2']);
+      const p = engine.getCurrentPlayer();
+      const deck: Tile[] = [
+        { id: 9201, color: 'red', number: 3 },
+        { id: 9202, color: 'blue', number: 7 },
+        { id: 9203, color: 'black', number: 9 },
+      ];
+      p.rack = deck;
+      const ctx = engine.getTurnContext();
+      (ctx as unknown as { rackAtTurnStart: Tile[] }).rackAtTurnStart = deck.map((t) => ({ ...t }));
+
+      engine.moveRackTilesToWorkingArea([9201, 9202]);
+
+      expect(p.rack.length).toBe(1);
+      expect(engine.getTurnContext().workingArea.map((t) => t.id)).toEqual([9201, 9202]);
+
+      engine.returnTilesToRack([9201, 9202]);
+      expect(p.rack.length).toBe(3);
+      expect(engine.getTurnContext().workingArea.length).toBe(0);
+    });
+
+    it('未破冰：牌架→工作区理牌后成组提交，两组总分 30 成功', () => {
+      engine.startGame(['P1', 'P2']);
+      const p = engine.getCurrentPlayer();
+      const deck: Tile[] = [
+        { id: 9301, color: 'red', number: 1 },
+        { id: 9302, color: 'red', number: 2 },
+        { id: 9303, color: 'red', number: 3 },
+        { id: 9304, color: 'black', number: 8 },
+        { id: 9305, color: 'blue', number: 8 },
+        { id: 9306, color: 'yellow', number: 8 },
+        { id: 9307, color: 'red', number: 5 }, // 余牌避免直接出完
+      ];
+      p.rack = deck;
+      const ctx = engine.getTurnContext();
+      (ctx as unknown as { rackAtTurnStart: Tile[] }).rackAtTurnStart = deck.map((t) => ({ ...t }));
+
+      // 全部暂存到工作区，再拆成两组分别成组。
+      engine.moveRackTilesToWorkingArea([9301, 9302, 9303, 9304, 9305, 9306]);
+      engine.createNewGroupFromWorkingArea(
+        engine.getTurnContext().workingArea.slice(0, 3), 'run'
+      );
+      engine.createNewGroupFromWorkingArea(
+        engine.getTurnContext().workingArea.slice(0, 3), 'group'
+      );
+
+      const result = engine.submitTurn();
+      expect(result.errors).toEqual([]);
+      expect(result.valid).toBe(true);
+      expect(p.hasMadeInitialMeld).toBe(true);
+    });
+
+    it('RACK_TO_WA 操作可在另一引擎上回放得到相同结果', () => {
+      engine.startGame(['P1', 'P2']);
+      const p = engine.getCurrentPlayer();
+      const deck: Tile[] = [
+        { id: 9401, color: 'red', number: 11 },
+        { id: 9402, color: 'blue', number: 11 },
+        { id: 9403, color: 'yellow', number: 11 },
+        { id: 9404, color: 'black', number: 2 },
+      ];
+      p.rack = deck;
+      p.hasMadeInitialMeld = true;
+      const ctx = engine.getTurnContext();
+      (ctx as unknown as { rackAtTurnStart: Tile[] }).rackAtTurnStart = deck.map((t) => ({ ...t }));
+      const baseline = engine.serializeState();
+
+      engine.moveRackTilesToWorkingArea([9401, 9402, 9403]);
+      engine.createNewGroupFromWorkingArea(
+        engine.getTurnContext().workingArea.slice(0, 3), 'group'
+      );
+      const ops = [...engine.getTurnOps()];
+
+      const clone = RummikubEngine.fromState(baseline);
+      applyOps(clone, ops);
+
+      expect(clone.getState().board).toEqual(engine.getState().board);
+      expect(clone.getTurnContext().workingArea).toEqual(engine.getTurnContext().workingArea);
+      expect(clone.getCurrentPlayer().rack.map((t) => t.id)).toEqual(
+        engine.getCurrentPlayer().rack.map((t) => t.id)
+      );
     });
   });
 
