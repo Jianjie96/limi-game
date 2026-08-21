@@ -140,6 +140,32 @@ describe('RummikubEngine', () => {
       expect(result.valid).toBe(true);
       expect(p.hasMadeInitialMeld).toBe(true);
     });
+
+    it('破冰可同时打出多个牌组，总分≥ 30 即成功', () => {
+      engine.startGame(['P1', 'P2']);
+      const p = engine.getCurrentPlayer();
+      // 同色顺子 1-2-3（6 分）+ 不同色刻子 8-8-8（24 分）= 30 分。
+      const deck: Tile[] = [
+        { id: 9101, color: 'red', number: 1 },
+        { id: 9102, color: 'red', number: 2 },
+        { id: 9103, color: 'red', number: 3 },
+        { id: 9104, color: 'black', number: 8 },
+        { id: 9105, color: 'blue', number: 8 },
+        { id: 9106, color: 'yellow', number: 8 },
+        { id: 9107, color: 'red', number: 5 }, // 余牌避免直接出完
+      ];
+      p.rack = deck;
+      const ctx = engine.getTurnContext();
+      (ctx as unknown as { rackAtTurnStart: Tile[] }).rackAtTurnStart = deck.map((t) => ({ ...t }));
+
+      engine.createNewGroupOnBoard([deck[0], deck[1], deck[2]], 'run');
+      engine.createNewGroupOnBoard([deck[3], deck[4], deck[5]], 'group');
+      const result = engine.submitTurn();
+
+      expect(result.errors).toEqual([]);
+      expect(result.valid).toBe(true);
+      expect(p.hasMadeInitialMeld).toBe(true);
+    });
   });
 
   describe('moveTileWithinGroup', () => {

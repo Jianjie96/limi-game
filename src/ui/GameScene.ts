@@ -11,8 +11,8 @@ import { GamePhase } from '../game/types';
 import { RummikubEngine } from '../game/engine';
 import type { OnlineCoordinator } from './online';
 import { drawCapsuleButton } from './backdrop';
-import { canFormMelds, isValidRun, isValidGroupTiles } from '../game/validate';
-import { detectGroupType, toLogical } from '../game/tiles';
+import { canFormMelds, splitIntoMelds } from '../game/validate';
+import { detectGroupType } from '../game/tiles';
 import {
   LAYOUT,
   FONT_FAMILY,
@@ -934,13 +934,20 @@ export class GameScene {
   private onButtonTap(buttonId: string): void {
     switch (buttonId) {
       case 'submit': {
-        // 若有选中的牌架牌，先把它们作为新牌组放到桌面。
+        // 若有选中的牌架牌，拆成若干合法牌组逐一新建（破冰可一次打多组）。
         if (this.selectedRackIds.size > 0) {
+          const rack = this.getSelfPlayer().rack;
+          const tiles = rack.filter((t) => this.selectedRackIds.has(t.id));
+          const melds = splitIntoMelds(tiles);
+          if (!melds || melds.length === 0) {
+            audio.play('error');
+            this.showMessage('所选牌无法组成合法顺子/刻子');
+            return;
+          }
           try {
-            const rack = this.getSelfPlayer().rack;
-            const tiles = rack.filter((t) => this.selectedRackIds.has(t.id));
-            const type = detectGroupType(tiles);
-            this.engine.createNewGroupOnBoard(tiles, type);
+            for (const meld of melds) {
+              this.engine.createNewGroupOnBoard(meld, detectGroupType(meld));
+            }
             this.selectedRackIds.clear();
             audio.play('place');
           } catch (err: any) {
@@ -990,10 +997,10 @@ export class GameScene {
     this.markDirty();
   }
 
-  /** 判断一组牌是否恰好构成一个完整的合法顺子或刻子。 */
+  /** 判断一组牌能否恰好拆成若干完整合法的顺子/刻子（可多组）。 */
   private isCompleteMeld(tiles: Tile[]): boolean {
-    const logicals = tiles.map(toLogical);
-    return isValidRun(logicals) || isValidGroupTiles(logicals);
+    if (tiles.length < 3) return false;
+    return splitIntoMelds(tiles) !== null;
   }
 
   /** 当前玩家是否已完成破冰（可自由操作桌面牌）。 */

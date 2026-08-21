@@ -278,6 +278,46 @@ function canSplitIntoMelds(
   return result;
 }
 
+/**
+ * 把一组牌恰好拆分成若干完整合法顺子/刻子（无剩余）。
+ * 出牌/破冰时多牌组一次性放置前用它分组；无法拆完返回 null。
+ *
+ * 回溯策略：固定剩余首张牌枚举其所属牌组以收敛分支，大牌组优先。
+ */
+export function splitIntoMelds(tiles: readonly Tile[]): Tile[][] | null {
+  const out: Tile[][] = [];
+  if (splitExact(tiles.slice(), out)) return out;
+  return null;
+}
+
+function splitExact(remaining: readonly Tile[], out: Tile[][]): boolean {
+  if (remaining.length === 0) return true;
+  if (remaining.length < 3) return false;
+
+  const n = remaining.length;
+  // 枚举包含首张牌的所有子集，取能构成合法牌组者。
+  const melds: Tile[][] = [];
+  for (let mask = 1; mask < 1 << n; mask += 2) {
+    const bits = popcount(mask);
+    if (bits < 3) continue;
+    const subset = selectByMask(remaining, mask);
+    const logicals = subset.map(toLogical);
+    if (isValidRun(logicals) || isValidGroupTiles(logicals)) {
+      melds.push(subset);
+    }
+  }
+  melds.sort((a, b) => b.length - a.length);
+
+  for (const meld of melds) {
+    const used = new Set(meld.map(t => t.id));
+    const rest = remaining.filter(t => !used.has(t.id));
+    out.push(meld);
+    if (splitExact(rest, out)) return true;
+    out.pop();
+  }
+  return false;
+}
+
 /** 计算整数二进制表示中 1 的个数 */
 function popcount(x: number): number {
   let count = 0;

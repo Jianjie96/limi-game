@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import type { LogicalTile, TileColor, Tile } from './types';
 import { TILE_COLORS } from './types';
-import { isValidRun, isValidGroupTiles, isValidGroup, validateBoard, canFormMelds } from './validate';
+import { isValidRun, isValidGroupTiles, isValidGroup, validateBoard, canFormMelds, splitIntoMelds } from './validate';
 import { toLogical, detectGroupType } from './tiles';
 
 function phys(id: number, color: TileColor | 'joker', number: number): Tile {
@@ -361,5 +361,49 @@ describe('detectGroupType', () => {
 
   it('同色连续判定为顺子', () => {
     expect(detectGroupType([phys(0, 'red', 5), phys(1, 'red', 6), phys(2, 'red', 7)])).toBe('run');
+  });
+});
+
+describe('splitIntoMelds', () => {
+  const ids = (melds: Tile[][] | null) =>
+    melds ? melds.map((m) => m.map((t) => t.id).sort((a, b) => a - b)) : null;
+
+  it('单个顺子拆为 1 组', () => {
+    const tiles = [phys(0, 'red', 1), phys(1, 'red', 2), phys(2, 'red', 3)];
+    expect(ids(splitIntoMelds(tiles))).toEqual([[0, 1, 2]]);
+  });
+
+  it('顺子 1-2-3 + 刻子 8-8-8 拆为 2 组（破冰场景）', () => {
+    const tiles = [
+      phys(0, 'red', 1), phys(1, 'red', 2), phys(2, 'red', 3),
+      phys(3, 'black', 8), phys(4, 'blue', 8), phys(5, 'yellow', 8),
+    ];
+    const melds = splitIntoMelds(tiles);
+    expect(melds).not.toBeNull();
+    expect(melds!.length).toBe(2);
+    // 全部 6 张牌都被用上且无重复。
+    expect(melds!.flat().map((t) => t.id).sort((a, b) => a - b)).toEqual([0, 1, 2, 3, 4, 5]);
+  });
+
+  it('四张同色连续牌优先拆为 4 张顺子而非 3+剩余', () => {
+    const tiles = [phys(0, 'red', 1), phys(1, 'red', 2), phys(2, 'red', 3), phys(3, 'red', 4)];
+    expect(ids(splitIntoMelds(tiles))).toEqual([[0, 1, 2, 3]]);
+  });
+
+  it('互相冲突无法拆完时返回 null', () => {
+    const tiles = [phys(0, 'red', 1), phys(1, 'red', 2), phys(2, 'blue', 5)];
+    expect(splitIntoMelds(tiles)).toBeNull();
+  });
+
+  it('合法牌组 + 散牌无法拆完时返回 null', () => {
+    const tiles = [
+      phys(0, 'red', 1), phys(1, 'red', 2), phys(2, 'red', 3), phys(3, 'blue', 5),
+    ];
+    expect(splitIntoMelds(tiles)).toBeNull();
+  });
+
+  it('Joker 可参与拆分', () => {
+    const tiles = [phys(0, 'red', 5), phys(1, 'blue', 5), phys(2, 'joker', 0)];
+    expect(splitIntoMelds(tiles)!.length).toBe(1);
   });
 });
