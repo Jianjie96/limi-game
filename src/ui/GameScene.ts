@@ -849,12 +849,16 @@ export class GameScene {
         return;
       }
 
-      if (boardTile && targetGroupId === sourceGroupId) {
+      if (targetGroupId === sourceGroupId) {
         // 同组内理牌 → 插入实时预览缺口处（或目标牌位置）（Joker 显示值随位置变化）。
-        const insertAt = this.previewBoardGap?.gapIndex ?? boardTile.index;
-        this.engine.moveTileWithinGroup(sourceGroupId, src.tileId, insertAt);
-        audio.play('sort');
-        this.showTip('已调整顺序');
+        // 松在组内空槽（含末尾缺口）时 boardTile 为 null，靠预览缺口定位。
+        const insertAt = this.previewBoardGap?.gapIndex ?? boardTile?.index;
+        if (insertAt != null) {
+          this.engine.moveTileWithinGroup(sourceGroupId, src.tileId, insertAt);
+          audio.play('sort');
+          this.showTip('已调整顺序');
+        }
+        // insertAt 缺失（无预览且未压到牌）→ 不操作，牌飞回原位。
       } else if (targetGroupId && targetGroupId !== sourceGroupId) {
         // 两步实现：先回牌架，再放置到目标牌组。
         this.engine.returnTilesToRack([src.tileId]);
@@ -1706,6 +1710,10 @@ export class GameScene {
       for (const tileSlot of slot.tileSlots) {
         const tileId = tileSlot.logicalTile.originalTile.id;
         if (this.isDraggingTile('board', tileId)) continue;
+        // 预览缺口布局的 tileSlot.index 是排除后序列索引，绘制/Joker 推断需回查
+        // 完整牌组中的真实下标，否则拖拽中会按错位下标画错牌面。
+        const fullIndex = slot.group.tiles.findIndex((t) => t.originalTile.id === tileId);
+        const drawIndex = fullIndex >= 0 ? fullIndex : tileSlot.index;
         // 绘制位置取自动画状态；飞行中的牌延迟到最上层绘制。
         const a = this.tileAnims.get(tileId);
         const opts: TileRenderOptions = {
@@ -1716,9 +1724,9 @@ export class GameScene {
         };
         if (this.isTileMoving(tileId)) {
           const g = slot.group;
-          this.flyingDraws.push(() => drawBoardTile(ctx, g.type, g.tiles, tileSlot.index, opts));
+          this.flyingDraws.push(() => drawBoardTile(ctx, g.type, g.tiles, drawIndex, opts));
         } else {
-          drawBoardTile(ctx, slot.group.type, slot.group.tiles, tileSlot.index, opts);
+          drawBoardTile(ctx, slot.group.type, slot.group.tiles, drawIndex, opts);
         }
       }
     }
@@ -1726,20 +1734,21 @@ export class GameScene {
 
   /**
    * 拖拽预览时，由手指横向位置求组内插入索引（排除后序列中的位置）。
-   * 含占位的虚拟布局与完整布局槽位数相同、位置不随缺口变化，不会抖动。
+   * 以每张牌实际槽位中心为界累计，跳过被拖牌自身（完整布局首帧），
+   * 不受缺口占位造成的槽位偏移影响；末尾缺口（排除后长度）可达。
    */
   private boardGapIndexAt(px: number, groupSlot: BoardGroupSlot): number {
     const ts = groupSlot.tileSlots;
     if (ts.length === 0) return 0;
     const scale = ts[0].opts.scale ?? 1;
     const tw = TILE_WIDTH * scale;
-    const step = tw + TILE_GAP * scale;
-    const startX = ts[0].opts.x;
-    let idx = 0;
-    for (let i = 0; i < ts.length; i++) {
-      if (px > startX + i * step + tw / 2) idx = i + 1;
+    const excludeId = this.drag?.source.kind === 'board' ? this.drag.source.tileId : null;
+    let count = 0;
+    for (const s of ts) {
+      if (excludeId != null && s.logicalTile.originalTile.id === excludeId) continue;
+      if (px > s.opts.x + tw / 2) count++;
     }
-    return Math.max(0, Math.min(idx, ts.length - 1));
+    return count;
   }
 
   private buildRack(): void {
