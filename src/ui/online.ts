@@ -32,8 +32,9 @@ export interface OnlineSceneHost {
   showTip(msg: string, duration?: number): void;
   /** 发牌动画开关（一次性）：断线重连首次全量加载前置 false，原地全量展示。 */
   setDealAnimEnabled(enabled: boolean): void;
-  /** 云端操作进行中：锁定出牌/Pass 按钮并给出「处理中」即时反馈，防止重复点击。 */
-  setSubmitting(busy: boolean): void;
+  /** 云端操作进行中：锁定出牌/Pass 按钮并给出「处理中」即时反馈，防止重复点击。
+   *  action 标识触发动作，供场景把对应按钮文案显示为「…中」。 */
+  setSubmitting(busy: boolean, action?: 'submit' | 'pass'): void;
 }
 
 /** 占位牌：仅用于填充他人牌架数量与牌池数量，不参与任何规则计算。 */
@@ -192,9 +193,9 @@ export class OnlineCoordinator {
   // --------------------------------------------------------------------------
 
   /** 切换 busy 并同步通知场景锁/解锁按钮（即时反馈，防重复点击）。 */
-  private setBusy(v: boolean): void {
+  private setBusy(v: boolean, action?: 'submit' | 'pass'): void {
     this.busy = v;
-    this.scene.setSubmitting(v);
+    this.scene.setSubmitting(v, action);
   }
 
   /** 出牌：本地克隆预校验（即时反馈）→ 乐观提交 → 云端回放校验（权威裁决）。 */
@@ -223,7 +224,7 @@ export class OnlineCoordinator {
       return;
     }
 
-    this.setBusy(true);
+    this.setBusy(true, 'submit');
 
     // 乐观提交：本地已校验通过，立即在可见引擎上确认回合——牌落桌面、回合移交，
     // 用户无需等待云端往返即看到结果（消除卡顿感）。云端响应到达后 loadState
@@ -287,7 +288,7 @@ export class OnlineCoordinator {
     const st = this.engine.getState();
     if (st.phase !== 'PLAYING' || st.currentPlayerIndex !== this.selfIndex) return;
 
-    this.setBusy(true);
+    this.setBusy(true, 'pass');
     sendPass(this.code)
       .then((resp) => {
         this.setBusy(false);

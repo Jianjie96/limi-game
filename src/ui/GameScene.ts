@@ -232,6 +232,8 @@ export class GameScene {
   coordinator: OnlineCoordinator | null = null;
   /** 云端操作进行中（出牌/Pass 请求在飞）：锁定操作按钮并展示「处理中」，防重复点击。 */
   private submitting = false;
+  /** 正在进行的云端动作：决定哪个按钮显示「…中」，另一个显示「处理中…」。 */
+  private submittingAction: 'submit' | 'pass' | null = null;
   /** 下一次全量加载是否播放发牌动画（断线重连置 false，全量原地展示）。 */
   private dealAnimEnabled = true;
 
@@ -329,11 +331,16 @@ export class GameScene {
   }
 
   private updateButtonStates(): void {
-    // 云端处理中：锁定两个操作按钮并显示「处理中」，即时反馈且彻底挡住重复点击。
+    // 云端处理中：锁定两个操作按钮；触发方显示「…中」，另一个显示「处理中…」。
     if (this.submitting) {
       for (const btn of this.buttons) {
         btn.config.enabled = false;
-        btn.config.label = btn.config.id === 'submit' ? '出牌中…' : '摸牌中…';
+        btn.config.label =
+          btn.config.id === this.submittingAction
+            ? btn.config.id === 'submit'
+              ? '出牌中…'
+              : '摸牌中…'
+            : '处理中…';
       }
       return;
     }
@@ -355,10 +362,12 @@ export class GameScene {
     this.dealAnimEnabled = enabled;
   }
 
-  /** 云端操作进行中：锁定操作按钮并即时重绘，防重复点击并给出「处理中」反馈。 */
-  setSubmitting(busy: boolean): void {
-    if (this.submitting === busy) return;
+  /** 云端操作进行中：锁定操作按钮并即时重绘，防重复点击并给出「处理中」反馈。
+   *  action 标识触发动作（出牌/Pass），busy 结束时传 null 清除。 */
+  setSubmitting(busy: boolean, action?: 'submit' | 'pass'): void {
+    if (this.submitting === busy && this.submittingAction === (action ?? null)) return;
     this.submitting = busy;
+    this.submittingAction = busy ? action ?? null : null;
     this.markDirty();
   }
 
