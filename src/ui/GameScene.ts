@@ -53,6 +53,7 @@ import {
   hitTestBoardGroup,
   boardContentHeight,
   type BoardConfig,
+  type BoardGapPreview,
   type BoardGroupSlot,
   type BoardTileSlot,
 } from './Board';
@@ -201,6 +202,10 @@ export class GameScene {
   private rangeSelectAnchor: number | null = null;
   /** 理牌实时预览：拖拽牌架牌时牌架中开出的缺口索引（排除后序列），null 表示无预览。 */
   private previewGapIndex: number | null = null;
+  /** 理牌实时预览：拖拽工作区牌时工作区中开出的缺口索引（排除后序列）。 */
+  private previewWaGapIndex: number | null = null;
+  /** 理牌实时预览：拖拽桌面牌时同组内开出的缺口（组 id + 索引），null 表示无预览。 */
+  private previewBoardGap: { groupId: string; gapIndex: number } | null = null;
 
   /**
    * 本场景是否经历过 touchStart。
@@ -464,15 +469,34 @@ export class GameScene {
       this.drag.curX = t.clientX;
       this.drag.curY = t.clientY;
 
-      // 理牌实时预览：拖的是牌架牌时，牌架内实时开缺口提示将插入的位置；
-      // 拖出牌架区域则闭合缺口（邻牌拱回原位），松手不改变顺序。
-      if (this.drag.source.kind === 'rack') {
-        const next = this.isInRackRegion(t.clientX, t.clientY)
+      // 理牌实时预览：拖拽中目标区域实时开缺口提示将插入的位置；
+      // 拖离区域则闭合缺口（邻牌拱回原位），松手不改变顺序。
+      const kind = this.drag.source.kind;
+      if (kind === 'rack') {
+        this.previewGapIndex = this.isInRackRegion(t.clientX, t.clientY)
           ? rackGapIndexAt(t.clientX, t.clientY, this.getSelfPlayer().rack.length - 1, this.rackConfig)
           : null;
-        if (next !== this.previewGapIndex) {
-          this.previewGapIndex = next;
-        }
+        this.previewWaGapIndex = null;
+        this.previewBoardGap = null;
+      } else if (kind === 'working') {
+        this.previewWaGapIndex = this.isInWorkingAreaRegion(t.clientX, t.clientY)
+          ? this.workingAreaGapIndexAt(
+              t.clientX,
+              t.clientY,
+              this.engine.getTurnContext().workingArea.length - 1,
+            )
+          : null;
+        this.previewGapIndex = null;
+        this.previewBoardGap = null;
+      } else if (kind === 'board') {
+        // 同组内实时开缺口理牌预览；离开牌组或跨组则闭合缺口。
+        const group = hitTestBoardGroup(t.clientX, t.clientY, this.boardSlots);
+        this.previewBoardGap =
+          group && group.groupId === this.drag.source.sourceGroupId
+            ? { groupId: group.groupId, gapIndex: this.boardGapIndexAt(t.clientX, group) }
+            : null;
+        this.previewGapIndex = null;
+        this.previewWaGapIndex = null;
       }
     }
     this.markDirty();
@@ -499,6 +523,8 @@ export class GameScene {
       this.longPressActive = false;
       this.rangeSelectAnchor = null;
       this.previewGapIndex = null;
+      this.previewWaGapIndex = null;
+      this.previewBoardGap = null;
       this.pressSource = null;
       this.markDirty();
       return;
@@ -508,6 +534,8 @@ export class GameScene {
       this.handleTileDrop(this.drag, this.drag.curX, this.drag.curY);
       this.drag = null;
       this.previewGapIndex = null;
+      this.previewWaGapIndex = null;
+      this.previewBoardGap = null;
       this.pressSource = null;
       this.markDirty();
       return;
@@ -526,6 +554,8 @@ export class GameScene {
     this.sweepSelectActive = false;
     this.rangeSelectAnchor = null;
     this.previewGapIndex = null;
+    this.previewWaGapIndex = null;
+    this.previewBoardGap = null;
     this.drag = null;
     this.pressSource = null;
     this.markDirty();
@@ -852,11 +882,14 @@ export class GameScene {
 
       // 工作区 → 牌架 / 桌面。
       if (src.kind === 'working') {
-        // 工作区内拖到另一张牌上 → 仅调整顺序（理牌），不受破冰限制。
-        if (workingHit && workingHit.tile.id !== src.tileId) {
-          this.engine.reorderWorkingAreaTile(src.tileId, workingHit.index);
-          audio.play('sort');
-          this.showTip('已调整顺序');
+        // 落在工作区内 → 插入实时预览缺口处（或另一张牌上），仅调整顺序（理牌），不受破冰限制。
+        if (onWorkingArea) {
+          const insertAt = this.previewWaGapIndex ?? workingHit?.index;
+          if (insertAt != null && (!workingHit || workingHit.tile.id !== src.tileId)) {
+            this.engine.reorderWorkingAreaTile(src.tileId, insertAt);
+            audio.play('sort');
+            this.showTip('已调整顺序');
+          }
           return;
         }
 
@@ -906,8 +939,9 @@ export class GameScene {
       }
 
       if (boardTile && targetGroupId === sourceGroupId) {
-        // 同一牌组内拖到另一张牌上 → 仅重排顺序（Joker 显示值随位置变化）。
-        this.engine.moveTileWithinGroup(sourceGroupId, src.tileId, boardTile.index);
+        // 同组内理牌 → 插入实时预览缺口处（或目标牌位置）（Joker 显示值随位置变化）。
+        const insertAt = this.previewBoardGap?.gapIndex ?? boardTile.index;
+        this.engine.moveTileWithinGroup(sourceGroupId, src.tileId, insertAt);
         audio.play('sort');
         this.showTip('已调整顺序');
       } else if (targetGroupId && targetGroupId !== sourceGroupId) {
@@ -1187,16 +1221,31 @@ export class GameScene {
       this.rackConfig.y = rackTop;
 
       // 工作区高度与 y 无关，先测高度再反推顶部 y（紧贴牌架上方）。
-      const waMeasured = this.workingAreaLayout(workingTiles, 0);
+      // 理牌实时预览：拖工作区牌且缺口开着时，用含缺口的预览布局（邻牌让位）。
+      const draggingWaId = this.drag?.source.kind === 'working' ? this.drag.source.tileId : null;
+      const waPreview =
+        draggingWaId != null && this.previewWaGapIndex != null
+          ? { excludeId: draggingWaId, gapIndex: this.previewWaGapIndex }
+          : undefined;
+      const waMeasured = this.workingAreaLayout(workingTiles, 0, waPreview);
       this.workingAreaHeight = waMeasured.height;
       this.workingAreaY = rackTop - waMeasured.height - 8;
-      this.workingAreaSlots = this.workingAreaLayout(workingTiles, this.workingAreaY).slots;
+      this.workingAreaSlots = this.workingAreaLayout(workingTiles, this.workingAreaY, waPreview).slots;
 
       // 桌面：顶部预留出对手信息行（顶栏 + 一行徽章高度），向下填满到工作区上方。
       this.boardConfig.topY = this.safeTop + PLAYER_INFO_HEIGHT + 30;
       const boardBottom = this.workingAreaY - 8;
       this.boardBottom = boardBottom;
-      this.boardSlots = this.layoutBoardToFit(state.board, boardBottom);
+      // 理牌实时预览：拖桌面牌且组内缺口开着时，用含缺口的预览布局（组内邻牌让位）。
+      const boardGap =
+        this.drag?.source.kind === 'board' && this.previewBoardGap != null
+          ? {
+              groupId: this.previewBoardGap.groupId,
+              excludeId: this.drag.source.tileId,
+              gapIndex: this.previewBoardGap.gapIndex,
+            }
+          : undefined;
+      this.boardSlots = this.layoutBoardToFit(state.board, boardBottom, boardGap);
       // 理牌实时预览：拖拽牌架牌且缺口开着时，用含缺口的预览布局（邻牌让位）。
       const draggingRackId = this.drag?.source.kind === 'rack' ? this.drag.source.tileId : null;
       this.rackSlots =
@@ -1759,16 +1808,20 @@ export class GameScene {
   }
 
   /** 计算桌面布局：内容超出可用高度时整体缩放假面，保证不与工作区/牌架重叠。 */
-  private layoutBoardToFit(groups: TileGroup[], boardBottom: number): BoardGroupSlot[] {
+  private layoutBoardToFit(
+    groups: TileGroup[],
+    boardBottom: number,
+    gapPreview?: BoardGapPreview,
+  ): BoardGroupSlot[] {
     const availableH = Math.max(48, boardBottom - this.boardConfig.topY);
 
-    let slots = layoutBoard(groups, this.boardConfig, this.highlightedGroupIds, 1);
+    let slots = layoutBoard(groups, this.boardConfig, this.highlightedGroupIds, 1, gapPreview);
     let scale = 1;
     for (let i = 0; i < 6; i++) {
       const h = boardContentHeight(slots, this.boardConfig.topY);
       if (groups.length === 0 || h <= availableH) break;
       scale = Math.max(0.5, scale * (availableH / h));
-      slots = layoutBoard(groups, this.boardConfig, this.highlightedGroupIds, scale);
+      slots = layoutBoard(groups, this.boardConfig, this.highlightedGroupIds, scale, gapPreview);
     }
     return slots;
   }
@@ -1840,6 +1893,7 @@ export class GameScene {
   private workingAreaLayout(
     tiles: Tile[],
     baseY: number,
+    preview?: { excludeId: number; gapIndex: number },
   ): { slots: WorkingAreaSlot[]; height: number } {
     const scale = 0.7;
     const tw = TILE_WIDTH * scale;
@@ -1852,12 +1906,18 @@ export class GameScene {
     const perRow = Math.max(1, Math.floor((usableW + gapX) / (tw + gapX)));
     const topOffset = 16; // 顶部留出标签高度
 
-    const slots: WorkingAreaSlot[] = tiles.map((tile, i) => {
-      const row = Math.floor(i / perRow);
-      const col = i % perRow;
+    // 理牌预览：排除被拖牌并在 gapIndex 留空槽；行数按含占位的完整数量计算，避免行结构抽动。
+    const filtered = preview ? tiles.filter((t) => t.id !== preview.excludeId) : tiles;
+    const gapIndex = preview?.gapIndex ?? -1;
+    const total = filtered.length + (preview ? 1 : 0);
+
+    const slots: WorkingAreaSlot[] = filtered.map((tile, i) => {
+      const v = preview && i >= gapIndex ? i + 1 : i; // 虚拟位置（跳过占位槽）
+      const row = Math.floor(v / perRow);
+      const col = v % perRow;
       return {
         tile,
-        index: i,
+        index: i, // 排除后序列的索引，与 reorderWorkingAreaTile 的 toIndex 语义一致
         x: contentLeft + col * (tw + gapX),
         y: baseY + topOffset + row * (th + gapY),
         w: tw,
@@ -1865,13 +1925,70 @@ export class GameScene {
       };
     });
 
-    const rows = tiles.length === 0 ? 0 : Math.ceil(tiles.length / perRow);
+    const rows = total === 0 ? 0 : Math.ceil(total / perRow);
     const height =
-      tiles.length === 0
+      total === 0
         ? WORKING_AREA_HEIGHT
         : Math.max(WORKING_AREA_HEIGHT, topOffset + rows * th + (rows - 1) * gapY + 6);
 
     return { slots, height };
+  }
+
+  /**
+   * 拖拽预览时，由手指位置求工作区插入索引（排除后序列中的位置）。
+   * 基于含占位的完整虚拟布局计算，结果与当前缺口位置无关，不会抖动。
+   */
+  private workingAreaGapIndexAt(px: number, py: number, filteredCount: number): number {
+    if (filteredCount <= 0) return 0;
+    const scale = 0.7;
+    const tw = TILE_WIDTH * scale;
+    const th = TILE_HEIGHT * scale;
+    const gapX = TILE_GAP + 2;
+    const gapY = 4;
+    const contentLeft = this.safeLeft + 12;
+    const usableW = this.screenW - this.safeRight - 12 - contentLeft;
+    const perRow = Math.max(1, Math.floor((usableW + gapX) / (tw + gapX)));
+    const topOffset = 16;
+    const total = filteredCount + 1;
+    const rows = Math.max(1, Math.ceil(total / perRow));
+
+    // 取离手指最近的一行。
+    let row = 0;
+    let best = Infinity;
+    for (let r = 0; r < rows; r++) {
+      const cy = this.workingAreaY + topOffset + r * (th + gapY) + th / 2;
+      const d = Math.abs(py - cy);
+      if (d < best) {
+        best = d;
+        row = r;
+      }
+    }
+
+    // 手指越过几个槽位中心 → 插入到第几个位置（工作区左对齐不居中）。
+    let local = 0;
+    for (let c = 0; c < perRow; c++) {
+      if (row * perRow + c >= total) break;
+      if (px > contentLeft + c * (tw + gapX) + tw / 2) local = c + 1;
+    }
+    return Math.max(0, Math.min(row * perRow + local, filteredCount));
+  }
+
+  /**
+   * 拖拽预览时，由手指横向位置求组内插入索引（排除后序列中的位置）。
+   * 含占位的虚拟布局与完整布局槽位数相同、位置不随缺口变化，不会抖动。
+   */
+  private boardGapIndexAt(px: number, groupSlot: BoardGroupSlot): number {
+    const ts = groupSlot.tileSlots;
+    if (ts.length === 0) return 0;
+    const scale = ts[0].opts.scale ?? 1;
+    const tw = TILE_WIDTH * scale;
+    const step = tw + TILE_GAP * scale;
+    const startX = ts[0].opts.x;
+    let idx = 0;
+    for (let i = 0; i < ts.length; i++) {
+      if (px > startX + i * step + tw / 2) idx = i + 1;
+    }
+    return Math.max(0, Math.min(idx, ts.length - 1));
   }
 
   private buildWorkingArea(state: GameState): void {

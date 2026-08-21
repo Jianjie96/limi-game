@@ -38,6 +38,13 @@ export interface BoardTileSlot {
   opts: TileRenderOptions;
 }
 
+/** 组内理牌预览：在目标牌组的 gapIndex 处留空槽，excludeId 为被拖起的牌。 */
+export interface BoardGapPreview {
+  groupId: string;
+  excludeId: number;
+  gapIndex: number;
+}
+
 /** 单个牌组占用的高度（含上下内边距） */
 export const BOARD_ROW_HEIGHT = TILE_HEIGHT + BOARD_GROUP_PADDING * 2;
 
@@ -46,12 +53,15 @@ export const BOARD_ROW_HEIGHT = TILE_HEIGHT + BOARD_GROUP_PADDING * 2;
  *
  * @param scale 牌面缩放系数。当桌面内容超出可视区域时，可按此系数整体缩放，
  *              保证所有牌组都落在可用高度内，避免与工作区/牌架重叠。
+ * @param gapPreview 组内理牌预览：目标牌组排除被拖牌并在 gapIndex 留空槽，
+ *              槽位数与完整布局一致，组宽不变，其余牌组不重排。
  */
 export function layoutBoard(
   groups: TileGroup[],
   config: BoardConfig,
   highlightedGroupIds: Set<string> = new Set(),
   scale = 1,
+  gapPreview?: BoardGapPreview,
 ): BoardGroupSlot[] {
   const slots: BoardGroupSlot[] = [];
   const margin = 12;
@@ -69,7 +79,13 @@ export function layoutBoard(
   const groupH = th + pad * 2;
 
   for (const group of groups) {
-    const groupW = group.tiles.length * tw + (group.tiles.length - 1) * gap + pad * 2;
+    const gapForGroup = gapPreview && gapPreview.groupId === group.id ? gapPreview : null;
+    // 预览时排除被拖牌并计入占位槽，组宽与完整布局一致。
+    const tiles = gapForGroup
+      ? group.tiles.filter((lt) => lt.originalTile.id !== gapForGroup.excludeId)
+      : group.tiles;
+    const total = tiles.length + (gapForGroup ? 1 : 0);
+    const groupW = total * tw + (total - 1) * gap + pad * 2;
 
     // 放不下则换行（当前行已有内容时才换，避免单组过宽死循环）。
     if (curX + groupW > right && curX > left) {
@@ -80,14 +96,15 @@ export function layoutBoard(
     const groupBounds = { x: curX, y: curY, w: groupW, h: groupH };
     const tileSlots: BoardTileSlot[] = [];
 
-    for (let i = 0; i < group.tiles.length; i++) {
-      const lt = group.tiles[i];
+    for (let i = 0; i < tiles.length; i++) {
+      const lt = tiles[i];
+      const v = gapForGroup && i >= gapForGroup.gapIndex ? i + 1 : i; // 虚拟位置（跳过占位槽）
       tileSlots.push({
         logicalTile: lt,
         groupId: group.id,
-        index: i,
+        index: i, // 排除后序列的索引，与 moveTileWithinGroup 的 toIndex 语义一致
         opts: {
-          x: curX + pad + i * (tw + gap),
+          x: curX + pad + v * (tw + gap),
           y: curY + pad,
           scale,
           highlighted: highlightedGroupIds.has(group.id),
