@@ -252,7 +252,19 @@ async function doMove(event, openid) {
     return fail('操作序列不合法：' + (e && e.message ? e.message : String(e)));
   }
 
-  const res = engine.submitTurn();
+  let res;
+  try {
+    res = engine.submitTurn();
+  } catch (e) {
+    // 引擎异常（内存态可能已脏）：不落库，从密态重新取权威状态回给客户端对齐。
+    console.error(`[lami-game] move 引擎异常 code=${code}:`, e && e.stack ? e.stack : e);
+    const fresh = await getDoc(SECRETS, code);
+    if (fresh) {
+      const recovered = RummikubEngine.fromState(fresh.fullState);
+      return ok({ payload: payloadFor(room, recovered, room.game.version, room.game.turnDeadline, openid) });
+    }
+    return fail('对局数据缺失');
+  }
   if (!res.valid) {
     // 校验失败不落库：返回权威公开状态 + 本人手牌，客户端据此回滚。
     const payload = payloadFor(room, engine, room.game.version, room.game.turnDeadline, openid);
@@ -298,7 +310,19 @@ async function doPass(event, openid) {
     return ok({ payload: payloadFor(room, engine, room.game.version, room.game.turnDeadline, openid) });
   }
 
-  engine.pass();
+  try {
+    engine.pass();
+  } catch (e) {
+    // 引擎异常（内存态可能已脏）：不落库，重新从密态取权威状态回给客户端对齐，
+    // 真实异常记入云函数日志，避免前端只看到「服务繁忙」黑盒。
+    console.error(`[lami-game] pass 引擎异常 code=${code}:`, e && e.stack ? e.stack : e);
+    const fresh = await getDoc(SECRETS, code);
+    if (fresh) {
+      const recovered = RummikubEngine.fromState(fresh.fullState);
+      return ok({ payload: payloadFor(room, recovered, room.game.version, room.game.turnDeadline, openid) });
+    }
+    return fail('对局数据缺失');
+  }
   await settleAndPersist(room, engine);
   // 回合若移交到机器人 → 云端立即连续代打。
   await advanceBots(room, engine);
@@ -322,39 +346,53 @@ async function settleAndPersist(room, engine) {
   }
 }
 
-/** 对局结束写历史战绩（云端权威，_id = 房间号，set 幂等防重复）。 */
+/** 对局结束写历史战绩（云端权威，_id = 房间号，set 幂等防重复）。
+ * 集合不存在时自动创建后重试一次（免控制台手工建集合）。 */
 async function recordMatchResult(room, engine) {
+  const st = engine.getState();
+  const result = st.result;
+  if (!result) return;
+  const openids = (room.game && room.game.playersOpenid) || [];
+  const winnerIndex = st.players.findIndex((p) => p.id === result.winnerId);
+  const winner = result.playerResults.find((r) => r.isWinner);
+  const data = {
+    code: room.code,
+    startedAt: (room.game && room.game.startedAt) || 0,
+    endedAt: Date.now(),
+    playersOpenid: openids,
+    playerNames: st.players.map((p) => p.name),
+    winnerIndex,
+    winnerOpenid: winnerIndex >= 0 ? openids[winnerIndex] : '',
+    winnerName: winner ? winner.playerName : '',
+    winReason: result.winReason,
+  };
   try {
-    const st = engine.getState();
-    const result = st.result;
-    if (!result) return;
-    const openids = (room.game && room.game.playersOpenid) || [];
-    const winnerIndex = st.players.findIndex((p) => p.id === result.winnerId);
-    await HISTORY.doc(room.code).set({
-      data: {
-        code: room.code,
-        startedAt: (room.game && room.game.startedAt) || 0,
-        endedAt: Date.now(),
-        playersOpenid: openids,
-        playerNames: st.players.map((p) => p.name),
-        winnerIndex,
-        winnerOpenid: winnerIndex >= 0 ? openids[winnerIndex] : '',
-        winnerName: result.playerResults.find((r) => r.isWinner) ?
-          result.playerResults.find((r) => r.isWinner).playerName : '',
-        winReason: result.winReason,
-      },
-    });
+    await HISTORY.doc(room.code).set({ data });
   } catch (e) {
-    // 战绩写入失败不阻断对局收尾
+    // 首次写入常见失败原因是集合不存在：建集合后重试一次。
+    try {
+      await db.createCollection('lami_history');
+      await HISTORY.doc(room.code).set({ data });
+    } catch (e2) {
+      // 战绩写入失败不阻断对局收尾，但记入云函数日志供排查。
+      console.error('[lami-game] 战绩写入失败:', e2 && e2.message ? e2.message : e2);
+    }
   }
 }
 
 /** 查询本人历史战绩（最新在前，上限 50 条）。 */
 async function doHistory(event, openid) {
-  const snap = await HISTORY.where({ playersOpenid: openid })
-    .orderBy('endedAt', 'desc')
-    .limit(50)
-    .get();
+  let snap;
+  try {
+    snap = await HISTORY.where({ playersOpenid: openid })
+      .orderBy('endedAt', 'desc')
+      .limit(50)
+      .get();
+  } catch (e) {
+    // 集合不存在等异常不报错给前端：返回空列表，战绩卡片正常展示「暂无战绩」。
+    console.error('[lami-game] 战绩查询失败:', e && e.message ? e.message : e);
+    return ok({ records: [] });
+  }
   const records = (snap.data || []).map((h) => ({
     date: h.endedAt,
     durationMs: Math.max(0, h.endedAt - (h.startedAt || h.endedAt)),
