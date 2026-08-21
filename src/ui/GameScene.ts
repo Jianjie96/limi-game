@@ -1552,6 +1552,7 @@ export class GameScene {
     }
   }
 
+  /** 对局结束面板（历史战绩已由云端在对局结束时写入 lami_history）。 */
   private buildGameOver(state: GameState, now: number): void {
     const result = state.result;
     if (!result) return;

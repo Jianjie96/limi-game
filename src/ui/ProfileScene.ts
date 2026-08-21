@@ -1,8 +1,9 @@
 // ============================================================================
-// SettingsScene.ts — 个人中心（设置页）场景
+// ProfileScene.ts — 个人中心场景
 // ----------------------------------------------------------------------------
 // 从首页「个人中心」进入：头像（微信相册/拍照选择，元素色兜底）+
-// 昵称（原生键盘修改），以及 背景音 / 音效 / 震动反馈 / 横屏模式 四个开关。
+// 昵称（原生键盘修改）+ 历史战绩列表（云端 lami_history 查库：
+// 日期/耗时/参与者/是否冠军），以及 背景音 / 音效 / 震动反馈 / 横屏模式 四个开关。
 // 与 HomeScene 共享画布与 backdrop 视觉语言，通过 dispose() 交还。
 // ============================================================================
 
@@ -15,10 +16,11 @@ import {
   hitRect,
   SceneButtonRect,
 } from './backdrop';
-import { FROST_STRONG, FROST_BORDER, GOLD, INK, INK_SOFT, AVATAR_COLORS } from './constants';
+import { FROST_STRONG, FROST_BORDER, GOLD, INK, INK_SOFT, AVATAR_COLORS, FONT_FAMILY } from './constants';
 import { audio } from './audio';
 import { requestOrientation, orientationSupported } from './orientation';
 import { clearLastRoom } from '../cloud/room';
+import { fetchMatchHistory, type MatchHistoryRecord } from '../cloud/game';
 import {
   getNickname,
   setNickname,
@@ -37,7 +39,7 @@ import {
 
 const ROW_H = 48;
 
-export class SettingsScene {
+export class ProfileScene {
   /** 返回上一页（首页） */
   onExit: (() => void) | null = null;
 
@@ -71,6 +73,10 @@ export class SettingsScene {
   private editingNickname = false;
   /** dispose 后丢弃异步回调（转屏等待可能晚于返回）。 */
   private disposed = false;
+
+  /** 云端历史战绩：null = 尚未加载；加载失败也落为空列表 + 失败标记。 */
+  private historyRecords: MatchHistoryRecord[] | null = null;
+  private historyFailed = false;
 
   private touchStartHandler = (e: { touches: Array<{ clientX: number; clientY: number }> }) => {
     const t = e.touches[0];
@@ -122,6 +128,23 @@ export class SettingsScene {
       // 键盘 API 不可用时仅禁用昵称修改
     }
     this.rafId = requestAnimationFrame(this.tick);
+    this.loadHistory();
+  }
+
+  /** 查库拉取本人历史战绩（失败不阻断页面，卡片内提示）。 */
+  private loadHistory(): void {
+    fetchMatchHistory()
+      .then((records) => {
+        if (this.disposed) return;
+        this.historyRecords = records;
+        this.dirty = true;
+      })
+      .catch(() => {
+        if (this.disposed) return;
+        this.historyRecords = [];
+        this.historyFailed = true;
+        this.dirty = true;
+      });
   }
 
   dispose(): void {
@@ -348,11 +371,11 @@ export class SettingsScene {
       return;
     }
 
-    // 内容卡片
+    // 内容卡片：贴顶放（下方还要留给历史战绩卡片）。
     const cardW = Math.min(380, w * 0.92);
     const cardH = 96 + 46 + ROW_H * 5 + 26;
     const cardX = (w - cardW) / 2;
-    const cardY = Math.max(this.safeTop + 56, (h - cardH) / 2 + 10);
+    const cardY = this.safeTop + 56;
 
     ctx.fillStyle = 'rgba(6,14,22,0.4)';
     roundRectPath(ctx, cardX + 2, cardY + 4, cardW, cardH, 16);
@@ -385,16 +408,23 @@ export class SettingsScene {
     this.drawDivider(this.landscapeRowRect);
     this.drawClearCacheRow(this.clearCacheRowRect);
 
+    // 历史战绩卡片：填满下方剩余空间（放不下则不画）。
+    const histY = cardY + cardH + 12;
+    const histH = h - 12 - histY;
+    if (histH >= 96) this.drawHistoryCard(cardX, histY, cardW, histH);
+
     if (this.message && Date.now() < this.messageUntil) this.drawMessage();
   }
 
-  /** 横屏双列卡片：左列头像/昵称/色卡，右列四个紧凑开关行。 */
+  /** 横屏双卡片：左卡片头像/昵称/色卡/开关，右卡片历史战绩。 */
   private drawLandscapeCard(w: number, h: number): void {
     const ctx = this.ctx;
     const availW = w - this.safeLeft - this.safeRight;
-    const cardW = Math.min(620, availW - 24);
+    // 主卡占 56%，剩余宽度给历史战绩卡（中间 16 间距）。
+    const cardW = Math.min(560, Math.floor(availW * 0.56));
+    const histW = availW - cardW - 16;
     const cardH = 236;
-    const cardX = this.safeLeft + (availW - cardW) / 2;
+    const cardX = this.safeLeft;
     const cardY = Math.max(this.safeTop + 48, (h - cardH) / 2);
 
     ctx.fillStyle = 'rgba(6,14,22,0.4)';
@@ -488,6 +518,103 @@ export class SettingsScene {
     this.drawToggleRow(this.landscapeRowRect, '横屏模式', getPreferredOrientation() === 'landscape');
     this.drawDivider(this.landscapeRowRect);
     this.drawClearCacheRow(this.clearCacheRowRect);
+
+    // 右侧历史战绩卡片（与主卡等高）。
+    if (histW >= 160) this.drawHistoryCard(cardX + cardW + 16, cardY, histW, cardH);
+  }
+
+  /** 历史战绩卡片：标题 + 最近对局记录（日期/耗时/参与者/冠军，夺冠行金色底）。 */
+  private drawHistoryCard(x: number, y: number, w: number, h: number): void {
+    const ctx = this.ctx;
+    ctx.fillStyle = 'rgba(6,14,22,0.4)';
+    roundRectPath(ctx, x + 2, y + 4, w, h, 16);
+    ctx.fill();
+    ctx.fillStyle = FROST_STRONG;
+    roundRectPath(ctx, x, y, w, h, 16);
+    ctx.fill();
+    ctx.strokeStyle = FROST_BORDER;
+    ctx.lineWidth = 1.5;
+    roundRectPath(ctx, x, y, w, h, 16);
+    ctx.stroke();
+
+    drawSceneText(ctx, x + 16, y + 20, '历史战绩', {
+      size: 14,
+      bold: true,
+      color: INK,
+      align: 'left',
+    });
+
+    const records = this.historyRecords;
+    if (records === null) {
+      drawSceneText(ctx, x + w / 2, y + h / 2 + 8, this.historyFailed ? '战绩加载失败' : '战绩加载中…', {
+        size: 12,
+        color: INK_SOFT,
+      });
+      return;
+    }
+    if (records.length === 0) {
+      drawSceneText(ctx, x + w / 2, y + h / 2 + 8, this.historyFailed ? '战绩加载失败，稍后再试' : '暂无战绩，先去打一局吧', {
+        size: 12,
+        color: INK_SOFT,
+      });
+      return;
+    }
+
+    // 每条两行：上行日期/耗时 + 冠军，下行参与者（小字）。
+    const rowH = 36;
+    const maxRows = Math.max(1, Math.floor((h - 44) / rowH));
+    let ry = y + 36;
+    for (let i = 0; i < Math.min(records.length, maxRows); i++) {
+      const r = records[i];
+      const cy = ry + rowH / 2;
+      if (r.selfWon) {
+        ctx.fillStyle = 'rgba(233,201,127,0.18)';
+        roundRectPath(ctx, x + 10, ry + 2, w - 20, rowH - 4, 8);
+        ctx.fill();
+      }
+      drawSceneText(ctx, x + 16, cy - 8, `${this.fmtDate(r.date)} · ${this.fmtDuration(r.durationMs)}`, {
+        size: 11,
+        color: INK,
+        align: 'left',
+      });
+      drawSceneText(ctx, x + w - 16, cy - 8, r.selfWon ? '🏆 我夺冠' : `🏆 ${r.winnerName}`, {
+        size: 11,
+        color: r.selfWon ? GOLD : INK,
+        align: 'right',
+      });
+      drawSceneText(ctx, x + 16, cy + 9, this.fitParticipantText(r, w - 32), {
+        size: 10,
+        color: INK_SOFT,
+        align: 'left',
+      });
+      ry += rowH;
+    }
+  }
+
+  /** 参与者行按可用宽度截断（超出补省略号）。 */
+  private fitParticipantText(r: MatchHistoryRecord, maxWidth: number): string {
+    let names = r.players.join('、');
+    this.ctx.font = `10px ${FONT_FAMILY}`;
+    let text = `参与者：${names}`;
+    while (names.length > 1 && this.ctx.measureText(text).width > maxWidth) {
+      names = names.slice(0, -1);
+      text = `参与者：${names}…`;
+    }
+    return text;
+  }
+
+  /** 日期时间：MM-DD HH:mm。 */
+  private fmtDate(ts: number): string {
+    const d = new Date(ts);
+    const p = (n: number) => String(n).padStart(2, '0');
+    return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+  }
+
+  /** 对局时长：分钟级，超过一小时带小时。 */
+  private fmtDuration(ms: number): string {
+    const min = Math.max(1, Math.round(ms / 60000));
+    if (min < 60) return `${min}分钟`;
+    return `${Math.floor(min / 60)}小时${min % 60}分`;
   }
 
   /** 头像 + 昵称行 */

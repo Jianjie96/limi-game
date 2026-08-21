@@ -4,6 +4,7 @@
 // 统一持久化到本地存储：昵称、头像（微信相册图片 / 元素色兜底）、
 // 震动反馈、屏幕方向偏好。
 // 音频两个开关（音乐/音效）由 audio.ts 自行持久化，此处不重复。
+// 历史战绩已落库云端（lami_history），见 src/cloud/game.ts fetchMatchHistory。
 // ============================================================================
 
 import { AVATAR_COLORS, FONT_FAMILY } from './constants';

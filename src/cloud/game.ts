@@ -108,6 +108,29 @@ export async function endGame(code: string): Promise<void> {
   }
 }
 
+/** 单条历史战绩（云端 lami_history 查询结果，已按本人视角加工）。 */
+export interface MatchHistoryRecord {
+  /** 对局结束时间戳（毫秒）。 */
+  date: number;
+  /** 对局时长（毫秒）。 */
+  durationMs: number;
+  /** 参与者昵称（按座位序）。 */
+  players: string[];
+  /** 冠军昵称。 */
+  winnerName: string;
+  /** 本人是否夺冠。 */
+  selfWon: boolean;
+}
+
+/** 查询本人历史战绩（云端权威，最新在前，上限 50 条）。 */
+export async function fetchMatchHistory(): Promise<MatchHistoryRecord[]> {
+  const result = await callGameRaw('history', {});
+  if (!result || !result.ok) {
+    throw new Error((result && result.message) || '查询战绩失败');
+  }
+  return Array.isArray(result.records) ? result.records : [];
+}
+
 // ----------------------------------------------------------------------------
 // 实时订阅（云数据库 watch）
 // ----------------------------------------------------------------------------

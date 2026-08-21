@@ -12,7 +12,7 @@ import { RummikubEngine } from './game/engine';
 import { GameScene } from './ui/GameScene';
 import { HomeScene } from './ui/HomeScene';
 import { RoomScene } from './ui/RoomScene';
-import { SettingsScene } from './ui/SettingsScene';
+import { ProfileScene } from './ui/ProfileScene';
 import { OnlineCoordinator } from './ui/online';
 import { getScreenInfo, getScreenInfoAfterRotation, applyCanvasSize, type ScreenInfo } from './ui/screen';
 import { audio } from './ui/audio';
@@ -189,9 +189,9 @@ function wireHome(home: HomeScene): void {
     });
 }
 
-/** 个人中心（设置页）：头像昵称 + 音频/震动/方向开关 */
+/** 个人中心：头像昵称 + 历史战绩 + 音频/震动/方向开关 */
 function goProfile(): void {
-  const scene = new SettingsScene(nativeCanvas, freshScreenInfo());
+  const scene = new ProfileScene(nativeCanvas, freshScreenInfo());
   scene.onExit = () => {
     goHome();
   };

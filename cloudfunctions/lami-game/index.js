@@ -8,8 +8,9 @@
 //   move — 出牌提交：回放客户端操作日志 → submitTurn 校验 → 写库推送
 //   pass — Pass：摸 1 张并结束回合（回滚本回合桌面操作）
 //   end  — 房主主动结束对局（关闭测试房 / 紧急终止）
+//   history — 查询本人历史战绩（lami_history，对局结束时云端写入）
 //   tick — 定时触发器（每分钟）：回收闲置测试房与逾期未开始的等待测试房，
-//          清理过期房间数据（第一版回合不限时，无超时托管）
+//          清理过期房间数据与过期战绩（第一版回合不限时，无超时托管）
 //
 // 机器人托管：devFill 填充的测试机器人（openid 形如 bot_*）回合由云端立即代打，
 // 回合一旦移交机器人，advanceBots 连续执行 bot.ts 的贪心 AI 直到回到真人回合。
@@ -18,6 +19,7 @@
 //   lami_rooms.game     公开状态（桌面/分数/回合/version；turnDeadline 恒为 0 = 不限时）
 //   lami_hands/{id}     私有手牌，_id = `${roomCode}_${openid}`，仅本人可读
 //   lami_secrets/{code} 完整引擎状态（含牌池顺序），仅云函数可访问
+//   lami_history/{code} 历史战绩（对局结束写入，保留 90 天），经 history action 仅查本人
 // ============================================================================
 
 const cloud = require('wx-server-sdk');
@@ -29,9 +31,12 @@ const _ = db.command;
 const ROOMS = db.collection('lami_rooms');
 const HANDS = db.collection('lami_hands');
 const SECRETS = db.collection('lami_secrets');
+const HISTORY = db.collection('lami_history');
 
 /** 房间数据保留时长：已结束/已废弃的房间超过该时长后由 tick 清理。 */
 const ROOM_RETAIN_MS = 3 * 24 * 3600 * 1000;
+/** 历史战绩保留时长：超期记录由 tick 清理，防集合无限膨胀。 */
+const HISTORY_RETAIN_MS = 90 * 24 * 3600 * 1000;
 /** 测试房闲置回收：真人玩家超过该时长无任何操作 → tick 释放房间。 */
 const TEST_ROOM_IDLE_MS = 24 * 60 * 60 * 1000;
 /** 等待中的测试房：创建后超过该时长仍未开局 → tick 直接回收。 */
@@ -211,6 +216,8 @@ async function doInit(event, openid) {
         playersOpenid,
         currentPlayerIndex: 0,
         public: buildPublic(engine, version, 0),
+        // 开局时间：结算历史战绩耗时的起点。
+        startedAt: Date.now(),
         // 开局由房主客户端触发，记为一次真人活跃；供 tick 回收闲置测试房判定。
         lastHumanAt: Date.now(),
       },
@@ -311,7 +318,51 @@ async function settleAndPersist(room, engine) {
   room.game.currentPlayerIndex = st.currentPlayerIndex;
   if (st.phase === 'GAME_OVER') {
     await ROOMS.doc(room.code).update({ data: { status: 'finished' } });
+    await recordMatchResult(room, engine);
   }
+}
+
+/** 对局结束写历史战绩（云端权威，_id = 房间号，set 幂等防重复）。 */
+async function recordMatchResult(room, engine) {
+  try {
+    const st = engine.getState();
+    const result = st.result;
+    if (!result) return;
+    const openids = (room.game && room.game.playersOpenid) || [];
+    const winnerIndex = st.players.findIndex((p) => p.id === result.winnerId);
+    await HISTORY.doc(room.code).set({
+      data: {
+        code: room.code,
+        startedAt: (room.game && room.game.startedAt) || 0,
+        endedAt: Date.now(),
+        playersOpenid: openids,
+        playerNames: st.players.map((p) => p.name),
+        winnerIndex,
+        winnerOpenid: winnerIndex >= 0 ? openids[winnerIndex] : '',
+        winnerName: result.playerResults.find((r) => r.isWinner) ?
+          result.playerResults.find((r) => r.isWinner).playerName : '',
+        winReason: result.winReason,
+      },
+    });
+  } catch (e) {
+    // 战绩写入失败不阻断对局收尾
+  }
+}
+
+/** 查询本人历史战绩（最新在前，上限 50 条）。 */
+async function doHistory(event, openid) {
+  const snap = await HISTORY.where({ playersOpenid: openid })
+    .orderBy('endedAt', 'desc')
+    .limit(50)
+    .get();
+  const records = (snap.data || []).map((h) => ({
+    date: h.endedAt,
+    durationMs: Math.max(0, h.endedAt - (h.startedAt || h.endedAt)),
+    players: h.playerNames || [],
+    winnerName: h.winnerName || '',
+    selfWon: h.winnerOpenid === openid,
+  }));
+  return ok({ records });
 }
 
 // ----------------------------------------------------------------------------
@@ -383,6 +434,15 @@ async function doTick() {
     }
   }
 
+  // 清理过期历史战绩（保留期外），与房间清理同理。
+  let purgedHistory = 0;
+  try {
+    const staleHist = await HISTORY.where({ endedAt: _.lt(now - HISTORY_RETAIN_MS) }).limit(20).get();
+    for (const h of staleHist.data) {
+      try { await HISTORY.doc(h._id).remove(); purgedHistory++; } catch (e) { /* 忽略 */ }
+    }
+  } catch (e) { /* 忽略 */ }
+
   // 清理过期房间，避免集合无限膨胀拖慢查询：
   //   - 已结束超过保留期的对局房间
   //   - 创建后一直没人齐的废弃等待房间
@@ -419,7 +479,7 @@ async function doTick() {
     }
   }
 
-  return ok({ handled, purged });
+  return ok({ handled, purged, purgedHistory });
 }
 
 exports.main = async (event) => {
@@ -438,6 +498,8 @@ exports.main = async (event) => {
         return await doPass(event, OPENID);
       case 'end':
         return await doEnd(event, OPENID);
+      case 'history':
+        return await doHistory(event, OPENID);
       default:
         return fail('未知操作');
     }
