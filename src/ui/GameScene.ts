@@ -64,7 +64,7 @@ import {
 import { getScreenInfo, getScreenInfoAfterRotation, applyCanvasSize, type ScreenInfo } from './screen';
 import { requestOrientation, orientationSupported } from './orientation';
 import { audio } from './audio';
-import { vibrateIfEnabled } from './profile';
+import { vibrateIfEnabled, getPreferredOrientation, setPreferredOrientation } from './profile';
 
 /** 拖拽来源 */
 type DragSourceKind = 'rack' | 'board';
@@ -208,10 +208,15 @@ export class GameScene {
   private touchActive = false;
 
   private buttons: ButtonState[] = [];
-  private orientationButton!: ButtonState;
   /** 结束对局回调（仅测试房房主挂接）：挂接后顶栏右侧显示「结束对局」按钮。 */
   onRequestEndGame: (() => void) | null = null;
   private endGameRect: { x: number; y: number; w: number; h: number } | null = null;
+
+  /** 设置弹窗（背景音/音效/横屏）：打开时屏蔽一切牌面交互。 */
+  private settingsPanelOpen = false;
+  private settingsButtonRect: { x: number; y: number; w: number; h: number } | null = null;
+  private settingsPanelRect: { x: number; y: number; w: number; h: number } | null = null;
+  private settingsRowRects: { x: number; y: number; w: number; h: number }[] = [];
 
   private isLandscape = false;
   /** dispose 后丢弃异步回调（转屏等待可能晚于场景释放）。 */
@@ -271,7 +276,6 @@ export class GameScene {
     this.isLandscape = info.screenWidth > info.screenHeight;
 
     this.setupButtons();
-    this.setupOrientationButton();
     this.updateLayout();
     this.bindTouch();
     this.bindResize();
@@ -293,20 +297,6 @@ export class GameScene {
       { id: 'pass', label: 'Pass 摸牌', x: 0, y: 0, width: 0, variant: 'secondary' },
       { id: 'submit', label: '出牌', x: 0, y: 0, width: 0, variant: 'primary' },
     ]);
-  }
-
-  private setupOrientationButton(): void {
-    this.orientationButton = createButtonStates([
-      {
-        id: 'toggleOrientation',
-        label: this.isLandscape ? '切竖屏' : '切横屏',
-        x: 0,
-        y: 0,
-        width: 76,
-        height: 24,
-        variant: 'secondary',
-      },
-    ])[0];
   }
 
   private updateLayout(): void {
@@ -335,12 +325,6 @@ export class GameScene {
       this.buttons[i].config.y = btnY;
       this.buttons[i].config.width = btnW;
     }
-
-    // 转屏按钮：固定在右上角（顶栏下方），避开右侧安全区。
-    const ow = this.orientationButton.config.width;
-    this.orientationButton.config.x = this.screenW - this.safeRight - ow - 8;
-    this.orientationButton.config.y = this.safeTop + PLAYER_INFO_HEIGHT + 3;
-    this.orientationButton.config.label = this.isLandscape ? '切竖屏' : '切横屏';
   }
 
   private updateButtonStates(): void {
@@ -414,6 +398,18 @@ export class GameScene {
     this.touchActive = true;
     this.pressX = t.clientX;
     this.pressY = t.clientY;
+
+    // 设置弹窗打开：屏蔽一切牌面/滚动手势，仅保留点按（弹窗命中在 onPointerDown）。
+    if (this.settingsPanelOpen) {
+      this.clearLongPressTimer();
+      this.longPressActive = false;
+      this.sweepSelectActive = false;
+      this.pressSource = null;
+      this.pressOnBoardEmpty = false;
+      this.boardScrollDrag = null;
+      this.boardTwoFingerScroll = null;
+      return;
+    }
 
     // 桌面双指按下 → 进入双指滚动（牌面上也可启动）；取消单指手势。
     if (e.touches && e.touches.length >= 2 && !this.drag && this.boardMaxScroll > 0) {
@@ -685,18 +681,21 @@ export class GameScene {
     this.applyScreenInfo(getScreenInfo(this.canvas, res));
   }
 
-  private toggleOrientation(): void {
+  /** 横屏开关（设置弹窗入口）：先切屏验证成功再落盘偏好（与设置页一致，
+   *  防「切屏失败 + 偏好持久化」造成下次启动坏在横屏）；失败自动回滚并提示。 */
+  private toggleOrientationPref(): void {
     if (!orientationSupported()) {
       this.showMessage('当前环境不支持转屏');
       return;
     }
-    const target = this.isLandscape ? 'portrait' : 'landscape';
-    // 统一网关：切完验证窗口方向真正稳定，失败自动回滚（对局内切屏是
-    // 临时覆盖，不落盘偏好）。
+    const target = getPreferredOrientation() === 'landscape' ? 'portrait' : 'landscape';
+    vibrateIfEnabled();
     requestOrientation(target).then((final) => {
       if (this.disposed) return;
-      if (final !== target) {
-        this.showMessage('转屏失败，已恢复原方向');
+      if (final === target) {
+        setPreferredOrientation(target);
+      } else {
+        this.showMessage(target === 'landscape' ? '横屏切换失败，已保持竖屏' : '竖屏切换失败');
       }
       return getScreenInfoAfterRotation(final, this.canvas);
     }).then((info) => {
@@ -777,15 +776,23 @@ export class GameScene {
   }
 
   private onPointerDown(x: number, y: number): void {
+    // 设置弹窗打开：只处理弹窗交互，点卡片外关闭。
+    if (this.settingsPanelOpen) {
+      this.handleSettingsPanelTap(x, y);
+      return;
+    }
     // 云端操作进行中：屏蔽一切交互，避免重复提交或在请求在飞时误动牌面。
     if (this.submitting) return;
+    const sr = this.settingsButtonRect;
+    if (sr && x >= sr.x && x <= sr.x + sr.w && y >= sr.y && y <= sr.y + sr.h) {
+      this.settingsPanelOpen = true;
+      audio.play('pickup');
+      this.markDirty();
+      return;
+    }
     const er = this.endGameRect;
     if (er && x >= er.x && x <= er.x + er.w && y >= er.y && y <= er.y + er.h) {
       this.onRequestEndGame?.();
-      return;
-    }
-    if (hitTestButton(x, y, [this.orientationButton])) {
-      this.toggleOrientation();
       return;
     }
 
@@ -1209,8 +1216,8 @@ export class GameScene {
       if (this.message) this.buildMessage();
     }
 
-    // 切换方向按钮始终最后绘制，保证位于其他图层之上、不被桌面/牌架等遮挡。
-    this.buildOrientationButton();
+    // 设置弹窗：绘制在所有图层之上（顶栏齿轮按钮打开）。
+    if (this.settingsPanelOpen) this.buildSettingsPanel();
 
     // 拖拽幽灵牌绘制在最上层。
     this.drawDragGhost();
@@ -1660,7 +1667,7 @@ export class GameScene {
     });
 
     if (this.onRequestEndGame) {
-      // 测试房应急出口：顶栏右侧「结束对局」按钮（代替右侧提示文案）。
+      // 测试房应急出口：顶栏右侧「结束对局」按钮（设置齿轮左边）。
       const bw = 76;
       const bh = 26;
       this.endGameRect = {
@@ -1669,15 +1676,63 @@ export class GameScene {
         w: bw,
         h: bh,
       };
-      drawCapsuleButton(ctx, this.endGameRect, '结束对局', 'danger', 12);
     } else {
       this.endGameRect = null;
-      this.drawText(this.screenW - this.safeRight - 12, cy, '出牌 或 Pass 摸牌', {
+      // 右侧留出齿轮按钮的位置（26 宽 + 间距）。
+      this.drawText(this.screenW - this.safeRight - 12 - 36, cy, '出牌 或 Pass 摸牌', {
         size: FONT_SIZE_LABEL - 2,
         color: INK_SOFT,
         align: 'right',
       });
     }
+
+    // 设置齿轮按钮：顶栏最右（有「结束对局」时排在它右边），点开全局设置弹窗。
+    const gs = 26;
+    const gearRect = {
+      x: this.screenW - this.safeRight - 12 - gs,
+      y: cy - gs / 2,
+      w: gs,
+      h: gs,
+    };
+    this.settingsButtonRect = gearRect;
+    ctx.fillStyle = FROST;
+    roundRectPath(ctx, gearRect.x, gearRect.y, gs, gs, 7);
+    ctx.fill();
+    ctx.strokeStyle = FROST_BORDER;
+    ctx.lineWidth = 1;
+    roundRectPath(ctx, gearRect.x, gearRect.y, gs, gs, 7);
+    ctx.stroke();
+    this.drawGearIcon(gearRect.x + gs / 2, cy, 8);
+    if (this.onRequestEndGame && this.endGameRect) {
+      // 有「结束对局」时齿轮让位：齿轮贴右边，结束对局挪到齿轮左侧。
+      this.endGameRect.x = gearRect.x - 8 - this.endGameRect.w;
+      drawCapsuleButton(ctx, this.endGameRect, '结束对局', 'danger', 12);
+    }
+  }
+
+  /** 齿轮图标：外圈 + 八齿 + 内孔（设置弹窗入口）。 */
+  private drawGearIcon(cx: number, cy: number, r: number): void {
+    const ctx = this.ctx;
+    ctx.save();
+    ctx.strokeStyle = INK;
+    ctx.lineWidth = 2;
+    ctx.lineCap = 'round';
+    // 齿：八条放射短线。
+    for (let i = 0; i < 8; i++) {
+      const a = (i * Math.PI) / 4;
+      ctx.beginPath();
+      ctx.moveTo(cx + Math.cos(a) * r * 0.62, cy + Math.sin(a) * r * 0.62);
+      ctx.lineTo(cx + Math.cos(a) * r, cy + Math.sin(a) * r);
+      ctx.stroke();
+    }
+    // 外圈 + 内孔。
+    ctx.beginPath();
+    ctx.arc(cx, cy, r * 0.55, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(cx, cy, r * 0.2, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
   }
 
   private buildOpponents(state: GameState): void {
@@ -1686,8 +1741,8 @@ export class GameScene {
     const opponents = state.players.filter((p) => p.id !== this.selfIndex);
     // 对手行贴着顶栏下沿，整体位于桌面区域（topY）上方，避免被桌面遮盖。
     const y = this.safeTop + PLAYER_INFO_HEIGHT + 15;
-    // 右侧止于转屏按钮左侧，防止徽章被按钮遮挡。
-    const maxX = this.orientationButton.config.x - 8;
+    // 右侧止于安全区，徽章不与右侧 UI 重叠。
+    const maxX = this.screenW - this.safeRight - 12;
 
     let x = this.safeLeft + 12;
     for (const opp of opponents) {
@@ -1917,10 +1972,94 @@ export class GameScene {
     }
   }
 
-  private buildOrientationButton(): void {
-    const { config } = this.orientationButton;
-    const h = config.height ?? BUTTON_HEIGHT;
-    this.drawCartoonButton(config.x, config.y, config.width, h, config.label, 'secondary', FONT_SIZE_BUTTON - 5);
+  private buildSettingsPanel(): void {
+    const ctx = this.ctx;
+    // 全屏遮罩：压暗背景，突出弹窗卡片。
+    ctx.fillStyle = 'rgba(24,32,44,0.55)';
+    ctx.fillRect(0, 0, this.screenW, this.screenH);
+
+    const rowH = 42;
+    const panelW = Math.min(280, this.screenW * 0.86);
+    const panelH = 44 + rowH * 3 + 12;
+    const px = (this.screenW - panelW) / 2;
+    const py = (this.screenH - panelH) / 2;
+    this.settingsPanelRect = { x: px, y: py, w: panelW, h: panelH };
+
+    // 墨玻璃卡片（与顶栏/牌架同一视觉语言）。
+    ctx.fillStyle = 'rgba(6,14,22,0.4)';
+    roundRectPath(ctx, px + 2, py + 4, panelW, panelH, 14);
+    ctx.fill();
+    ctx.fillStyle = FROST_STRONG;
+    roundRectPath(ctx, px, py, panelW, panelH, 14);
+    ctx.fill();
+    ctx.strokeStyle = FROST_BORDER;
+    ctx.lineWidth = 1.5;
+    roundRectPath(ctx, px, py, panelW, panelH, 14);
+    ctx.stroke();
+
+    this.drawText(this.screenW / 2, py + 26, '设置', { size: 16, color: INK, bold: true });
+
+    const rows = [
+      { label: '背景音', on: !audio.isBgmMuted() },
+      { label: '音效', on: !audio.isSfxMuted() },
+      { label: '横屏模式', on: getPreferredOrientation() === 'landscape' },
+    ];
+    this.settingsRowRects = [];
+    let y = py + 44;
+    for (const row of rows) {
+      const rect = { x: px + 16, y, w: panelW - 32, h: rowH };
+      this.settingsRowRects.push(rect);
+      const cy = y + rowH / 2;
+      this.drawText(rect.x + 8, cy, row.label, { size: 14, color: INK, align: 'left' });
+      this.drawSettingsSwitch(rect.x + rect.w - 46, cy - 12, row.on);
+      y += rowH;
+    }
+  }
+
+  /** 弹窗内开关拨杆（与设置页同款：金色 = 开）。 */
+  private drawSettingsSwitch(x: number, y: number, on: boolean): void {
+    const ctx = this.ctx;
+    const w = 42;
+    const h = 24;
+    const r = h / 2;
+    ctx.fillStyle = on ? GOLD : 'rgba(120,132,142,0.5)';
+    roundRectPath(ctx, x, y, w, h, r);
+    ctx.fill();
+    const kx = on ? x + w - r : x + r;
+    ctx.fillStyle = '#FFFFFF';
+    ctx.beginPath();
+    ctx.arc(kx, y + r, r - 3, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  /** 设置弹窗命中：三个开关行优先，点在卡片外则关闭。 */
+  private handleSettingsPanelTap(x: number, y: number): void {
+    const rows = this.settingsRowRects;
+    const inRect = (r: { x: number; y: number; w: number; h: number }) =>
+      x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h;
+    if (rows.length === 3) {
+      if (inRect(rows[0])) {
+        const muted = audio.toggleBgmMute();
+        if (!muted) vibrateIfEnabled();
+        this.markDirty();
+        return;
+      }
+      if (inRect(rows[1])) {
+        const muted = audio.toggleSfxMute();
+        if (!muted) audio.play('place'); // 解除静音给一个确认音
+        this.markDirty();
+        return;
+      }
+      if (inRect(rows[2])) {
+        this.toggleOrientationPref();
+        return;
+      }
+    }
+    const p = this.settingsPanelRect;
+    if (!p || !inRect(p)) {
+      this.settingsPanelOpen = false;
+      this.markDirty();
+    }
   }
 
   private buildButtons(): void {
