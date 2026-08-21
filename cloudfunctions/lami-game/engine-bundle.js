@@ -1104,12 +1104,21 @@ function planInitialMeld(engine, rack, minScore) {
 }
 function planFreePlay(engine) {
   let placedAny = false;
-  const chosen = selectDisjointMelds(enumerateMelds(engine.getCurrentPlayer().rack));
-  for (const meld of chosen) {
-    engine.createNewGroupOnBoard(meld.tiles, meld.type);
-    placedAny = true;
-  }
   let progress = true;
+  while (progress) {
+    progress = false;
+    const chosen = selectDisjointMelds(enumerateMelds(engine.getCurrentPlayer().rack));
+    for (const meld of chosen) {
+      engine.createNewGroupOnBoard(meld.tiles, meld.type);
+      placedAny = true;
+      progress = true;
+    }
+    if (tryReplaceBoardJoker(engine)) {
+      placedAny = true;
+      progress = true;
+    }
+  }
+  progress = true;
   while (progress) {
     progress = false;
     const player = engine.getCurrentPlayer();
@@ -1127,24 +1136,72 @@ function planFreePlay(engine) {
   }
   return placedAny;
 }
+function tryReplaceBoardJoker(engine) {
+  const player = engine.getCurrentPlayer();
+  const board = engine.getState().board;
+  for (const group of board) {
+    for (let pos = 0; pos < group.tiles.length; pos++) {
+      const jokerLT = group.tiles[pos];
+      if (!isLogicalJoker(jokerLT)) continue;
+      for (const tile of player.rack) {
+        if (tile.color === "joker") continue;
+        if (!canReplaceJoker(group, pos, tile)) continue;
+        const rackAfter = [...player.rack.filter((t) => t.id !== tile.id), jokerLT.originalTile];
+        const planned = selectDisjointMelds(enumerateMelds(rackAfter));
+        const jokerMelded = planned.some((m) => m.tiles.some((t) => t.id === jokerLT.originalTile.id));
+        const attach = findAttachTarget(jokerLT.originalTile, board);
+        if (!jokerMelded && !attach) continue;
+        engine.replaceJokerOnBoard(group.id, pos, tile);
+        return true;
+      }
+    }
+  }
+  return false;
+}
+function canReplaceJoker(group, pos, tile) {
+  const newTiles = group.tiles.map((t, i) => i === pos ? toLogical(tile) : t);
+  return group.type === "run" ? isValidRun(newTiles) : isValidGroupTiles(newTiles);
+}
 function findAttachTarget(tile, board) {
   const lt = toLogical(tile);
   for (const group of board) {
     if (group.type === "run") {
-      if (group.tiles.some((g) => g.logicalColor === "joker")) continue;
-      const low = group.tiles[0].logicalNumber;
-      const high = group.tiles[group.tiles.length - 1].logicalNumber;
-      const runColor = group.tiles[0].logicalColor;
-      if (tile.color === "joker") {
-        if (high < 13) return { groupId: group.id, position: group.tiles.length };
-        if (low > 1) return { groupId: group.id, position: 0 };
+      const hasJoker = group.tiles.some((g) => g.logicalColor === "joker");
+      if (!hasJoker) {
+        const low = group.tiles[0].logicalNumber;
+        const high = group.tiles[group.tiles.length - 1].logicalNumber;
+        const runColor2 = group.tiles[0].logicalColor;
+        if (tile.color === "joker") {
+          if (high < 13) return { groupId: group.id, position: group.tiles.length };
+          if (low > 1) return { groupId: group.id, position: 0 };
+          continue;
+        }
+        if (tile.color !== runColor2) continue;
+        if (tile.number === high + 1 && high + 1 <= 13) {
+          return { groupId: group.id, position: group.tiles.length };
+        }
+        if (tile.number === low - 1 && low - 1 >= 1) {
+          return { groupId: group.id, position: 0 };
+        }
         continue;
       }
+      const ranges = enumerateRunRanges(group.tiles);
+      if (ranges.length === 0) continue;
+      if (tile.color === "joker") {
+        if (ranges.some((r) => r.max < 13) && isValidRun([...group.tiles, lt])) {
+          return { groupId: group.id, position: group.tiles.length };
+        }
+        if (ranges.some((r) => r.min > 1) && isValidRun([lt, ...group.tiles])) {
+          return { groupId: group.id, position: 0 };
+        }
+        continue;
+      }
+      const runColor = group.tiles.find((g) => !isLogicalJoker(g)).logicalColor;
       if (tile.color !== runColor) continue;
-      if (tile.number === high + 1 && high + 1 <= 13) {
+      if (ranges.some((r) => tile.number === r.max + 1)) {
         return { groupId: group.id, position: group.tiles.length };
       }
-      if (tile.number === low - 1 && low - 1 >= 1) {
+      if (ranges.some((r) => tile.number === r.min - 1)) {
         return { groupId: group.id, position: 0 };
       }
     } else if (isValidGroupTiles([...group.tiles, lt])) {
@@ -1152,6 +1209,19 @@ function findAttachTarget(tile, board) {
     }
   }
   return null;
+}
+function enumerateRunRanges(tiles) {
+  const reals = tiles.filter((t) => !isLogicalJoker(t));
+  if (reals.length === 0) return [];
+  const len = tiles.length;
+  const nums = reals.map((t) => t.logicalNumber);
+  const minN = Math.min(...nums);
+  const maxN = Math.max(...nums);
+  const out = [];
+  const sLo = Math.max(1, maxN - len + 1);
+  const sHi = Math.min(14 - len, minN);
+  for (let s = sLo; s <= sHi; s++) out.push({ min: s, max: s + len - 1 });
+  return out;
 }
 function enumerateMelds(rack) {
   const pure = [];
