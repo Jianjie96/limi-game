@@ -30,6 +30,8 @@ import {
   getTileValue,
   findTileById,
   detectGroupType,
+  describeTile,
+  describeGroup,
 } from './tiles';
 import { isValidGroup, isValidRun, isValidGroupTiles, validateBoard } from './validate';
 import { calculateInitialMeldScore, calculateRackValue, buildGameResult, findLowestScorePlayer } from './scoring';
@@ -622,7 +624,7 @@ export class RummikubEngine {
       if (!currentGroupIds.has(snapGroup.id)) {
         errors.push({
           code: 'INITIAL_MELD_MODIFIED_BOARD_GROUP',
-          message: `首次出牌不能删除或修改已有牌组 ${snapGroup.id}`,
+          message: `首次出牌不能删除或修改已有牌组 ${describeGroup(snapGroup.tiles)}`,
           groupId: snapGroup.id,
         });
         continue;
@@ -631,7 +633,7 @@ export class RummikubEngine {
       if (curGroup && !this.groupsHaveSameTiles(snapGroup, curGroup)) {
         errors.push({
           code: 'INITIAL_MELD_MODIFIED_BOARD_GROUP',
-          message: `首次出牌不能修改已有牌组 ${snapGroup.id}`,
+          message: `首次出牌不能修改已有牌组 ${describeGroup(snapGroup.tiles)}`,
           groupId: snapGroup.id,
         });
       }
@@ -645,7 +647,7 @@ export class RummikubEngine {
           if (!rackIds.has(lt.originalTile.id)) {
             errors.push({
               code: 'INITIAL_MELD_USED_BOARD_TILES',
-              message: `首次出牌不能借用桌面已有牌 (牌 ${lt.originalTile.id})`,
+              message: `首次出牌不能借用桌面已有牌（${describeTile(lt)} 所在的新牌组）`,
               groupId: group.id,
             });
           }

@@ -94,6 +94,30 @@ export function findLogicalByOriginalId(tiles: readonly LogicalTile[], id: numbe
   return tiles.find(lt => lt.originalTile.id === id);
 }
 
+// ---------------------------------------------------------------------------
+// 人读描述（错误提示用，避免暴露内部 ID）
+// ---------------------------------------------------------------------------
+
+const COLOR_NAMES: Record<string, string> = {
+  red: '红',
+  blue: '蓝',
+  yellow: '黄',
+  black: '黑',
+};
+
+/** 单张牌的人读描述：红 4 / 百搭。 */
+export function describeTile(lt: LogicalTile | Tile): string {
+  const color = 'logicalColor' in lt ? lt.logicalColor : lt.color;
+  const number = 'logicalNumber' in lt ? lt.logicalNumber : lt.number;
+  if (color === 'joker') return '百搭';
+  return `${COLOR_NAMES[color] ?? color} ${number}`;
+}
+
+/** 牌组的人读描述：[红 3, 百搭, 红 5]。 */
+export function describeGroup(tiles: readonly (LogicalTile | Tile)[]): string {
+  return `[${tiles.map(describeTile).join(', ')}]`;
+}
+
 /**
  * 判断一组牌更适合组成「顺子」还是「刻子」。
  * - 非 Joker 全同数字 → 刻子 (group)

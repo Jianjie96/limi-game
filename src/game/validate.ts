@@ -3,7 +3,7 @@
 // ============================================================================
 
 import type { TileGroup, LogicalTile, Tile, ValidationError as VError } from './types';
-import { isLogicalJoker, toLogical } from './tiles';
+import { isLogicalJoker, toLogical, describeGroup } from './tiles';
 
 // ---------------------------------------------------------------------------
 // 顺子 (Run) 校验
@@ -154,7 +154,7 @@ export function validateBoard(board: readonly TileGroup[]): { valid: boolean; er
     if (!isValidGroup(group)) {
       errors.push({
         code: 'INVALID_GROUP',
-        message: `牌组 ${group.id} (${group.type}) 不合法`,
+        message: `牌组 ${describeGroup(group.tiles)} 不是合法组合`,
         groupId: group.id,
       });
     }

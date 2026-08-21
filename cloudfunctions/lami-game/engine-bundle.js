@@ -81,6 +81,22 @@ function toLogical(tile) {
 function findTileById(tiles, id) {
   return tiles.find((t) => t.id === id);
 }
+var COLOR_NAMES = {
+  red: "\u7EA2",
+  blue: "\u84DD",
+  yellow: "\u9EC4",
+  black: "\u9ED1"
+};
+function describeTile(lt) {
+  var _a;
+  const color = "logicalColor" in lt ? lt.logicalColor : lt.color;
+  const number = "logicalNumber" in lt ? lt.logicalNumber : lt.number;
+  if (color === "joker") return "\u767E\u642D";
+  return `${(_a = COLOR_NAMES[color]) != null ? _a : color} ${number}`;
+}
+function describeGroup(tiles) {
+  return `[${tiles.map(describeTile).join(", ")}]`;
+}
 function detectGroupType(tiles) {
   const nonJokers = tiles.filter((t) => t.color !== "joker");
   const numbers = new Set(nonJokers.map((t) => t.number));
@@ -156,7 +172,7 @@ function validateBoard(board) {
     if (!isValidGroup(group)) {
       errors.push({
         code: "INVALID_GROUP",
-        message: `\u724C\u7EC4 ${group.id} (${group.type}) \u4E0D\u5408\u6CD5`,
+        message: `\u724C\u7EC4 ${describeGroup(group.tiles)} \u4E0D\u662F\u5408\u6CD5\u7EC4\u5408`,
         groupId: group.id
       });
     }
@@ -773,7 +789,7 @@ var RummikubEngine = class _RummikubEngine {
       if (!currentGroupIds.has(snapGroup.id)) {
         errors.push({
           code: "INITIAL_MELD_MODIFIED_BOARD_GROUP",
-          message: `\u9996\u6B21\u51FA\u724C\u4E0D\u80FD\u5220\u9664\u6216\u4FEE\u6539\u5DF2\u6709\u724C\u7EC4 ${snapGroup.id}`,
+          message: `\u9996\u6B21\u51FA\u724C\u4E0D\u80FD\u5220\u9664\u6216\u4FEE\u6539\u5DF2\u6709\u724C\u7EC4 ${describeGroup(snapGroup.tiles)}`,
           groupId: snapGroup.id
         });
         continue;
@@ -782,7 +798,7 @@ var RummikubEngine = class _RummikubEngine {
       if (curGroup && !this.groupsHaveSameTiles(snapGroup, curGroup)) {
         errors.push({
           code: "INITIAL_MELD_MODIFIED_BOARD_GROUP",
-          message: `\u9996\u6B21\u51FA\u724C\u4E0D\u80FD\u4FEE\u6539\u5DF2\u6709\u724C\u7EC4 ${snapGroup.id}`,
+          message: `\u9996\u6B21\u51FA\u724C\u4E0D\u80FD\u4FEE\u6539\u5DF2\u6709\u724C\u7EC4 ${describeGroup(snapGroup.tiles)}`,
           groupId: snapGroup.id
         });
       }
@@ -794,7 +810,7 @@ var RummikubEngine = class _RummikubEngine {
           if (!rackIds.has(lt.originalTile.id)) {
             errors.push({
               code: "INITIAL_MELD_USED_BOARD_TILES",
-              message: `\u9996\u6B21\u51FA\u724C\u4E0D\u80FD\u501F\u7528\u684C\u9762\u5DF2\u6709\u724C (\u724C ${lt.originalTile.id})`,
+              message: `\u9996\u6B21\u51FA\u724C\u4E0D\u80FD\u501F\u7528\u684C\u9762\u5DF2\u6709\u724C\uFF08${describeTile(lt)} \u6240\u5728\u7684\u65B0\u724C\u7EC4\uFF09`,
               groupId: group.id
             });
           }
