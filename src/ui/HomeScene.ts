@@ -42,8 +42,8 @@ export class HomeScene {
   private pickerVisible = false;
   private pickerCapacity = 4;
 
-  /** 创建房间请求进行中 */
-  private busy = false;
+  /** 正在处理的入口（建房/回对局/测试房）：只有对应入口显示自己的进度文案。 */
+  private busySource: 'create' | 'resume' | 'dev' | null = null;
 
   // 轻提示
   private message = '';
@@ -95,7 +95,7 @@ export class HomeScene {
 
   /** 外部请求失败时展示错误提示 */
   showError(msg: string): void {
-    this.busy = false;
+    this.busySource = null;
     this.showInfo(msg);
   }
 
@@ -108,7 +108,7 @@ export class HomeScene {
   /** 创建成功后由外部调用，避免残留面板状态 */
   closePicker(): void {
     this.pickerVisible = false;
-    this.busy = false;
+    this.busySource = null;
     this.dirty = true;
   }
 
@@ -144,7 +144,7 @@ export class HomeScene {
   }
 
   private handleTap(px: number, py: number): void {
-    if (this.busy) return;
+    if (this.busySource) return;
 
     if (this.pickerVisible) {
       for (let i = 0; i < this.optionRects.length; i++) {
@@ -155,7 +155,7 @@ export class HomeScene {
         }
       }
       if (hitRect(px, py, this.confirmRect)) {
-        this.busy = true;
+        this.busySource = 'create';
         this.dirty = true;
         this.onCreateRoom?.(this.pickerCapacity);
         return;
@@ -181,13 +181,13 @@ export class HomeScene {
       return;
     }
     if (this.resumeCode && hitRect(px, py, this.resumeBtnRect)) {
-      this.busy = true;
+      this.busySource = 'resume';
       this.dirty = true;
       this.onResume?.();
       return;
     }
     if (this.onDevRoom && hitRect(px, py, this.devRoomRect)) {
-      this.busy = true;
+      this.busySource = 'dev';
       this.dirty = true;
       this.onDevRoom();
     }
@@ -265,7 +265,7 @@ export class HomeScene {
 
     // 断线重连入口：置于主按钮上方最醒目的位置；宽度按文案自适应（含房号，比主按钮长）。
     if (this.resumeCode) {
-      const label = this.busy ? '进入中…' : `回到对局 · 房间 ${this.resumeCode}`;
+      const label = this.busySource === 'resume' ? '进入中…' : `回到对局 · 房间 ${this.resumeCode}`;
       ctx.font = `bold 16px ${FONT_FAMILY}`;
       const resumeW = Math.min(w * 0.86, Math.max(btnW, ctx.measureText(label).width + 56));
       this.resumeBtnRect = { x: cx - resumeW / 2, y: createY - btnH - 22, w: resumeW, h: btnH };
@@ -278,7 +278,13 @@ export class HomeScene {
       );
     }
 
-    drawCapsuleButton(ctx, this.createBtnRect, this.busy ? '创建中…' : '创建房间', 'primary', 18);
+    drawCapsuleButton(
+      ctx,
+      this.createBtnRect,
+      this.busySource === 'create' ? '创建中…' : '创建房间',
+      'primary',
+      18
+    );
     drawCapsuleButton(ctx, this.joinBtnRect, '加入房间', 'secondary', 18);
 
     // 底部开发入口（仅开发版）：联机测试房（机器人补位）
@@ -290,7 +296,8 @@ export class HomeScene {
       const devW = ctx.measureText(devLabel).width + 16;
       const x = (w - devW) / 2;
       this.devRoomRect = { x, y, w: devW, h: lpH };
-      drawSceneText(ctx, x + devW / 2, y + lpH / 2, this.busy ? '创建中…' : devLabel, {
+      const devText = this.busySource === 'dev' ? '进入测试房…' : devLabel;
+      drawSceneText(ctx, x + devW / 2, y + lpH / 2, devText, {
         size: 13,
         color: INK_SOFT,
       });

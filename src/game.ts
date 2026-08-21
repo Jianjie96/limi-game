@@ -25,6 +25,7 @@ import {
   createRoom,
   joinRoom,
   getRoom,
+  startRoom,
   fillDevBots,
   getLastRoom,
   clearLastRoom,
@@ -128,12 +129,14 @@ function wireHome(home: HomeScene): void {
   };
   // 开发后门：仅开发版显示。联机测试房：真实云房间 + 测试机器人补位，
   // 机器人回合由云端 AI 立即代打，单人即可联调实时对战全流程。
+  // 一键直达对局：建房 → 机器人补位 → 自动开局，跳过房间等待页。
   if (isDevEnvironment()) {
     home.onDevRoom = () => {
       createRoom(2, getNickname())
         .then((result) => fillDevBots(result.room.code))
+        .then((result) => startRoom(result.room.code))
         .then((result) => {
-          enterRoom(result);
+          startOnlineGame(result.room, result.self);
         })
         .catch((e: Error) => {
           home.showError(e.message);
