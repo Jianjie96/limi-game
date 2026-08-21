@@ -288,7 +288,6 @@ function createTurnContext(board, pool, rack, previousConsecutivePasses) {
     boardSnapshot: snapshotBoard(board),
     poolSnapshot: snapshotPool(pool),
     rackAtTurnStart: rack.map((t) => ({ ...t })),
-    workingArea: [],
     replacedJokers: [],
     hasDrawnFromPool: false,
     drawnTile: null,
@@ -298,24 +297,6 @@ function createTurnContext(board, pool, rack, previousConsecutivePasses) {
     consecutivePasses: previousConsecutivePasses,
     justDrawnTilePlaced: false
   };
-}
-function addToWorkingArea(ctx, tiles) {
-  ctx.workingArea.push(...tiles);
-}
-function removeFromWorkingArea(ctx, tileIds) {
-  const removed = [];
-  const idSet = new Set(tileIds);
-  ctx.workingArea = ctx.workingArea.filter((t) => {
-    if (idSet.has(t.id)) {
-      removed.push(t);
-      return false;
-    }
-    return true;
-  });
-  return removed;
-}
-function isWorkingAreaEmpty(ctx) {
-  return ctx.workingArea.length === 0;
 }
 function recordJokerReplacement(ctx, jokerTile, originalGroupId, realTileUsed) {
   ctx.replacedJokers.push({ jokerTile, originalGroupId, realTileUsed });
@@ -469,22 +450,6 @@ var RummikubEngine = class _RummikubEngine {
     this.emit("boardManipulated", { action: "reorderRack", tileId, fromIndex, toIndex: insertAt });
   }
   /**
-   * 调整工作区内某张牌的顺序（理牌）。
-   * 纯工作区内整理，不改变牌面内容、不消耗动作、不影响回合状态。
-   */
-  reorderWorkingAreaTile(tileId, toIndex) {
-    this.assertPhase("PLAY" /* PLAY */);
-    const ctx = this.getTurnContext();
-    const fromIndex = ctx.workingArea.findIndex((t) => t.id === tileId);
-    if (fromIndex < 0) throw new Error(`\u5DE5\u4F5C\u533A\u4E2D\u627E\u4E0D\u5230\u724C ${tileId}`);
-    const arr = [...ctx.workingArea];
-    const [moved] = arr.splice(fromIndex, 1);
-    const insertAt = Math.max(0, Math.min(toIndex, arr.length));
-    arr.splice(insertAt, 0, moved);
-    ctx.workingArea = arr;
-    this.emit("boardManipulated", { action: "reorderWorkingArea", tileId, fromIndex, toIndex: insertAt });
-  }
-  /**
    * 将牌从牌架放到桌面已有牌组。
    */
   placeTilesOnBoard(tileIds, groupId, position = -1) {
@@ -558,38 +523,8 @@ var RummikubEngine = class _RummikubEngine {
     return groupId;
   }
   /**
-   * 从桌面牌组移除牌 (放入工作区)。
-   */
-  removeTilesFromBoard(groupId, tileIds) {
-    this.assertPhase("PLAY" /* PLAY */);
-    const group = this.findGroup(groupId);
-    if (!group) throw new Error(`\u724C\u7EC4 ${groupId} \u4E0D\u5B58\u5728`);
-    const idSet = new Set(tileIds);
-    const removed = [];
-    const remaining = group.tiles.filter((lt) => {
-      if (idSet.has(lt.originalTile.id)) {
-        removed.push(lt);
-        return false;
-      }
-      return true;
-    });
-    if (removed.length !== tileIds.length) {
-      throw new Error("\u90E8\u5206\u724C\u5728\u724C\u7EC4\u4E2D\u4E0D\u5B58\u5728");
-    }
-    if (remaining.length === 0) {
-      this.state.board = this.state.board.filter((g) => g.id !== groupId);
-    } else {
-      this.replaceGroup({ ...group, tiles: remaining });
-    }
-    const physicalTiles = removed.map((lt) => lt.originalTile);
-    addToWorkingArea(this.getTurnContext(), physicalTiles);
-    this.recordOp({ op: "REMOVE_FROM_BOARD", groupId, tileIds });
-    this.emit("boardManipulated", { action: "remove", groupId, tileIds });
-    return physicalTiles;
-  }
-  /**
    * 把牌放回当前玩家的牌架（未破冰时撤销首次出牌使用）。
-   * 可从桌面牌组或工作区取回；同时更新「本回合从牌架放下」的追踪。
+   * 从桌面牌组取回；同时更新「本回合从牌架放下」的追踪。
    */
   returnTilesToRack(tileIds) {
     this.assertPhase("PLAY" /* PLAY */);
@@ -611,13 +546,8 @@ var RummikubEngine = class _RummikubEngine {
       nextBoard.push(remaining.length === group.tiles.length ? group : { ...group, tiles: remaining });
     }
     this.state.board = nextBoard;
-    const waReturned = ctx.workingArea.filter((t) => idSet.has(t.id));
-    ctx.workingArea = ctx.workingArea.filter((t) => !idSet.has(t.id));
-    for (const t of waReturned) {
-      if (!returned.some((r) => r.id === t.id)) returned.push(t);
-    }
     if (returned.length !== tileIds.length) {
-      throw new Error("\u90E8\u5206\u724C\u65E2\u4E0D\u5728\u684C\u9762\u4E5F\u4E0D\u5728\u5DE5\u4F5C\u533A");
+      throw new Error("\u90E8\u5206\u724C\u4E0D\u5728\u684C\u9762");
     }
     player.rack = [...player.rack, ...returned];
     const returnedIds = new Set(returned.map((t) => t.id));
@@ -658,7 +588,7 @@ var RummikubEngine = class _RummikubEngine {
     this.replaceGroup({ ...group, tiles: newTiles });
     player.rack = player.rack.filter((t) => t.id !== realTile.id);
     const jokerTile = jokerLT.originalTile;
-    addToWorkingArea(ctx, [jokerTile]);
+    player.rack = [...player.rack, jokerTile];
     recordJokerReplacement(ctx, jokerTile, groupId, realTile);
     recordRackTilesPlaced(ctx, [realTile]);
     this.recordOp({ op: "REPLACE_JOKER", groupId, jokerPosition, realTileId: realTile.id });
@@ -669,33 +599,6 @@ var RummikubEngine = class _RummikubEngine {
       jokerTile,
       realTile
     });
-  }
-  moveTilesToWorkingArea(groupId, tileIds) {
-    this.assertPhase("PLAY" /* PLAY */);
-    this.removeTilesFromBoard(groupId, tileIds);
-  }
-  /**
-   * 把牌架牌移入工作区（暂存/理牌，无论是否破冰都允许）。
-   * 工作区的牌可放回牌架，出牌时与其他工作区牌统一拆分组成新牌组。
-   */
-  moveRackTilesToWorkingArea(tileIds) {
-    this.assertPhase("PLAY" /* PLAY */);
-    const player = this.getCurrentPlayer();
-    const ctx = this.getTurnContext();
-    const idSet = new Set(tileIds);
-    const moved = player.rack.filter((t) => idSet.has(t.id));
-    if (moved.length !== tileIds.length) {
-      throw new Error("\u90E8\u5206\u724C\u4E0D\u5728\u724C\u67B6\u4E2D");
-    }
-    if (ctx.drawnTileId !== null && idSet.has(ctx.drawnTileId)) {
-      markDrawnTilePlaced(ctx);
-    }
-    player.rack = player.rack.filter((t) => !idSet.has(t.id));
-    addToWorkingArea(ctx, moved);
-    recordRackTilesPlaced(ctx, moved);
-    this.recordOp({ op: "RACK_TO_WA", tileIds });
-    this.emit("boardManipulated", { action: "rackToWorkingArea", tileIds });
-    return moved;
   }
   /**
    * 在同一牌组内调整某张牌的顺序（拖拽重排）。
@@ -715,49 +618,6 @@ var RummikubEngine = class _RummikubEngine {
     this.replaceGroup({ ...group, tiles });
     this.recordOp({ op: "MOVE_WITHIN_GROUP", groupId, tileId, toIndex });
     this.emit("boardManipulated", { action: "reorder", groupId, tileId, fromIndex, toIndex: insertAt });
-  }
-  /**
-   * 将工作区的牌放回桌面牌组。
-   */
-  placeWorkingAreaTilesOnBoard(tileIds, groupId, position = -1) {
-    this.assertPhase("PLAY" /* PLAY */);
-    const ctx = this.getTurnContext();
-    const group = this.findGroup(groupId);
-    if (!group) throw new Error(`\u724C\u7EC4 ${groupId} \u4E0D\u5B58\u5728`);
-    const tiles = removeFromWorkingArea(ctx, tileIds);
-    if (tiles.length !== tileIds.length) {
-      throw new Error("\u90E8\u5206\u724C\u5728\u5DE5\u4F5C\u533A\u4E2D\u4E0D\u5B58\u5728");
-    }
-    const logicalTiles = tiles.map(toLogical);
-    let newTiles = [...group.tiles];
-    if (position < 0 || position >= newTiles.length) {
-      newTiles.push(...logicalTiles);
-    } else {
-      newTiles.splice(position, 0, ...logicalTiles);
-    }
-    this.replaceGroup({ ...group, tiles: newTiles });
-    this.recordOp({ op: "PLACE_WA_ON_BOARD", tileIds, groupId, position });
-    this.emit("boardManipulated", { action: "placeFromWorkingArea", groupId, tileIds });
-  }
-  /**
-   * 用工作区的牌创建新牌组。
-   */
-  createNewGroupFromWorkingArea(tiles, groupType) {
-    this.assertPhase("PLAY" /* PLAY */);
-    const ctx = this.getTurnContext();
-    const tileIds = tiles.map((t) => t.id);
-    removeFromWorkingArea(ctx, tileIds);
-    const groupId = this.nextGroupId();
-    const logicalTiles = tiles.map(toLogical);
-    const newGroup = {
-      id: groupId,
-      type: groupType,
-      tiles: logicalTiles
-    };
-    this.state.board = [...this.state.board, newGroup];
-    this.recordOp({ op: "CREATE_GROUP_FROM_WA", tileIds, groupType });
-    this.emit("boardManipulated", { action: "createGroupFromWorkingArea", groupId });
-    return groupId;
   }
   /**
    * Pass: 不出牌，摸 1 张牌保留在牌架上，结束回合。
@@ -823,12 +683,6 @@ var RummikubEngine = class _RummikubEngine {
     const ctx = this.getTurnContext();
     const player = this.getCurrentPlayer();
     const errors = [];
-    if (!isWorkingAreaEmpty(ctx)) {
-      errors.push({
-        code: "WORKING_AREA_NOT_EMPTY",
-        message: "\u5DE5\u4F5C\u533A\u8FD8\u6709\u724C\u672A\u653E\u7F6E\u5230\u684C\u9762"
-      });
-    }
     const boardValidation = validateBoard(this.state.board);
     errors.push(...boardValidation.errors);
     if (errors.length > 0) return errors;
@@ -850,11 +704,18 @@ var RummikubEngine = class _RummikubEngine {
       const meldErrors = this.validateInitialMeld();
       errors.push(...meldErrors);
     }
-    if (ctx.replacedJokers.length > 0 && !isWorkingAreaEmpty(ctx)) {
-      errors.push({
-        code: "JOKER_NOT_REUSED",
-        message: "\u66FF\u6362\u7684 Joker \u5FC5\u987B\u5728\u5F53\u524D\u56DE\u5408\u7ACB\u5373\u91CD\u65B0\u7EC4\u6210\u5408\u6CD5\u724C\u7EC4"
-      });
+    for (const rj of ctx.replacedJokers) {
+      const jokerId = rj.jokerTile.id;
+      const onBoard = this.state.board.some(
+        (g) => g.tiles.some((lt) => lt.originalTile.id === jokerId)
+      );
+      if (!onBoard) {
+        errors.push({
+          code: "JOKER_NOT_REUSED",
+          message: "\u66FF\u6362\u7684 Joker \u5FC5\u987B\u5728\u5F53\u524D\u56DE\u5408\u7ACB\u5373\u91CD\u65B0\u7EC4\u6210\u5408\u6CD5\u724C\u7EC4"
+        });
+        break;
+      }
     }
     return errors;
   }
@@ -928,11 +789,10 @@ var RummikubEngine = class _RummikubEngine {
     this.turnOps = [];
   }
   /**
-   * 提交失败重试前，清空回合内的瞬时状态（工作区、Joker 替换、已放置追踪），
+   * 提交失败重试前，清空回合内的瞬时状态（Joker 替换、已放置追踪），
    * 但保留「本回合已摸牌」这一事实。
    */
   resetTurnForRetry(ctx) {
-    ctx.workingArea = [];
     ctx.replacedJokers = [];
     ctx.rackTilesPlacedThisTurn = [];
     ctx.hasPlacedFromRack = false;
@@ -1116,12 +976,6 @@ function applyOps(engine, ops) {
       case "CREATE_GROUP":
         engine.createNewGroupOnBoard(tilesFromRack(engine, op.tileIds), op.groupType);
         break;
-      case "CREATE_GROUP_FROM_WA":
-        engine.createNewGroupFromWorkingArea(tilesFromWorkingArea(engine, op.tileIds), op.groupType);
-        break;
-      case "REMOVE_FROM_BOARD":
-        engine.removeTilesFromBoard(op.groupId, op.tileIds);
-        break;
       case "RETURN_TO_RACK":
         engine.returnTilesToRack(op.tileIds);
         break;
@@ -1133,12 +987,6 @@ function applyOps(engine, ops) {
       case "MOVE_WITHIN_GROUP":
         engine.moveTileWithinGroup(op.groupId, op.tileId, op.toIndex);
         break;
-      case "PLACE_WA_ON_BOARD":
-        engine.placeWorkingAreaTilesOnBoard(op.tileIds, op.groupId, op.position);
-        break;
-      case "RACK_TO_WA":
-        engine.moveRackTilesToWorkingArea(op.tileIds);
-        break;
       default:
         throw new Error(`\u672A\u77E5\u64CD\u4F5C\u7C7B\u578B: ${op.op}`);
     }
@@ -1149,14 +997,6 @@ function tilesFromRack(engine, tileIds) {
   return tileIds.map((id) => {
     const tile = rack.find((t) => t.id === id);
     if (!tile) throw new Error(`\u56DE\u653E\u5931\u8D25\uFF1A\u724C ${id} \u4E0D\u5728\u724C\u67B6\u4E2D`);
-    return tile;
-  });
-}
-function tilesFromWorkingArea(engine, tileIds) {
-  const wa = engine.getTurnContext().workingArea;
-  return tileIds.map((id) => {
-    const tile = wa.find((t) => t.id === id);
-    if (!tile) throw new Error(`\u56DE\u653E\u5931\u8D25\uFF1A\u724C ${id} \u4E0D\u5728\u5DE5\u4F5C\u533A\u4E2D`);
     return tile;
   });
 }

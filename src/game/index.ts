@@ -79,9 +79,6 @@ export {
 // 回合管理
 export {
   createTurnContext,
-  addToWorkingArea,
-  removeFromWorkingArea,
-  isWorkingAreaEmpty,
   recordJokerReplacement,
   getReplacedJokers,
   recordRackTilesPlaced,

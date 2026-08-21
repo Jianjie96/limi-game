@@ -136,7 +136,6 @@ export interface TurnContext {
   readonly boardSnapshot: TileGroup[];
   readonly poolSnapshot: Tile[];
   readonly rackAtTurnStart: readonly Tile[];
-  workingArea: Tile[];
   replacedJokers: ReplacedJoker[];
   hasDrawnFromPool: boolean;
   drawnTile: Tile | null;
@@ -200,7 +199,6 @@ export interface ValidationError {
 
 export type ErrorCode =
   | 'INVALID_GROUP'
-  | 'WORKING_AREA_NOT_EMPTY'
   | 'NO_TILE_PLACED'
   | 'INITIAL_MELD_UNDER_30'
   | 'INITIAL_MELD_USED_BOARD_TILES'
@@ -229,9 +227,7 @@ export type GameAction =
   | { type: 'DRAW' }
   | { type: 'PLACE_ON_BOARD'; tileIds: number[]; groupId: string; position?: number }
   | { type: 'CREATE_GROUP'; tiles: Tile[]; groupType: GroupType }
-  | { type: 'REMOVE_FROM_BOARD'; groupId: string; tileIds: number[] }
   | { type: 'REPLACE_JOKER'; groupId: string; jokerPosition: number; realTile: Tile }
-  | { type: 'TO_WORKING_AREA'; groupId: string; tileIds: number[] }
   | { type: 'PASS' }
   | { type: 'SUBMIT' };
 
@@ -243,15 +239,11 @@ export type GameAction =
  * 回合内桌面操作的可序列化记录。
  * 客户端草稿引擎执行变更方法时自动追加；提交时随出牌请求发给云端，
  * 云端用同一套引擎方法回放后再 submitTurn 校验，保证规则单点维护。
- * 牌架/工作区内理牌（纯展示顺序）不记录；Pass/超时由云端直接处理。
+ * 牌架内理牌（纯展示顺序）不记录；Pass/超时由云端直接处理。
  */
 export type EngineOp =
   | { op: 'PLACE_ON_BOARD'; tileIds: number[]; groupId: string; position: number }
   | { op: 'CREATE_GROUP'; tileIds: number[]; groupType: GroupType }
-  | { op: 'CREATE_GROUP_FROM_WA'; tileIds: number[]; groupType: GroupType }
-  | { op: 'REMOVE_FROM_BOARD'; groupId: string; tileIds: number[] }
   | { op: 'RETURN_TO_RACK'; tileIds: number[] }
   | { op: 'REPLACE_JOKER'; groupId: string; jokerPosition: number; realTileId: number }
-  | { op: 'MOVE_WITHIN_GROUP'; groupId: string; tileId: number; toIndex: number }
-  | { op: 'PLACE_WA_ON_BOARD'; tileIds: number[]; groupId: string; position: number }
-  | { op: 'RACK_TO_WA'; tileIds: number[] };
+  | { op: 'MOVE_WITHIN_GROUP'; groupId: string; tileId: number; toIndex: number };

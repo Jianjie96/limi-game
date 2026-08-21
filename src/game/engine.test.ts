@@ -168,8 +168,8 @@ describe('RummikubEngine', () => {
     });
   });
 
-  describe('工作区（牌架暂存）', () => {
-    it('牌架牌可移入工作区，也可放回牌架', () => {
+  describe('桌面草稿（牌架↔桌面直连）', () => {
+    it('牌架牌可直接落桌面成草稿组，也可拆回牌架', () => {
       engine.startGame(['P1', 'P2']);
       const p = engine.getCurrentPlayer();
       const deck: Tile[] = [
@@ -181,48 +181,45 @@ describe('RummikubEngine', () => {
       const ctx = engine.getTurnContext();
       (ctx as unknown as { rackAtTurnStart: Tile[] }).rackAtTurnStart = deck.map((t) => ({ ...t }));
 
-      engine.moveRackTilesToWorkingArea([9201, 9202]);
+      engine.createNewGroupOnBoard([deck[0], deck[1]], 'run');
 
       expect(p.rack.length).toBe(1);
-      expect(engine.getTurnContext().workingArea.map((t) => t.id)).toEqual([9201, 9202]);
+      expect(engine.getState().board.length).toBe(1);
 
+      // 从桌面拆下的牌回到牌架；整组被拿回时该组移除。
       engine.returnTilesToRack([9201, 9202]);
       expect(p.rack.length).toBe(3);
-      expect(engine.getTurnContext().workingArea.length).toBe(0);
+      expect(engine.getState().board.length).toBe(0);
     });
 
-    it('未破冰：牌架→工作区理牌后成组提交，两组总分 30 成功', () => {
+    it('桌面→桌面移牌：回牌架 + 再放置两步实现', () => {
       engine.startGame(['P1', 'P2']);
       const p = engine.getCurrentPlayer();
       const deck: Tile[] = [
         { id: 9301, color: 'red', number: 1 },
         { id: 9302, color: 'red', number: 2 },
         { id: 9303, color: 'red', number: 3 },
-        { id: 9304, color: 'black', number: 8 },
-        { id: 9305, color: 'blue', number: 8 },
-        { id: 9306, color: 'yellow', number: 8 },
-        { id: 9307, color: 'red', number: 5 }, // 余牌避免直接出完
+        { id: 9304, color: 'red', number: 7 },
+        { id: 9305, color: 'red', number: 8 },
       ];
       p.rack = deck;
       const ctx = engine.getTurnContext();
       (ctx as unknown as { rackAtTurnStart: Tile[] }).rackAtTurnStart = deck.map((t) => ({ ...t }));
 
-      // 全部暂存到工作区，再拆成两组分别成组。
-      engine.moveRackTilesToWorkingArea([9301, 9302, 9303, 9304, 9305, 9306]);
-      engine.createNewGroupFromWorkingArea(
-        engine.getTurnContext().workingArea.slice(0, 3), 'run'
-      );
-      engine.createNewGroupFromWorkingArea(
-        engine.getTurnContext().workingArea.slice(0, 3), 'group'
-      );
+      const gA = engine.createNewGroupOnBoard([deck[0], deck[1], deck[2]], 'run');
+      const gB = engine.createNewGroupOnBoard([deck[3], deck[4]], 'run');
 
-      const result = engine.submitTurn();
-      expect(result.errors).toEqual([]);
-      expect(result.valid).toBe(true);
-      expect(p.hasMadeInitialMeld).toBe(true);
+      // 把红3 从 A 移到 B（草稿不做合法性拦截，提交时才校验）。
+      engine.returnTilesToRack([9303]);
+      engine.placeTilesOnBoard([9303], gB);
+
+      const board = engine.getState().board;
+      expect(board.find((g) => g.id === gA)?.tiles.length).toBe(2);
+      expect(board.find((g) => g.id === gB)?.tiles.map((t) => t.originalTile.id)).toEqual([9304, 9305, 9303]);
+      expect(p.rack.length).toBe(0);
     });
 
-    it('RACK_TO_WA 操作可在另一引擎上回放得到相同结果', () => {
+    it('CREATE_GROUP/RETURN_TO_RACK/PLACE_ON_BOARD 操作可在另一引擎上回放得到相同结果', () => {
       engine.startGame(['P1', 'P2']);
       const p = engine.getCurrentPlayer();
       const deck: Tile[] = [
@@ -237,20 +234,42 @@ describe('RummikubEngine', () => {
       (ctx as unknown as { rackAtTurnStart: Tile[] }).rackAtTurnStart = deck.map((t) => ({ ...t }));
       const baseline = engine.serializeState();
 
-      engine.moveRackTilesToWorkingArea([9401, 9402, 9403]);
-      engine.createNewGroupFromWorkingArea(
-        engine.getTurnContext().workingArea.slice(0, 3), 'group'
-      );
+      const gid = engine.createNewGroupOnBoard([deck[0], deck[1], deck[2]], 'group');
+      engine.returnTilesToRack([9403]);
+      engine.placeTilesOnBoard([9403], gid);
       const ops = [...engine.getTurnOps()];
 
       const clone = RummikubEngine.fromState(baseline);
       applyOps(clone, ops);
 
       expect(clone.getState().board).toEqual(engine.getState().board);
-      expect(clone.getTurnContext().workingArea).toEqual(engine.getTurnContext().workingArea);
       expect(clone.getCurrentPlayer().rack.map((t) => t.id)).toEqual(
         engine.getCurrentPlayer().rack.map((t) => t.id)
       );
+    });
+
+    it('Joker 替换：被换下的 Joker 回到牌架', () => {
+      engine.startGame(['P1', 'P2']);
+      const p = engine.getCurrentPlayer();
+      const deck: Tile[] = [
+        { id: 9501, color: 'red', number: 3 },
+        { id: 9502, color: 'joker', number: 0 },
+        { id: 9503, color: 'red', number: 5 },
+        { id: 9504, color: 'red', number: 4 },
+      ];
+      p.rack = deck;
+      p.hasMadeInitialMeld = true;
+      const ctx = engine.getTurnContext();
+      (ctx as unknown as { rackAtTurnStart: Tile[] }).rackAtTurnStart = deck.map((t) => ({ ...t }));
+
+      // 红 3-Joker-5 上桌（Joker 代表红 4），再用真红 4 替换。
+      const gid = engine.createNewGroupOnBoard([deck[0], deck[1], deck[2]], 'run');
+      engine.replaceJokerOnBoard(gid, 1, deck[3]);
+
+      const group = engine.getState().board.find((g) => g.id === gid)!;
+      expect(group.tiles.map((t) => t.originalTile.id)).toEqual([9501, 9504, 9503]);
+      // 换下的 Joker 回到牌架。
+      expect(p.rack.map((t) => t.id)).toEqual([9502]);
     });
   });
 

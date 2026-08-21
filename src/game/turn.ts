@@ -1,5 +1,5 @@
 // ============================================================================
-// turn.ts — 回合状态管理（工作区、Joker 替换追踪）
+// turn.ts — 回合状态管理（Joker 替换追踪）
 // ============================================================================
 
 import type {
@@ -27,7 +27,6 @@ export function createTurnContext(
     boardSnapshot: snapshotBoard(board),
     poolSnapshot: snapshotPool(pool),
     rackAtTurnStart: rack.map(t => ({ ...t })),
-    workingArea: [],
     replacedJokers: [],
     hasDrawnFromPool: false,
     drawnTile: null,
@@ -37,31 +36,6 @@ export function createTurnContext(
     consecutivePasses: previousConsecutivePasses,
     justDrawnTilePlaced: false,
   };
-}
-
-// ---------------------------------------------------------------------------
-// 工作区操作
-// ---------------------------------------------------------------------------
-
-export function addToWorkingArea(ctx: TurnContext, tiles: Tile[]): void {
-  ctx.workingArea.push(...tiles);
-}
-
-export function removeFromWorkingArea(ctx: TurnContext, tileIds: number[]): Tile[] {
-  const removed: Tile[] = [];
-  const idSet = new Set(tileIds);
-  ctx.workingArea = ctx.workingArea.filter(t => {
-    if (idSet.has(t.id)) {
-      removed.push(t);
-      return false;
-    }
-    return true;
-  });
-  return removed;
-}
-
-export function isWorkingAreaEmpty(ctx: TurnContext): boolean {
-  return ctx.workingArea.length === 0;
 }
 
 // ---------------------------------------------------------------------------

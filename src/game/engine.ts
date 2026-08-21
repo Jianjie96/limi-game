@@ -34,9 +34,6 @@ import { calculateInitialMeldScore, calculateRackValue, buildGameResult, findLow
 import { snapshotBoard, snapshotPool, restoreBoard, restorePool, diffBoard, getAllTileIdsOnBoard } from './snapshot';
 import {
   createTurnContext,
-  addToWorkingArea,
-  removeFromWorkingArea,
-  isWorkingAreaEmpty,
   recordJokerReplacement,
   recordRackTilesPlaced,
   recordDraw,
@@ -203,25 +200,6 @@ export class RummikubEngine {
   }
 
   /**
-   * 调整工作区内某张牌的顺序（理牌）。
-   * 纯工作区内整理，不改变牌面内容、不消耗动作、不影响回合状态。
-   */
-  reorderWorkingAreaTile(tileId: number, toIndex: number): void {
-    this.assertPhase(TurnPhase.PLAY);
-    const ctx = this.getTurnContext();
-    const fromIndex = ctx.workingArea.findIndex(t => t.id === tileId);
-    if (fromIndex < 0) throw new Error(`工作区中找不到牌 ${tileId}`);
-
-    const arr = [...ctx.workingArea];
-    const [moved] = arr.splice(fromIndex, 1);
-    const insertAt = Math.max(0, Math.min(toIndex, arr.length));
-    arr.splice(insertAt, 0, moved);
-    ctx.workingArea = arr;
-
-    this.emit('boardManipulated', { action: 'reorderWorkingArea', tileId, fromIndex, toIndex: insertAt });
-  }
-
-  /**
    * 将牌从牌架放到桌面已有牌组。
    */
   placeTilesOnBoard(tileIds: number[], groupId: string, position: number = -1): void {
@@ -315,45 +293,8 @@ export class RummikubEngine {
   }
 
   /**
-   * 从桌面牌组移除牌 (放入工作区)。
-   */
-  removeTilesFromBoard(groupId: string, tileIds: number[]): Tile[] {
-    this.assertPhase(TurnPhase.PLAY);
-    const group = this.findGroup(groupId);
-    if (!group) throw new Error(`牌组 ${groupId} 不存在`);
-
-    const idSet = new Set(tileIds);
-    const removed: LogicalTile[] = [];
-    const remaining = group.tiles.filter(lt => {
-      if (idSet.has(lt.originalTile.id)) {
-        removed.push(lt);
-        return false;
-      }
-      return true;
-    });
-
-    if (removed.length !== tileIds.length) {
-      throw new Error('部分牌在牌组中不存在');
-    }
-
-    if (remaining.length === 0) {
-      this.state.board = this.state.board.filter(g => g.id !== groupId);
-    } else {
-      // Joker 保持通配，移除后无需重新推断代表值。
-      this.replaceGroup({ ...group, tiles: remaining });
-    }
-
-    const physicalTiles = removed.map(lt => lt.originalTile);
-    addToWorkingArea(this.getTurnContext(), physicalTiles);
-
-    this.recordOp({ op: 'REMOVE_FROM_BOARD', groupId, tileIds });
-    this.emit('boardManipulated', { action: 'remove', groupId, tileIds });
-    return physicalTiles;
-  }
-
-  /**
    * 把牌放回当前玩家的牌架（未破冰时撤销首次出牌使用）。
-   * 可从桌面牌组或工作区取回；同时更新「本回合从牌架放下」的追踪。
+   * 从桌面牌组取回；同时更新「本回合从牌架放下」的追踪。
    */
   returnTilesToRack(tileIds: number[]): Tile[] {
     this.assertPhase(TurnPhase.PLAY);
@@ -378,15 +319,8 @@ export class RummikubEngine {
     }
     this.state.board = nextBoard;
 
-    // 从工作区中移除
-    const waReturned = ctx.workingArea.filter(t => idSet.has(t.id));
-    ctx.workingArea = ctx.workingArea.filter(t => !idSet.has(t.id));
-    for (const t of waReturned) {
-      if (!returned.some(r => r.id === t.id)) returned.push(t);
-    }
-
     if (returned.length !== tileIds.length) {
-      throw new Error('部分牌既不在桌面也不在工作区');
+      throw new Error('部分牌不在桌面');
     }
 
     // 放回牌架
@@ -444,7 +378,8 @@ export class RummikubEngine {
     player.rack = player.rack.filter(t => t.id !== realTile.id);
 
     const jokerTile = jokerLT.originalTile;
-    addToWorkingArea(ctx, [jokerTile]);
+    // 换下的 Joker 回到牌架：本回合必须重新放上桌面（提交时校验）。
+    player.rack = [...player.rack, jokerTile];
 
     recordJokerReplacement(ctx, jokerTile, groupId, realTile);
     recordRackTilesPlaced(ctx, [realTile]);
@@ -457,41 +392,6 @@ export class RummikubEngine {
       jokerTile,
       realTile,
     });
-  }
-
-  moveTilesToWorkingArea(groupId: string, tileIds: number[]): void {
-    this.assertPhase(TurnPhase.PLAY);
-    this.removeTilesFromBoard(groupId, tileIds);
-  }
-
-  /**
-   * 把牌架牌移入工作区（暂存/理牌，无论是否破冰都允许）。
-   * 工作区的牌可放回牌架，出牌时与其他工作区牌统一拆分组成新牌组。
-   */
-  moveRackTilesToWorkingArea(tileIds: number[]): Tile[] {
-    this.assertPhase(TurnPhase.PLAY);
-    const player = this.getCurrentPlayer();
-    const ctx = this.getTurnContext();
-
-    const idSet = new Set(tileIds);
-    const moved = player.rack.filter(t => idSet.has(t.id));
-    if (moved.length !== tileIds.length) {
-      throw new Error('部分牌不在牌架中');
-    }
-
-    // 刚摸到的牌不能当回合打出：提前标记，提交校验时拒绝。
-    if (ctx.drawnTileId !== null && idSet.has(ctx.drawnTileId)) {
-      markDrawnTilePlaced(ctx);
-    }
-
-    player.rack = player.rack.filter(t => !idSet.has(t.id));
-    addToWorkingArea(ctx, moved);
-    // 记为「本回合从牌架放下」：未破冰可放回牌架，提交时也满足「至少放 1 张」。
-    recordRackTilesPlaced(ctx, moved);
-
-    this.recordOp({ op: 'RACK_TO_WA', tileIds });
-    this.emit('boardManipulated', { action: 'rackToWorkingArea', tileIds });
-    return moved;
   }
 
   /**
@@ -516,62 +416,6 @@ export class RummikubEngine {
     this.replaceGroup({ ...group, tiles });
     this.recordOp({ op: 'MOVE_WITHIN_GROUP', groupId, tileId, toIndex });
     this.emit('boardManipulated', { action: 'reorder', groupId, tileId, fromIndex, toIndex: insertAt });
-  }
-
-  /**
-   * 将工作区的牌放回桌面牌组。
-   */
-  placeWorkingAreaTilesOnBoard(tileIds: number[], groupId: string, position: number = -1): void {
-    this.assertPhase(TurnPhase.PLAY);
-    const ctx = this.getTurnContext();
-    const group = this.findGroup(groupId);
-    if (!group) throw new Error(`牌组 ${groupId} 不存在`);
-
-    const tiles = removeFromWorkingArea(ctx, tileIds);
-    if (tiles.length !== tileIds.length) {
-      throw new Error('部分牌在工作区中不存在');
-    }
-
-    const logicalTiles = tiles.map(toLogical);
-    let newTiles = [...group.tiles];
-    if (position < 0 || position >= newTiles.length) {
-      newTiles.push(...logicalTiles);
-    } else {
-      newTiles.splice(position, 0, ...logicalTiles);
-    }
-
-    // Joker 保持通配（logicalColor='joker'），提交时由校验器按“是否存在合法赋值”动态判断。
-    this.replaceGroup({ ...group, tiles: newTiles });
-
-    this.recordOp({ op: 'PLACE_WA_ON_BOARD', tileIds, groupId, position });
-    this.emit('boardManipulated', { action: 'placeFromWorkingArea', groupId, tileIds });
-  }
-
-  /**
-   * 用工作区的牌创建新牌组。
-   */
-  createNewGroupFromWorkingArea(tiles: Tile[], groupType: GroupType): string {
-    this.assertPhase(TurnPhase.PLAY);
-    const ctx = this.getTurnContext();
-
-    const tileIds = tiles.map(t => t.id);
-    removeFromWorkingArea(ctx, tileIds);
-
-    const groupId = this.nextGroupId();
-    // Joker 保持通配（logicalColor='joker'），提交时由校验器按“是否存在合法赋值”动态判断。
-    const logicalTiles = tiles.map(toLogical);
-
-    const newGroup: TileGroup = {
-      id: groupId,
-      type: groupType,
-      tiles: logicalTiles,
-    };
-
-    this.state.board = [...this.state.board, newGroup];
-
-    this.recordOp({ op: 'CREATE_GROUP_FROM_WA', tileIds, groupType });
-    this.emit('boardManipulated', { action: 'createGroupFromWorkingArea', groupId });
-    return groupId;
   }
 
   /**
@@ -667,15 +511,7 @@ export class RummikubEngine {
     const player = this.getCurrentPlayer();
     const errors: ValidationError[] = [];
 
-    // 1. 工作区必须为空
-    if (!isWorkingAreaEmpty(ctx)) {
-      errors.push({
-        code: 'WORKING_AREA_NOT_EMPTY',
-        message: '工作区还有牌未放置到桌面',
-      });
-    }
-
-    // 2. 桌面所有牌组必须合法
+    // 1. 桌面所有牌组必须合法（桌面为草稿，提交时才整体校验）
     const boardValidation = validateBoard(this.state.board);
     errors.push(...boardValidation.errors);
 
@@ -704,12 +540,19 @@ export class RummikubEngine {
       errors.push(...meldErrors);
     }
 
-    // 6. Joker 替换后必须立即重组
-    if (ctx.replacedJokers.length > 0 && !isWorkingAreaEmpty(ctx)) {
-      errors.push({
-        code: 'JOKER_NOT_REUSED',
-        message: '替换的 Joker 必须在当前回合立即重新组成合法牌组',
-      });
+    // 5. Joker 替换后必须立即重组：换下的每个 Joker 都必须已重新放上桌面。
+    for (const rj of ctx.replacedJokers) {
+      const jokerId = rj.jokerTile.id;
+      const onBoard = this.state.board.some((g) =>
+        g.tiles.some((lt) => lt.originalTile.id === jokerId),
+      );
+      if (!onBoard) {
+        errors.push({
+          code: 'JOKER_NOT_REUSED',
+          message: '替换的 Joker 必须在当前回合立即重新组成合法牌组',
+        });
+        break;
+      }
     }
 
     return errors;
@@ -802,11 +645,10 @@ export class RummikubEngine {
   }
 
   /**
-   * 提交失败重试前，清空回合内的瞬时状态（工作区、Joker 替换、已放置追踪），
+   * 提交失败重试前，清空回合内的瞬时状态（Joker 替换、已放置追踪），
    * 但保留「本回合已摸牌」这一事实。
    */
   private resetTurnForRetry(ctx: TurnContext): void {
-    ctx.workingArea = [];
     ctx.replacedJokers = [];
     ctx.rackTilesPlacedThisTurn = [];
     ctx.hasPlacedFromRack = false;
@@ -1038,12 +880,6 @@ export function applyOps(engine: RummikubEngine, ops: readonly EngineOp[]): void
       case 'CREATE_GROUP':
         engine.createNewGroupOnBoard(tilesFromRack(engine, op.tileIds), op.groupType);
         break;
-      case 'CREATE_GROUP_FROM_WA':
-        engine.createNewGroupFromWorkingArea(tilesFromWorkingArea(engine, op.tileIds), op.groupType);
-        break;
-      case 'REMOVE_FROM_BOARD':
-        engine.removeTilesFromBoard(op.groupId, op.tileIds);
-        break;
       case 'RETURN_TO_RACK':
         engine.returnTilesToRack(op.tileIds);
         break;
@@ -1054,12 +890,6 @@ export function applyOps(engine: RummikubEngine, ops: readonly EngineOp[]): void
       }
       case 'MOVE_WITHIN_GROUP':
         engine.moveTileWithinGroup(op.groupId, op.tileId, op.toIndex);
-        break;
-      case 'PLACE_WA_ON_BOARD':
-        engine.placeWorkingAreaTilesOnBoard(op.tileIds, op.groupId, op.position);
-        break;
-      case 'RACK_TO_WA':
-        engine.moveRackTilesToWorkingArea(op.tileIds);
         break;
       default:
         throw new Error(`未知操作类型: ${(op as any).op}`);
@@ -1073,16 +903,6 @@ function tilesFromRack(engine: RummikubEngine, tileIds: number[]): Tile[] {
   return tileIds.map(id => {
     const tile = rack.find(t => t.id === id);
     if (!tile) throw new Error(`回放失败：牌 ${id} 不在牌架中`);
-    return tile;
-  });
-}
-
-/** 从工作区中按 ID 取出牌对象。 */
-function tilesFromWorkingArea(engine: RummikubEngine, tileIds: number[]): Tile[] {
-  const wa = engine.getTurnContext().workingArea;
-  return tileIds.map(id => {
-    const tile = wa.find(t => t.id === id);
-    if (!tile) throw new Error(`回放失败：牌 ${id} 不在工作区中`);
     return tile;
   });
 }

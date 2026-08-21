@@ -104,22 +104,10 @@ export const ANIMATION_DURATION = 200; // ms
 export const LAYOUT = {
   boardTop: 0.12,        // 桌面区域顶部 (相对可用高度)
   boardBottom: 0.50,     // 桌面区域底部
-  workingAreaTop: 0.52,  // 工作区顶部
-  workingAreaBottom: 0.58, // 工作区底部
   rackTop: 0.62,         // 牌架顶部
   rackBottom: 0.92,      // 牌架底部
   buttonAreaTop: 0.93,   // 按钮区域顶部
 };
-
-/** 工作区样式 */
-export const WORKING_AREA_BG = 'rgba(18,32,42,0.35)';
-export const WORKING_AREA_BORDER = '#D3BC8E';
-export const WORKING_AREA_LABEL = '工作区 (拖牌入盒分组，拖到空白拆出)';
-/**
- * 工作区最小高度：至少容纳标签 + 一行 0.7 倍缩放牌（16 + 56*0.7 + 6），
- * 避免被压成一条细缝，也保证单行牌不会溢出面板下边缘。
- */
-export const WORKING_AREA_HEIGHT = 62;
 
 /** 牌架最小高度：至少一行牌 + 上下留白，避免牌少/为空时退化成细条。 */
 export const RACK_MIN_HEIGHT = TILE_HEIGHT + RACK_PADDING * 2;

@@ -52,7 +52,7 @@ export const BOARD_ROW_HEIGHT = TILE_HEIGHT + BOARD_GROUP_PADDING * 2;
  * 计算桌面牌组布局（流式布局，自动换行）。
  *
  * @param scale 牌面缩放系数。当桌面内容超出可视区域时，可按此系数整体缩放，
- *              保证所有牌组都落在可用高度内，避免与工作区/牌架重叠。
+ *              保证所有牌组都落在可用高度内，避免与牌架重叠。
  * @param gapPreview 组内理牌预览：目标牌组排除被拖牌并在 gapIndex 留空槽，
  *              槽位数与完整布局一致，组宽不变，其余牌组不重排。
  */

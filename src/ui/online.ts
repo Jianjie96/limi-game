@@ -64,7 +64,7 @@ function handIdsKey(hand: readonly Tile[]): string {
  * 由公开状态 + 本人手牌构造完整 GameState JSON（mask 状态）。
  * - 本人牌架：真实手牌；其他玩家：占位牌（仅数量正确）
  * - 牌池：占位牌（仅数量正确，摸牌由云端执行）
- * - 回合上下文：按回合起点重建（工作区必为空，摸牌只发生在云端）
+ * - 回合上下文：按回合起点重建（摸牌只发生在云端）
  */
 export function buildMaskedStateJson(
   pub: PublicGameState,
@@ -98,7 +98,6 @@ export function buildMaskedStateJson(
       boardSnapshot: JSON.parse(JSON.stringify(board)),
       poolSnapshot: [],
       rackAtTurnStart: currentRack.map((t) => ({ ...t })),
-      workingArea: [],
       replacedJokers: [],
       hasDrawnFromPool: false,
       drawnTile: null,

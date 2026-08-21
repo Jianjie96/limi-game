@@ -60,8 +60,8 @@ describe('在线对战：序列化与操作回放', () => {
     const restored = RummikubEngine.fromState(json);
 
     expect(stateJson(restored)).toEqual(stateJson(engine));
-    // 回合上下文同样恢复（工作区可访问且不抛错）
-    expect(restored.getTurnContext().workingArea.length).toBe(0);
+    // 回合上下文同样恢复（可访问且不抛错）
+    expect(restored.getTurnContext().replacedJokers.length).toBe(0);
   });
 
   it('fromState 后新建牌组的 groupId 与客户端草稿一致（计数器同步）', () => {
@@ -98,14 +98,13 @@ describe('在线对战：序列化与操作回放', () => {
     const gRed = a.createNewGroupOnBoard([byIdA(0), byIdA(1), byIdA(2)], 'run');
     const gBlue = a.createNewGroupOnBoard([byIdA(4), byIdA(5), byIdA(6)], 'run');
     a.placeTilesOnBoard([3], gRed, -1);                 // 红 run 扩展到 1-4
-    a.removeTilesFromBoard(gBlue, [6]);                  // 蓝12 → 工作区
-    a.returnTilesToRack([6]);                            // 再拿回牌架
+    a.returnTilesToRack([6]);                            // 蓝12 拆回牌架
     a.placeTilesOnBoard([6], gBlue, -1);                 // 重新放上
     a.moveTileWithinGroup(gBlue, 6, 0);                  // 重排打乱
     a.moveTileWithinGroup(gBlue, 6, 2);                  // 重排恢复
 
     const ops = a.getTurnOps();
-    expect(ops.length).toBe(8);
+    expect(ops.length).toBe(7);
 
     // 服务端引擎 B：从回合开始状态重建并回放
     const b = RummikubEngine.fromState(turnStartJson);
