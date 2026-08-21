@@ -35,6 +35,8 @@ export interface OnlineSceneHost {
   /** 云端操作进行中：锁定出牌/Pass 按钮并给出「处理中」即时反馈，防止重复点击。
    *  action 标识触发动作，供场景把对应按钮文案显示为「…中」。 */
   setSubmitting(busy: boolean, action?: 'submit' | 'pass'): void;
+  /** 短暂高亮指定桌面牌组（他人出牌落点提示，到期自动清除）。 */
+  flashBoardGroups(groupIds: string[], duration?: number): void;
 }
 
 /** 占位牌：仅用于填充他人牌架数量与牌池数量，不参与任何规则计算。 */
@@ -132,6 +134,8 @@ export class OnlineCoordinator {
   private hostRetry = 0;
   /** 首次应用云端状态时播放发牌音效（仅真正开局，断线重连跳过）。 */
   private firstApply = true;
+  /** 上一次应用的公开状态（对比检测对手出牌/摸牌用）。 */
+  private lastApplied: PublicGameState | null = null;
 
   constructor(
     private engine: RummikubEngine,
@@ -340,6 +344,7 @@ export class OnlineCoordinator {
 
   /** loadState 整体覆盖草稿引擎（mask 状态）。 */
   private apply(pub: PublicGameState, hand: Tile[]): void {
+    const prev = this.lastApplied;
     this.appliedVersion = pub.version;
     this.appliedHandKey = handIdsKey(hand);
 
@@ -361,11 +366,57 @@ export class OnlineCoordinator {
     const myTurn = pub.phase === 'PLAYING' && pub.currentPlayerIndex === this.selfIndex;
     this.turnStartJson = myTurn ? json : '';
 
+    // 对手行动感知：机器人/对手在云端行棋，本地只有 loadState 静默覆盖；
+    // 对比前后状态给出「消息 + 音效 + 牌组高亮」反馈（须晚于 loadState，
+    // 避免被 stateLoaded 的清除逻辑抹掉）。
+    this.notifyOthersAction(prev, pub);
+
     if (pub.phase === 'GAME_OVER' && pub.result) {
       const winner = pub.result.playerResults.find((r) => r.isWinner);
       // 本人获胜用胜利彩带，否则用柔和结算音。
       audio.play(pub.result.playerResults[this.selfIndex]?.isWinner ? 'victory' : 'result');
       this.scene.showMessage(`游戏结束! ${winner?.playerName ?? ''} 获胜!`, 3200);
     }
+  }
+
+  /** 对比相邻两次云端状态，提示非本人玩家的动作（出牌/摸牌）。
+   *  依据：手牌数量变化（出牌减少/摸牌增加）与桌面新增牌所属牌组。 */
+  private notifyOthersAction(prev: PublicGameState | null, pub: PublicGameState): void {
+    this.lastApplied = pub;
+    if (!prev || prev.phase !== 'PLAYING' || pub.phase !== 'PLAYING') return;
+
+    const parts: string[] = [];
+    let placed = false;
+    let drawn = false;
+    for (let i = 0; i < pub.players.length; i++) {
+      if (i === this.selfIndex) continue;
+      const before = prev.players[i];
+      const after = pub.players[i];
+      if (!before || !after) continue;
+      const delta = before.rackCount - after.rackCount;
+      if (delta > 0) {
+        parts.push(`${after.name} 出牌 ${delta} 张`);
+        placed = true;
+      } else if (delta < 0) {
+        parts.push(`${after.name} 摸牌`);
+        drawn = true;
+      }
+    }
+    if (parts.length === 0) return;
+
+    if (placed) {
+      // 高亮含新增牌的牌组（对手出牌落点），到期自动清除。
+      const prevIds = new Set<number>();
+      for (const g of prev.board) for (const t of g.tiles) prevIds.add(t.originalTile.id);
+      const flashIds: string[] = [];
+      for (const g of pub.board) {
+        if (g.tiles.some((t) => !prevIds.has(t.originalTile.id))) flashIds.push(g.id);
+      }
+      if (flashIds.length > 0) this.scene.flashBoardGroups(flashIds);
+      audio.play('place');
+    } else if (drawn) {
+      audio.play('pass');
+    }
+    this.scene.showMessage(parts.join('；'), 2800);
   }
 }

@@ -208,6 +208,8 @@ export class GameScene {
 
   private message = '';
   private messageTimer: any = null;
+  /** 临时牌组高亮到期句柄（他人出牌落点提示，dispose 时清理）。 */
+  private flashGroupTimer: any = null;
   /** 辅助提示开关：开发版全量展示，线上只保留必要提示。 */
   private tipsEnabled = isDevEnvironment();
   /** 渲染循环句柄（dispose 时取消） */
@@ -368,6 +370,19 @@ export class GameScene {
     if (this.submitting === busy && this.submittingAction === (action ?? null)) return;
     this.submitting = busy;
     this.submittingAction = busy ? action ?? null : null;
+    this.markDirty();
+  }
+
+  /** 短暂高亮指定桌面牌组（他人出牌落点提示），到期自动清除。 */
+  flashBoardGroups(groupIds: string[], duration = 3000): void {
+    if (this.disposed || groupIds.length === 0) return;
+    for (const id of groupIds) this.highlightedGroupIds.add(id);
+    if (this.flashGroupTimer) clearTimeout(this.flashGroupTimer);
+    this.flashGroupTimer = setTimeout(() => {
+      this.flashGroupTimer = null;
+      for (const id of groupIds) this.highlightedGroupIds.delete(id);
+      this.markDirty();
+    }, duration);
     this.markDirty();
   }
 
@@ -580,6 +595,7 @@ export class GameScene {
     wx.offWindowResize(this.resizeHandler);
     this.clearLongPressTimer();
     if (this.messageTimer) clearTimeout(this.messageTimer);
+    if (this.flashGroupTimer) clearTimeout(this.flashGroupTimer);
     this.coordinator?.dispose();
     this.coordinator = null;
   }
@@ -1072,7 +1088,7 @@ export class GameScene {
           : undefined;
       this.boardSlots = this.layoutBoardToFit(state.board, boardBottom, boardGap);
       // 理牌实时预览：拖拽牌架牌且缺口开着时，用含缺口的预览布局（邻牌让位）。
-      // 从桌面拿回的牌（不在回合开始手牌快照中）加琥珀色标记，出牌校验失败时供辨认。
+      // 从桌面拿回的牌（不在回合开始手牌快照中）用斜体 + 双下划线标记，出牌校验失败时供辨认。
       const rackAtStart = state.turnContext?.rackAtTurnStart;
       const fromBoardIds = rackAtStart
         ? new Set(rackTiles.filter((t) => !rackAtStart.some((s) => s.id === t.id)).map((t) => t.id))
