@@ -2,6 +2,8 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { GamePhase, TurnPhase } from './types';
 import type { Tile } from './types';
 import { RummikubEngine, applyOps } from './engine';
+import { detectGroupType } from './tiles';
+import { isValidGroup } from './validate';
 
 function createEngine(): RummikubEngine {
   return new RummikubEngine({ playerCount: 2, initialHandSize: 5 });
@@ -190,6 +192,30 @@ describe('RummikubEngine', () => {
       engine.returnTilesToRack([9201, 9202]);
       expect(p.rack.length).toBe(3);
       expect(engine.getState().board.length).toBe(0);
+    });
+
+    it('牌组类型随构成动态重推断：4+Joker 再加同色 6 由刻子变顺子', () => {
+      engine.startGame(['P1', 'P2']);
+      const p = engine.getCurrentPlayer();
+      const deck: Tile[] = [
+        { id: 9401, color: 'blue', number: 4 },
+        { id: 9402, color: 'joker', number: 0 },
+        { id: 9403, color: 'blue', number: 6 },
+      ];
+      p.rack = deck;
+      const ctx = engine.getTurnContext();
+      (ctx as unknown as { rackAtTurnStart: Tile[] }).rackAtTurnStart = deck.map((t) => ({ ...t }));
+
+      // 4 + Joker 阶段构成模糊 → 默认刻子（Joker 渲染为缺色的 4）。
+      const gid = engine.createNewGroupOnBoard([deck[0]], detectGroupType([deck[0]]));
+      engine.placeTilesOnBoard([9402], gid);
+      expect(engine.getState().board[0].type).toBe('group');
+
+      // 加入同色 6 后构成只能是顺子 → 类型翻转，Joker 可推断为 5（4,5,6）。
+      engine.placeTilesOnBoard([9403], gid);
+      const g = engine.getState().board[0];
+      expect(g.type).toBe('run');
+      expect(isValidGroup(g)).toBe(true);
     });
 
     it('桌面→桌面移牌：回牌架 + 再放置两步实现', () => {

@@ -28,6 +28,7 @@ import {
   toLogical,
   getTileValue,
   findTileById,
+  detectGroupType,
 } from './tiles';
 import { isValidGroup, isValidRun, isValidGroupTiles, validateBoard } from './validate';
 import { calculateInitialMeldScore, calculateRackValue, buildGameResult, findLowestScorePlayer } from './scoring';
@@ -806,8 +807,11 @@ export class RummikubEngine {
   }
 
   private replaceGroup(newGroup: TileGroup): void {
+    // 牌组类型随牌面构成动态重推断：加/减牌可能改变类型
+    // （如 4+Joker 再加同色 6 应由刻子变顺子，Joker 才能推断为 5）。
+    const type = detectGroupType(newGroup.tiles.map(lt => lt.originalTile));
     this.state.board = this.state.board.map(g =>
-      g.id === newGroup.id ? newGroup : g,
+      g.id === newGroup.id ? { ...newGroup, type } : g,
     );
   }
 

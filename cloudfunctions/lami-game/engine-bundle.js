@@ -81,6 +81,14 @@ function toLogical(tile) {
 function findTileById(tiles, id) {
   return tiles.find((t) => t.id === id);
 }
+function detectGroupType(tiles) {
+  const nonJokers = tiles.filter((t) => t.color !== "joker");
+  const numbers = new Set(nonJokers.map((t) => t.number));
+  if (numbers.size === 1) return "group";
+  const colors = new Set(nonJokers.map((t) => t.color));
+  if (colors.size === 1) return "run";
+  return "group";
+}
 
 // src/game/validate.ts
 function isValidRun(tiles) {
@@ -918,8 +926,9 @@ var RummikubEngine = class _RummikubEngine {
     return this.state.board.find((g) => g.id === groupId);
   }
   replaceGroup(newGroup) {
+    const type = detectGroupType(newGroup.tiles.map((lt) => lt.originalTile));
     this.state.board = this.state.board.map(
-      (g) => g.id === newGroup.id ? newGroup : g
+      (g) => g.id === newGroup.id ? { ...newGroup, type } : g
     );
   }
   assertPhase(expected) {
