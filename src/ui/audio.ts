@@ -59,6 +59,8 @@ class AudioManager {
   private sfxMuted = false;
   /** BGM 是否已启动过（解除静音时用于恢复）。 */
   private bgmWanted = false;
+  /** 本会话已清过缓存：不再回写缓存索引（下次启动重新预热）。 */
+  private cacheDisabled = false;
 
   constructor() {
     let bgmOn = this.readToggle(BGM_MUTE_KEY);
@@ -162,6 +164,7 @@ class AudioManager {
   }
 
   private persistCache(name: SfxName, path: string): void {
+    if (this.cacheDisabled) return; // 本会话已清缓存，不回写
     try {
       const cached = wx.getStorageSync(CACHE_KEY) || {};
       cached[name] = path;
@@ -169,6 +172,37 @@ class AudioManager {
     } catch (e) {
       /* 静默：下次启动重新下载即可 */
     }
+  }
+
+  /**
+   * 清除本地缓存：删除已保存的音效文件与缓存索引，播放源回退远程直链。
+   * 静音开关不受影响；下次启动会重新下载预热。
+   */
+  clearCache(): void {
+    this.cacheDisabled = true;
+    try {
+      const cached = wx.getStorageSync(CACHE_KEY) || {};
+      let fs: any = null;
+      try {
+        fs = wx.getFileSystemManager();
+      } catch (e) {
+        // 文件系统不可用：只清索引
+      }
+      for (const n of SFX_FILES) {
+        const p = cached[n];
+        if (p && fs) {
+          try {
+            fs.unlinkSync(p);
+          } catch (e) {
+            // 文件已不在，忽略
+          }
+        }
+      }
+      wx.removeStorageSync(CACHE_KEY);
+    } catch (e) {
+      // 索引清理失败不阻断
+    }
+    for (const n of SFX_FILES) this.urls.set(n, AUDIO_BASE + n + '.wav');
   }
 
   // --------------------------------------------------------------------------

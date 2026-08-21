@@ -17,6 +17,7 @@ import {
 } from './backdrop';
 import { FROST_STRONG, FROST_BORDER, GOLD, INK, INK_SOFT, AVATAR_COLORS } from './constants';
 import { audio } from './audio';
+import { clearLastRoom } from '../cloud/room';
 import {
   getNickname,
   setNickname,
@@ -65,6 +66,7 @@ export class SettingsScene {
   private sfxRowRect: SceneButtonRect = { x: 0, y: 0, w: 0, h: 0 };
   private vibrateRowRect: SceneButtonRect = { x: 0, y: 0, w: 0, h: 0 };
   private landscapeRowRect: SceneButtonRect = { x: 0, y: 0, w: 0, h: 0 };
+  private clearCacheRowRect: SceneButtonRect = { x: 0, y: 0, w: 0, h: 0 };
 
   private editingNickname = false;
   /** dispose 后丢弃异步回调（转屏等待可能晚于返回）。 */
@@ -223,6 +225,28 @@ export class SettingsScene {
       this.dirty = true;
       return;
     }
+    if (hitRect(px, py, this.clearCacheRowRect)) {
+      this.confirmClearCache();
+      return;
+    }
+  }
+
+  /** 二次确认后清除本地缓存（房间记忆 + 音频文件缓存；昵称/头像/设置不受影响）。 */
+  private confirmClearCache(): void {
+    vibrateIfEnabled();
+    wx.showModal({
+      title: '清除缓存',
+      content: '将清除房间记忆与音频本地缓存，昵称、头像与各项设置不受影响。',
+      confirmText: '清除',
+      cancelText: '取消',
+      success: (res) => {
+        if (!res.confirm || this.disposed) return;
+        clearLastRoom();
+        audio.clearCache();
+        this.showInfo('缓存已清除');
+        this.dirty = true;
+      },
+    });
   }
 
   /** 拉起微信原生选择器更换头像（相册/拍照），随时可再点重选。 */
@@ -309,7 +333,7 @@ export class SettingsScene {
 
     // 内容卡片
     const cardW = Math.min(380, w * 0.92);
-    const cardH = 96 + 46 + ROW_H * 4 + 26;
+    const cardH = 96 + 46 + ROW_H * 5 + 26;
     const cardX = (w - cardW) / 2;
     const cardY = Math.max(this.safeTop + 56, (h - cardH) / 2 + 10);
 
@@ -332,6 +356,7 @@ export class SettingsScene {
     this.sfxRowRect = { x: cardX + 16, y: rowsY + ROW_H, w: cardW - 32, h: ROW_H };
     this.vibrateRowRect = { x: cardX + 16, y: rowsY + ROW_H * 2, w: cardW - 32, h: ROW_H };
     this.landscapeRowRect = { x: cardX + 16, y: rowsY + ROW_H * 3, w: cardW - 32, h: ROW_H };
+    this.clearCacheRowRect = { x: cardX + 16, y: rowsY + ROW_H * 4, w: cardW - 32, h: ROW_H };
 
     this.drawToggleRow(this.bgmRowRect, '背景音', !audio.isBgmMuted());
     this.drawDivider(this.bgmRowRect);
@@ -340,6 +365,8 @@ export class SettingsScene {
     this.drawToggleRow(this.vibrateRowRect, '震动反馈', isVibrateEnabled());
     this.drawDivider(this.vibrateRowRect);
     this.drawToggleRow(this.landscapeRowRect, '横屏模式', getPreferredOrientation() === 'landscape');
+    this.drawDivider(this.landscapeRowRect);
+    this.drawClearCacheRow(this.clearCacheRowRect);
 
     if (this.message && Date.now() < this.messageUntil) this.drawMessage();
   }
@@ -349,7 +376,7 @@ export class SettingsScene {
     const ctx = this.ctx;
     const availW = w - this.safeLeft - this.safeRight;
     const cardW = Math.min(620, availW - 24);
-    const cardH = 196;
+    const cardH = 236;
     const cardX = this.safeLeft + (availW - cardW) / 2;
     const cardY = Math.max(this.safeTop + 48, (h - cardH) / 2);
 
@@ -428,11 +455,12 @@ export class SettingsScene {
     const rowX = cardX + leftW + 16;
     const rowW = cardW - leftW - 32;
     const rowH = 42;
-    const rowsY = cardY + (cardH - rowH * 4) / 2;
+    const rowsY = cardY + (cardH - rowH * 5) / 2;
     this.bgmRowRect = { x: rowX, y: rowsY, w: rowW, h: rowH };
     this.sfxRowRect = { x: rowX, y: rowsY + rowH, w: rowW, h: rowH };
     this.vibrateRowRect = { x: rowX, y: rowsY + rowH * 2, w: rowW, h: rowH };
     this.landscapeRowRect = { x: rowX, y: rowsY + rowH * 3, w: rowW, h: rowH };
+    this.clearCacheRowRect = { x: rowX, y: rowsY + rowH * 4, w: rowW, h: rowH };
 
     this.drawToggleRow(this.bgmRowRect, '背景音', !audio.isBgmMuted());
     this.drawDivider(this.bgmRowRect);
@@ -441,6 +469,8 @@ export class SettingsScene {
     this.drawToggleRow(this.vibrateRowRect, '震动反馈', isVibrateEnabled());
     this.drawDivider(this.vibrateRowRect);
     this.drawToggleRow(this.landscapeRowRect, '横屏模式', getPreferredOrientation() === 'landscape');
+    this.drawDivider(this.landscapeRowRect);
+    this.drawClearCacheRow(this.clearCacheRowRect);
   }
 
   /** 头像 + 昵称行 */
@@ -532,6 +562,22 @@ export class SettingsScene {
     ctx.beginPath();
     ctx.arc(kx, y + r, knobR, 0, Math.PI * 2);
     ctx.fill();
+  }
+
+  /** 清除缓存行：左侧标签 + 右侧操作词（整行可点，弹原生确认框） */
+  private drawClearCacheRow(rect: SceneButtonRect): void {
+    const ctx = this.ctx;
+    const cy = rect.y + rect.h / 2;
+    drawSceneText(ctx, rect.x + 8, cy, '清除缓存', {
+      size: 15,
+      color: INK,
+      align: 'left',
+    });
+    drawSceneText(ctx, rect.x + rect.w - 8, cy, '清除 ›', {
+      size: 14,
+      color: GOLD,
+      align: 'right',
+    });
   }
 
   private drawDivider(rowRect: SceneButtonRect): void {

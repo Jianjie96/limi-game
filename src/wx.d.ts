@@ -109,6 +109,8 @@ declare namespace wx {
   interface FileSystemManager {
     /** 同步判断文件是否存在（不存在时抛异常）。 */
     accessSync(path: string): void;
+    /** 同步删除本地文件（清除缓存用，失败抛异常）。 */
+    unlinkSync(path: string): void;
     saveFile(options: {
       tempFilePath: string;
       success?: (res: { savedFilePath: string }) => void;
