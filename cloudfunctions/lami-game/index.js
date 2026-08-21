@@ -234,6 +234,10 @@ async function doMove(event, openid) {
   const secret = await getDoc(SECRETS, code);
   if (!secret) return fail('对局数据缺失');
   const engine = RummikubEngine.fromState(secret.fullState);
+  // 对局已结束（并发/滑后的迟到请求）：不报错，直接回当前状态供客户端对齐。
+  if (engine.getState().phase !== 'PLAYING') {
+    return ok({ payload: payloadFor(room, engine, room.game.version, room.game.turnDeadline, openid) });
+  }
 
   try {
     applyOps(engine, ops);
@@ -282,6 +286,10 @@ async function doPass(event, openid) {
   const secret = await getDoc(SECRETS, code);
   if (!secret) return fail('对局数据缺失');
   const engine = RummikubEngine.fromState(secret.fullState);
+  // 对局已结束（如牌池耗尽后已死局结算，客户端滑后请求）：不报错，回当前状态对齐。
+  if (engine.getState().phase !== 'PLAYING') {
+    return ok({ payload: payloadFor(room, engine, room.game.version, room.game.turnDeadline, openid) });
+  }
 
   engine.pass();
   await settleAndPersist(room, engine);
@@ -434,6 +442,8 @@ exports.main = async (event) => {
         return fail('未知操作');
     }
   } catch (e) {
+    // 真实异常写入云函数日志（控制台可查），前端仍返回通用提示。
+    console.error(`[lami-game] action=${event.action || 'tick'} 未处理异常:`, e && e.stack ? e.stack : e);
     return fail('服务繁忙，请稍后再试');
   }
 };
