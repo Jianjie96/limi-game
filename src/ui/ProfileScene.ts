@@ -3,7 +3,8 @@
 // ----------------------------------------------------------------------------
 // 从首页「个人中心」进入：头像（微信头像/拍照/相册三选一；未设置时
 // 元素色圆片 + 昵称末字兜底）+ 昵称（原生键盘修改）+ 历史战绩（云端 lami_history 查库：可滚动摘要列表，
-// 点击单局弹详情弹窗：开始时间/时长/MVP/参与者/得分/完整回合记录），以及 背景音 / 音效 / 震动反馈 / 横屏模式 四个开关。
+// 点击单局弹详情弹窗：开始时间/时长/MVP/参与者/得分/完整回合记录）+ 新手说明（玩法文档弹窗），
+// 以及 背景音 / 音效 / 震动反馈 三个开关与清除缓存入口。
 // 与 HomeScene 共享画布与 backdrop 视觉语言，通过 dispose() 交还。
 // ============================================================================
 
@@ -46,6 +47,34 @@ const HISTORY_ITEM_H = 34;
 /** 滑动超过该阈值视为滚动，不再当点击。 */
 const DRAG_THRESHOLD = 8;
 
+/** 新手说明文档（段落式：标题 + 正文，正文按可用宽度自动折行）。 */
+const GUIDE_SECTIONS: Array<{ title: string; body: string }> = [
+  {
+    title: '游戏目标',
+    body: '2～4 人对战，每人开局发 14 张牌，最先把牌架上的牌全部打出的人获胜。',
+  },
+  {
+    title: '合法牌组',
+    body: '顺子：3 张以上同色连续数字（如红 3-4-5，1 只能作最小）；刻子：3～4 张同数字不同色（如红、蓝、黑三个 7）。',
+  },
+  {
+    title: '首次出牌（破冰）',
+    body: '第一次出牌只能用自己牌架上的牌，新牌组总分必须≥30 分（数字即分值），不能动用桌面已有牌。',
+  },
+  {
+    title: '回合操作',
+    body: '每回合可以自由重组桌面：新增牌组、加牌、拆分、合并都行，桌面就是草稿，点「出牌」时才校验。不想出牌也可以从牌池摸 1 张结束回合（刚摸的牌当回合不能打出）。',
+  },
+  {
+    title: '百搭 Joker',
+    body: 'Joker 可代替任意一张牌。可以用真牌换回桌面上的 Joker，但换下的 Joker 必须当回合立即重新组成合法牌组。',
+  },
+  {
+    title: '胜负与结算',
+    body: '出完所有牌立即获胜；牌池耗尽且无人能继续时，剩余分值最低者获胜。数字牌按面值计分，Joker 计 30 分。',
+  },
+];
+
 export class ProfileScene {
   /** 返回上一页（首页） */
   onExit: (() => void) | null = null;
@@ -74,6 +103,7 @@ export class ProfileScene {
   private sfxRowRect: SceneButtonRect = { x: 0, y: 0, w: 0, h: 0 };
   private vibrateRowRect: SceneButtonRect = { x: 0, y: 0, w: 0, h: 0 };
   private landscapeRowRect: SceneButtonRect = { x: 0, y: 0, w: 0, h: 0 };
+  private guideRowRect: SceneButtonRect = { x: 0, y: 0, w: 0, h: 0 };
   private clearCacheRowRect: SceneButtonRect = { x: 0, y: 0, w: 0, h: 0 };
 
   private editingNickname = false;
@@ -93,11 +123,16 @@ export class ProfileScene {
   private detailScrollY = 0;
   private detailMaxScroll = 0;
   private detailPanelRect: SceneButtonRect | null = null;
+  /** 新手说明弹窗：静态玩法文档，整块内容可滚动。 */
+  private guideOpen = false;
+  private guideScrollY = 0;
+  private guideMaxScroll = 0;
+  private guidePanelRect: SceneButtonRect | null = null;
   /** 触摸滚动状态：按下位置 + 滚动目标区域。 */
   private pressPos: { x: number; y: number } | null = null;
   private pressMoved = false;
   private lastTouchY = 0;
-  private scrollTarget: 'history' | 'detail' | null = null;
+  private scrollTarget: 'history' | 'detail' | 'guide' | null = null;
 
   private touchStartHandler = (e: { touches: Array<{ clientX: number; clientY: number }> }) => {
     const t = e.touches[0];
@@ -116,8 +151,10 @@ export class ProfileScene {
     if (dy !== 0) {
       if (this.scrollTarget === 'history') {
         this.historyScrollY = Math.max(0, Math.min(this.historyMaxScroll, this.historyScrollY - dy));
-      } else {
+      } else if (this.scrollTarget === 'detail') {
         this.detailScrollY = Math.max(0, Math.min(this.detailMaxScroll, this.detailScrollY - dy));
+      } else {
+        this.guideScrollY = Math.max(0, Math.min(this.guideMaxScroll, this.guideScrollY - dy));
       }
       this.lastTouchY = t.clientY;
       this.dirty = true;
@@ -141,10 +178,11 @@ export class ProfileScene {
     this.scrollTarget = null;
   };
 
-  /** 按下点命中的滚动区域：详情弹窗打开时优先弹窗内容区。 */
-  private scrollTargetAt(x: number, y: number): 'history' | 'detail' | null {
+  /** 按下点命中的滚动区域：弹窗打开时优先弹窗内容区。 */
+  private scrollTargetAt(x: number, y: number): 'history' | 'detail' | 'guide' | null {
+    if (this.guideOpen && this.guidePanelRect && hitRect(x, y, this.guidePanelRect)) return 'guide';
     if (this.detailRecord && this.detailPanelRect && hitRect(x, y, this.detailPanelRect)) return 'detail';
-    if (!this.detailRecord && hitRect(x, y, this.historyListRect)) return 'history';
+    if (!this.detailRecord && !this.guideOpen && hitRect(x, y, this.historyListRect)) return 'history';
     return null;
   }
 
@@ -268,6 +306,16 @@ export class ProfileScene {
       }
       return;
     }
+    // 新手说明弹窗打开时屏蔽底层交互：点弹窗外关闭，弹窗内由滚动接管。
+    if (this.guideOpen) {
+      const g = this.guidePanelRect;
+      if (!g || !hitRect(px, py, g)) {
+        this.guideOpen = false;
+        this.guidePanelRect = null;
+        this.dirty = true;
+      }
+      return;
+    }
     if (hitRect(px, py, this.backRect)) {
       this.onExit?.();
       return;
@@ -301,6 +349,13 @@ export class ProfileScene {
     }
     // 横屏模式入口暂时隐藏（待优化后恢复）：置零使其不可命中。
     this.landscapeRowRect = { x: 0, y: 0, w: 0, h: 0 };
+    if (hitRect(px, py, this.guideRowRect)) {
+      vibrateIfEnabled();
+      this.guideOpen = true;
+      this.guideScrollY = 0;
+      this.dirty = true;
+      return;
+    }
     if (hitRect(px, py, this.clearCacheRowRect)) {
       this.confirmClearCache();
       return;
@@ -464,13 +519,14 @@ export class ProfileScene {
     if (w > h) {
       this.drawLandscapeCard(w, h);
       if (this.detailRecord) this.drawDetailPanel();
+      if (this.guideOpen) this.drawGuidePanel();
       if (this.message && Date.now() < this.messageUntil) this.drawMessage();
       return;
     }
 
     // 内容卡片：贴顶放（下方还要留给历史战绩卡片）。
     const cardW = Math.min(380, w * 0.92);
-    const cardH = 96 + ROW_H * 4 + 26; // 头像颜色入口已移除，横屏入口暂隐藏，4 行
+    const cardH = 96 + ROW_H * 5 + 26; // 横屏入口暂隐藏，5 行：三个开关 + 新手说明 + 清除缓存
     const cardX = (w - cardW) / 2;
     const cardY = this.safeTop + 56;
 
@@ -491,9 +547,10 @@ export class ProfileScene {
     this.bgmRowRect = { x: cardX + 16, y: rowsY, w: cardW - 32, h: ROW_H };
     this.sfxRowRect = { x: cardX + 16, y: rowsY + ROW_H, w: cardW - 32, h: ROW_H };
     this.vibrateRowRect = { x: cardX + 16, y: rowsY + ROW_H * 2, w: cardW - 32, h: ROW_H };
-    // 横屏模式入口暂时隐藏（待优化后恢复），清除缓存行上移补位。
+    // 横屏模式入口暂时隐藏（待优化后恢复），新手说明与清除缓存行上移补位。
     this.landscapeRowRect = { x: 0, y: 0, w: 0, h: 0 };
-    this.clearCacheRowRect = { x: cardX + 16, y: rowsY + ROW_H * 3, w: cardW - 32, h: ROW_H };
+    this.guideRowRect = { x: cardX + 16, y: rowsY + ROW_H * 3, w: cardW - 32, h: ROW_H };
+    this.clearCacheRowRect = { x: cardX + 16, y: rowsY + ROW_H * 4, w: cardW - 32, h: ROW_H };
 
     this.drawToggleRow(this.bgmRowRect, '背景音', !audio.isBgmMuted());
     this.drawDivider(this.bgmRowRect);
@@ -501,6 +558,8 @@ export class ProfileScene {
     this.drawDivider(this.sfxRowRect);
     this.drawToggleRow(this.vibrateRowRect, '震动反馈', isVibrateEnabled());
     this.drawDivider(this.vibrateRowRect);
+    this.drawGuideRow(this.guideRowRect);
+    this.drawDivider(this.guideRowRect);
     this.drawClearCacheRow(this.clearCacheRowRect);
 
     // 历史战绩卡片：填满下方剩余空间（放不下则不画）。
@@ -509,6 +568,7 @@ export class ProfileScene {
     if (histH >= 96) this.drawHistoryCard(cardX, histY, cardW, histH);
 
     if (this.detailRecord) this.drawDetailPanel();
+    if (this.guideOpen) this.drawGuidePanel();
     if (this.message && Date.now() < this.messageUntil) this.drawMessage();
   }
 
@@ -566,16 +626,17 @@ export class ProfileScene {
     ctx.lineTo(cardX + leftW, cardY + cardH - 16);
     ctx.stroke();
 
-    // ---- 右列：四个紧凑开关行 ----
+    // ---- 右列：五个紧凑行（三开关 + 新手说明 + 清除缓存）----
     const rowX = cardX + leftW + 16;
     const rowW = cardW - leftW - 32;
     const rowH = 42;
-    const rowsY = cardY + (cardH - rowH * 4) / 2; // 横屏模式入口暂隐藏，4 行
+    const rowsY = cardY + (cardH - rowH * 5) / 2; // 横屏模式入口暂隐藏，5 行
     this.bgmRowRect = { x: rowX, y: rowsY, w: rowW, h: rowH };
     this.sfxRowRect = { x: rowX, y: rowsY + rowH, w: rowW, h: rowH };
     this.vibrateRowRect = { x: rowX, y: rowsY + rowH * 2, w: rowW, h: rowH };
     this.landscapeRowRect = { x: 0, y: 0, w: 0, h: 0 };
-    this.clearCacheRowRect = { x: rowX, y: rowsY + rowH * 3, w: rowW, h: rowH };
+    this.guideRowRect = { x: rowX, y: rowsY + rowH * 3, w: rowW, h: rowH };
+    this.clearCacheRowRect = { x: rowX, y: rowsY + rowH * 4, w: rowW, h: rowH };
 
     this.drawToggleRow(this.bgmRowRect, '背景音', !audio.isBgmMuted());
     this.drawDivider(this.bgmRowRect);
@@ -583,6 +644,8 @@ export class ProfileScene {
     this.drawDivider(this.sfxRowRect);
     this.drawToggleRow(this.vibrateRowRect, '震动反馈', isVibrateEnabled());
     this.drawDivider(this.vibrateRowRect);
+    this.drawGuideRow(this.guideRowRect);
+    this.drawDivider(this.guideRowRect);
     this.drawClearCacheRow(this.clearCacheRowRect);
 
     // 右侧历史战绩卡片（与主卡等高）。
@@ -853,6 +916,87 @@ export class ProfileScene {
     }
   }
 
+  /** 新手说明弹窗：静态玩法文档（标题 + 折行正文），整块内容可滚动。 */
+  private drawGuidePanel(): void {
+    const ctx = this.ctx;
+    // 全屏遮罩：压暗背景，突出弹窗卡片。
+    ctx.fillStyle = 'rgba(24,32,44,0.55)';
+    ctx.fillRect(0, 0, this.screenW, this.screenH);
+
+    const panelW = Math.min(320, this.screenW * 0.9);
+    const panelH = Math.min(420, this.screenH * 0.84);
+    const px = (this.screenW - panelW) / 2;
+    const py = (this.screenH - panelH) / 2;
+    this.guidePanelRect = { x: px, y: py, w: panelW, h: panelH };
+
+    // 墨玻璃卡片（与对局详情弹窗同一视觉语言）。
+    ctx.fillStyle = 'rgba(6,14,22,0.4)';
+    roundRectPath(ctx, px + 2, py + 4, panelW, panelH, 14);
+    ctx.fill();
+    ctx.fillStyle = FROST_STRONG;
+    roundRectPath(ctx, px, py, panelW, panelH, 14);
+    ctx.fill();
+    ctx.strokeStyle = FROST_BORDER;
+    ctx.lineWidth = 1.5;
+    roundRectPath(ctx, px, py, panelW, panelH, 14);
+    ctx.stroke();
+
+    drawSceneText(ctx, this.screenW / 2, py + 24, '新手说明', {
+      size: 15,
+      bold: true,
+      color: INK,
+    });
+
+    const textLeft = px + 20;
+    const maxTextW = panelW - 40;
+
+    // 正文按可用宽度折行，同步累加内容总高。
+    ctx.font = `12px ${FONT_FAMILY}`;
+    const sections = GUIDE_SECTIONS.map((s) => ({
+      title: s.title,
+      lines: wrapTextLines(ctx, s.body, maxTextW - 8),
+    }));
+    let contentH = 8;
+    for (const s of sections) contentH += 22 + s.lines.length * 17 + 10;
+
+    const listTop = py + 42;
+    const listH = panelH - 42 - 12;
+    this.guideMaxScroll = Math.max(0, contentH - listH);
+    if (this.guideScrollY > this.guideMaxScroll) this.guideScrollY = this.guideMaxScroll;
+
+    ctx.save();
+    roundRectPath(ctx, px + 10, listTop, panelW - 20, listH, 8);
+    ctx.clip();
+    ctx.translate(0, -this.guideScrollY);
+
+    let ry = listTop + 8;
+    for (const s of sections) {
+      drawSceneText(ctx, textLeft, ry + 10, s.title, { size: 13, bold: true, color: GOLD, align: 'left' });
+      ry += 22;
+      for (const line of s.lines) {
+        drawSceneText(ctx, textLeft + 8, ry + 8, line, { size: 12, color: INK, align: 'left' });
+        ry += 17;
+      }
+      ry += 10;
+    }
+    ctx.restore();
+
+    // 滚动指示条。
+    if (this.guideMaxScroll > 0) {
+      const trackX = px + panelW - 7;
+      const trackY = listTop + 2;
+      const trackH = listH - 4;
+      ctx.fillStyle = 'rgba(255,255,255,0.14)';
+      roundRectPath(ctx, trackX, trackY, 3, trackH, 1.5);
+      ctx.fill();
+      const thumbH = Math.max(18, trackH * (listH / contentH));
+      const thumbY = trackY + (this.guideScrollY / this.guideMaxScroll) * (trackH - thumbH);
+      ctx.fillStyle = 'rgba(233,201,127,0.85)';
+      roundRectPath(ctx, trackX, thumbY, 3, thumbH, 1.5);
+      ctx.fill();
+    }
+  }
+
   /** 回合记录条目按可用宽度折行（首行总述与牌面明细都可能超宽）。 */
   private detailLogLines(entry: TurnLogEntry, maxW: number): string[] {
     const ctx = this.ctx;
@@ -955,6 +1099,22 @@ export class ProfileScene {
       align: 'left',
     });
     drawSceneText(ctx, rect.x + rect.w - 8, cy, '清除 ›', {
+      size: 14,
+      color: GOLD,
+      align: 'right',
+    });
+  }
+
+  /** 新手说明行：左侧标签 + 右侧操作词（整行可点，打开玩法文档弹窗） */
+  private drawGuideRow(rect: SceneButtonRect): void {
+    const ctx = this.ctx;
+    const cy = rect.y + rect.h / 2;
+    drawSceneText(ctx, rect.x + 8, cy, '新手说明', {
+      size: 15,
+      color: INK,
+      align: 'left',
+    });
+    drawSceneText(ctx, rect.x + rect.w - 8, cy, '查看 ›', {
       size: 14,
       color: GOLD,
       align: 'right',
