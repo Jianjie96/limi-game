@@ -65,6 +65,43 @@ describe('inferJokerDisplayValue', () => {
     expect(inferJokerDisplayValue('run', tiles, 0)).toEqual({ color: 'blue', number: 4 });
   });
 
+  it('端位方向由位置决定：joker,3,4 → 2；3,4,joker → 5', () => {
+    const head = [
+      makeJoker(104),
+      makeTile(0, 'red', 3),
+      makeTile(1, 'red', 4),
+    ];
+    expect(inferJokerDisplayValue('run', head, 0)).toEqual({ color: 'red', number: 2 });
+    const tail = [
+      makeTile(0, 'red', 3),
+      makeTile(1, 'red', 4),
+      makeJoker(104),
+    ];
+    expect(inferJokerDisplayValue('run', tail, 2)).toEqual({ color: 'red', number: 5 });
+  });
+
+  it('双百搭两端包夹：joker,3,4,joker 显示 2、5', () => {
+    const tiles = [
+      makeJoker(104),
+      makeTile(0, 'red', 3),
+      makeTile(1, 'red', 4),
+      makeJoker(105),
+    ];
+    expect(inferJokerDisplayValue('run', tiles, 0)).toEqual({ color: 'red', number: 2 });
+    expect(inferJokerDisplayValue('run', tiles, 3)).toEqual({ color: 'red', number: 5 });
+  });
+
+  it('双百搭同侧头部：joker,joker,3,4 显示 1、2（向真实牌递增）', () => {
+    const tiles = [
+      makeJoker(104),
+      makeJoker(105),
+      makeTile(0, 'red', 3),
+      makeTile(1, 'red', 4),
+    ];
+    expect(inferJokerDisplayValue('run', tiles, 0)).toEqual({ color: 'red', number: 1 });
+    expect(inferJokerDisplayValue('run', tiles, 1)).toEqual({ color: 'red', number: 2 });
+  });
+
   it('中间填充不受影响：5-joker-7 显示 6', () => {
     const tiles = [
       makeTile(0, 'blue', 5),
