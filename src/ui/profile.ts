@@ -122,14 +122,21 @@ function setAvatarPath(path: string | null): void {
   }
 }
 
+/** 选头像结果：path 为选中后永久化路径；errorMsg 仅非用户取消的失败才有值。 */
+export interface ChooseAvatarResult {
+  path: string | null;
+  errorMsg?: string;
+}
+
 /**
  * 拉起微信原生媒体选择器选头像（相册/拍照），选中后 saveFile 永久化。
- * 返回永久化路径；用户取消或失败返回 null。
+ * 用户取消静默（errorMsg 为空）；接口被拒（未配置隐私指引/未授权）
+ * 时返回原始 errMsg，由调用方给出可操作的提示。
  */
-export function chooseAvatarFromWeChat(): Promise<string | null> {
+export function chooseAvatarFromWeChat(): Promise<ChooseAvatarResult> {
   return new Promise((resolve) => {
     if (typeof wx.chooseMedia !== 'function') {
-      resolve(null);
+      resolve({ path: null, errorMsg: '当前环境不支持选择头像' });
       return;
     }
     try {
@@ -141,7 +148,7 @@ export function chooseAvatarFromWeChat(): Promise<string | null> {
         success: (res) => {
           const temp = res.tempFiles && res.tempFiles[0] && res.tempFiles[0].tempFilePath;
           if (!temp) {
-            resolve(null);
+            resolve({ path: null });
             return;
           }
           try {
@@ -149,18 +156,26 @@ export function chooseAvatarFromWeChat(): Promise<string | null> {
               tempFilePath: temp,
               success: (r) => {
                 setAvatarPath(r.savedFilePath);
-                resolve(r.savedFilePath);
+                resolve({ path: r.savedFilePath });
               },
-              fail: () => resolve(null),
+              fail: () => resolve({ path: null, errorMsg: '头像文件保存失败，请重试' }),
             });
           } catch (e) {
-            resolve(null);
+            resolve({ path: null, errorMsg: '头像文件保存失败，请重试' });
           }
         },
-        fail: () => resolve(null), // 用户取消也走 fail
+        fail: (err) => {
+          const msg = (err && err.errMsg) || '';
+          // 用户主动取消保持静默；其余（隐私未声明/相册未授权）透出给调用方提示。
+          if (msg.includes('cancel')) {
+            resolve({ path: null });
+          } else {
+            resolve({ path: null, errorMsg: msg || '相册拉起失败' });
+          }
+        },
       });
     } catch (e) {
-      resolve(null);
+      resolve({ path: null, errorMsg: '相册拉起失败' });
     }
   });
 }

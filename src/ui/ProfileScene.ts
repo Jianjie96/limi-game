@@ -297,19 +297,31 @@ export class ProfileScene {
 
   /** 拉起微信原生选择器更换头像（相册/拍照），选中后上传云存储并落库。 */
   private pickAvatar(): void {
-    if (typeof wx.chooseMedia !== 'function') {
-      this.showInfo('当前环境不支持选择头像');
-      return;
-    }
     vibrateIfEnabled();
-    chooseAvatarFromWeChat().then((path) => {
+    chooseAvatarFromWeChat().then((result) => {
       if (this.disposed) return;
-      if (path) {
+      if (result.path) {
         this.showInfo('头像已更新');
         this.pushProfileToCloud();
         this.dirty = true;
+        return;
+      }
+      if (result.errorMsg) {
+        // 非用户取消的失败：给出可操作提示（最常见是隐私指引未声明相册接口）。
+        this.showInfo(this.avatarPickFailTip(result.errorMsg), 4200);
       }
     });
+  }
+
+  /** 把 chooseMedia 的原始 errMsg 翻译成玩家能看懂的提示。 */
+  private avatarPickFailTip(errMsg: string): string {
+    if (/privacy/i.test(errMsg)) {
+      return '无法访问相册：开发者需在微信公众平台「用户隐私保护指引」中声明相册权限后重试';
+    }
+    if (/auth\s*deny|authorize|permission/i.test(errMsg)) {
+      return '相册未授权：请在微信「设置 → 隐私 → 个人信息与权限」中允许本小游戏访问相册';
+    }
+    return `头像选择失败：${errMsg}`;
   }
 
   /** 资料变更后推送云端（头像未传过云存储时会先上传）；失败轻提示不打断操作。 */
