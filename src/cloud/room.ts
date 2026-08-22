@@ -135,9 +135,19 @@ export function startRoom(code: string): Promise<RoomResult> {
   return callRoom<RoomResponse>('start', { code });
 }
 
+/** 房主修改房间人数上限（仅等待中，2/3/4，不可小于已入座人数）。 */
+export function setRoomCapacity(code: string, capacity: number): Promise<RoomResult> {
+  return callRoom<RoomResponse>('setCapacity', { code, capacity });
+}
+
 /** 房主逐个添加机器人补位（等待中且未满员），凑满即可真人+机器人开局。 */
 export function addRoomBot(code: string): Promise<RoomResult> {
   return callRoom<RoomResponse>('addBot', { code });
+}
+
+/** 房主移除误加的机器人（仅等待中），按 bot 的 openid 移除。 */
+export function removeRoomBot(code: string, botOpenid: string): Promise<RoomResult> {
+  return callRoom<RoomResponse>('removeBot', { code, botOpenid });
 }
 
 /** 非房主退出等待中的房间（移出座位；幂等，已不在房内也返回成功）。 */

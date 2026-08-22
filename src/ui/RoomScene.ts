@@ -27,7 +27,7 @@ import {
   INK_SOFT,
   AVATAR_COLORS,
 } from './constants';
-import { RoomInfo, RoomResult, getRoom, startRoom, addRoomBot, leaveRoom, disbandRoom, clearLastRoom } from '../cloud/room';
+import { RoomInfo, RoomResult, getRoom, startRoom, setRoomCapacity, addRoomBot, removeRoomBot, leaveRoom, disbandRoom, clearLastRoom } from '../cloud/room';
 
 const POLL_INTERVAL_MS = 2000;
 
@@ -66,6 +66,11 @@ export class RoomScene {
   private backBtnRect: SceneButtonRect = { x: 0, y: 0, w: 0, h: 0 };
   private disbandBtnRect: SceneButtonRect = { x: 0, y: 0, w: 0, h: 0 };
   private leaveBtnRect: SceneButtonRect = { x: 0, y: 0, w: 0, h: 0 };
+  /** 机器人座位上的「×」移除命中区（绘制时记录，仅房主等待中可见）。 */
+  private botRemoveRects: Array<{ openid: string; rect: SceneButtonRect }> = [];
+  /** 人数上限 −/+ 按钮命中区（绘制时记录，禁用时置零）。 */
+  private capMinusRect: SceneButtonRect = { x: 0, y: 0, w: 0, h: 0 };
+  private capPlusRect: SceneButtonRect = { x: 0, y: 0, w: 0, h: 0 };
 
   private touchStartHandler = (e: { touches: Array<{ clientX: number; clientY: number }> }) => {
     const t = e.touches[0];
@@ -160,6 +165,24 @@ export class RoomScene {
 
     if (this.room.status !== 'waiting') return;
 
+    // 房主调整人数上限（禁用时命中区已置零，无需再判边界）。
+    if (this.isHost && hitRect(px, py, this.capMinusRect)) {
+      this.setCapacity(this.room.capacity - 1);
+      return;
+    }
+    if (this.isHost && hitRect(px, py, this.capPlusRect)) {
+      this.setCapacity(this.room.capacity + 1);
+      return;
+    }
+
+    // 机器人座位「×」：移除误加的机器人（仅房主，命中优先于其它座位交互）。
+    for (const item of this.botRemoveRects) {
+      if (hitRect(px, py, item.rect)) {
+        this.removeBot(item.openid);
+        return;
+      }
+    }
+
     if (hitRect(px, py, this.shareBtnRect)) {
       this.share();
       return;
@@ -248,6 +271,38 @@ export class RoomScene {
     this.busy = true;
     this.dirty = true;
     addRoomBot(this.code)
+      .then((result) => {
+        this.room = result.room;
+        this.busy = false;
+        this.dirty = true;
+      })
+      .catch((e: Error) => {
+        this.busy = false;
+        this.showInfo(e.message);
+      });
+  }
+
+  /** 房主调整人数上限（2/3/4；越界时按钮已禁用，云端另做兜底校验）。 */
+  private setCapacity(capacity: number): void {
+    this.busy = true;
+    this.dirty = true;
+    setRoomCapacity(this.code, capacity)
+      .then((result) => {
+        this.room = result.room;
+        this.busy = false;
+        this.dirty = true;
+      })
+      .catch((e: Error) => {
+        this.busy = false;
+        this.showInfo(e.message);
+      });
+  }
+
+  /** 房主移除误加的机器人（点机器人座位右上角的「×」）。 */
+  private removeBot(botOpenid: string): void {
+    this.busy = true;
+    this.dirty = true;
+    removeRoomBot(this.code, botOpenid)
       .then((result) => {
         this.room = result.room;
         this.busy = false;
@@ -375,8 +430,19 @@ export class RoomScene {
       size: 13,
       color: INK_SOFT,
     });
+    this.capMinusRect = { x: 0, y: 0, w: 0, h: 0 };
+    this.capPlusRect = { x: 0, y: 0, w: 0, h: 0 };
+    if (this.isHost && room.status === 'waiting') {
+      // 房主等待中可调整人数上限：副标题两侧 −/+ 圆钮，
+      // 不可低于已入座人数（含机器人），上限 4 人。
+      const canMinus = room.capacity > Math.max(2, room.players.length);
+      const canPlus = room.capacity < 4;
+      this.drawCapacityButton(w / 2 - 58, titleY + 24, '−', canMinus, 'minus');
+      this.drawCapacityButton(w / 2 + 58, titleY + 24, '+', canPlus, 'plus');
+    }
 
     // 玩家座位
+    this.botRemoveRects = [];
     const slotY = titleY + 52;
     const slotGap = Math.min(96, (cardW - 60) / room.capacity);
     const rowW = slotGap * room.capacity;
@@ -405,6 +471,28 @@ export class RoomScene {
         });
         if (player.openid === room.host) {
           drawSceneText(ctx, sx + 26, slotY - 14, '★', { size: 12, color: GOLD_SOFT });
+        }
+
+        // 机器人座位右上角「×」：房主可移除误加的机器人（命中区 26x26，视觉 16）。
+        if (this.isHost && room.status === 'waiting' && player.openid.startsWith('bot_')) {
+          const bx = sx + 15;
+          const by = slotY - 15;
+          ctx.fillStyle = 'rgba(200,72,64,0.95)';
+          ctx.beginPath();
+          ctx.arc(bx, by, 8, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+          ctx.lineWidth = 1.5;
+          ctx.beginPath();
+          ctx.moveTo(bx - 3, by - 3);
+          ctx.lineTo(bx + 3, by + 3);
+          ctx.moveTo(bx + 3, by - 3);
+          ctx.lineTo(bx - 3, by + 3);
+          ctx.stroke();
+          this.botRemoveRects.push({
+            openid: player.openid,
+            rect: { x: bx - 13, y: by - 13, w: 26, h: 26 },
+          });
         }
       } else {
         // 空位：虚线圆
@@ -459,6 +547,34 @@ export class RoomScene {
     } else {
       drawSceneText(ctx, w / 2, actionY + 20, '人已齐，等待房主开始…', { size: 16, color: INK });
     }
+  }
+
+  /** 人数调整圆钮（−/+）：禁用时置灰且不记命中区。 */
+  private drawCapacityButton(
+    cx: number,
+    cy: number,
+    label: string,
+    enabled: boolean,
+    kind: 'minus' | 'plus',
+  ): void {
+    const ctx = this.ctx;
+    ctx.globalAlpha = enabled ? 1 : 0.4;
+    ctx.fillStyle = FROST_STRONG;
+    ctx.beginPath();
+    ctx.arc(cx, cy, 13, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = FROST_BORDER;
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    drawSceneText(ctx, cx, cy + 1, label, {
+      size: 16,
+      bold: true,
+      color: enabled ? INK : INK_SOFT,
+    });
+    ctx.globalAlpha = 1;
+    const rect = { x: cx - 15, y: cy - 15, w: 30, h: 30 };
+    if (kind === 'minus') this.capMinusRect = enabled ? rect : { x: 0, y: 0, w: 0, h: 0 };
+    else this.capPlusRect = enabled ? rect : { x: 0, y: 0, w: 0, h: 0 };
   }
 
   private drawMessage(): void {
