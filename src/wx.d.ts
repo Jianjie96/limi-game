@@ -136,6 +136,12 @@ declare namespace wx {
     }) => void;
     fail?: (err: any) => void;
   }): void;
+  /** 隐私授权（基础库 2.32.3+）：用户拒绝过一次后不会再自动弹窗，
+   *  需主动调此接口重新拉起授权弹窗。不支持则 fail / 非函数。 */
+  function requirePrivacyAuthorize(options: {
+    success?: (res?: any) => void;
+    fail?: (err?: any) => void;
+  }): void;
 
   // 原生键盘（个人中心昵称输入）
   function showKeyboard(options: {

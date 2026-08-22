@@ -132,8 +132,30 @@ export interface ChooseAvatarResult {
  * 拉起微信原生媒体选择器选头像（相册/拍照），选中后 saveFile 永久化。
  * 用户取消静默（errorMsg 为空）；接口被拒（未配置隐私指引/未授权）
  * 时返回原始 errMsg，由调用方给出可操作的提示。
+ * 隐私授权被拒后不会自动重弹，这里主动调 requirePrivacyAuthorize
+ * 重新拉起授权弹窗并自动重试一次，用户同意后无需再点一次头像。
  */
 export function chooseAvatarFromWeChat(): Promise<ChooseAvatarResult> {
+  return chooseAvatarOnce().then((result) => {
+    const msg = result.errorMsg || '';
+    // 仅「用户拒绝过隐私授权」分支可恢复：重新拉起隐私授权弹窗。
+    if (!/privacy/i.test(msg) || typeof wx.requirePrivacyAuthorize !== 'function') {
+      return result;
+    }
+    return new Promise<ChooseAvatarResult>((resolve) => {
+      try {
+        wx.requirePrivacyAuthorize({
+          success: () => resolve(chooseAvatarOnce()),
+          fail: () => resolve(result), // 低版本不支持或仍被拒：原样透出提示
+        });
+      } catch (e) {
+        resolve(result);
+      }
+    });
+  });
+}
+
+function chooseAvatarOnce(): Promise<ChooseAvatarResult> {
   return new Promise((resolve) => {
     if (typeof wx.chooseMedia !== 'function') {
       resolve({ path: null, errorMsg: '当前环境不支持选择头像' });

@@ -314,7 +314,8 @@ export class ProfileScene {
   /** 把 chooseMedia 的原始 errMsg 翻译成玩家能看懂的提示。 */
   private avatarPickFailTip(errMsg: string): string {
     if (/privacy/i.test(errMsg)) {
-      return '无法访问相册：开发者需在微信公众平台「用户隐私保护指引」中声明相册权限后重试';
+      // 已自动尝试重新拉起隐私授权弹窗仍失败：引导用户同意后再试。
+      return '需要同意隐私授权才能选择头像：请在弹出的授权窗中点击同意，或重启小游戏后重试';
     }
     if (/auth\s*deny|authorize|permission/i.test(errMsg)) {
       return '相册未授权：请在微信「设置 → 隐私 → 个人信息与权限」中允许本小游戏访问相册';
