@@ -87,15 +87,9 @@ export async function initGame(code: string): Promise<GameSyncPayload> {
   return { public: result.public, hand: result.hand };
 }
 
-/** 拉取当前状态（云函数兜底通道）：watch 直读被数据库安全规则拦截时，
- * 靠它轮询拿到公开状态与本人手牌，进局与同步不依赖集合读权限。 */
-export async function syncGame(code: string): Promise<GameSyncPayload> {
-  const result = await callGameRaw('sync', { code });
-  if (!result || !result.ok) {
-    throw new Error((result && result.message) || '同步失败');
-  }
-  return { public: result.public, hand: result.hand };
-}
+// 曾实现 syncGame 云函数兜底轮询（watch 被数据库安全规则拦截时的降级通道），
+// 集合读权限已放开后按用户要求移除；若验收/线上再现卡「正在连接对局」，
+// 按记忆「微信云开发 watch 被集合安全规则静默拦截与云函数兜底轮询」恢复。
 
 /** 出牌提交：携带本回合操作日志，云端回放校验 */
 export async function sendMove(code: string, ops: readonly EngineOp[]): Promise<MoveResponse> {

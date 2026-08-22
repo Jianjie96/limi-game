@@ -7,7 +7,6 @@
 //   init — 开局：洗牌发牌在云端完成，写公开状态 + 各人私有手牌
 //   move — 出牌提交：回放客户端操作日志 → submitTurn 校验 → 写库推送
 //   pass — Pass：摸 1 张并结束回合（回滚本回合桌面操作）
-//   sync — 拉取公开状态+本人手牌（watch 直读被数据库安全规则拦截时的云函数兜底）
 //   end  — 房主主动结束对局（机器人局收尾 / 紧急终止）
 //   log  — 读取本局操作日志（game.log，云端逐回合写入，对局结束清空）
 //   history — 查询本人历史战绩（lami_history，对局结束时云端写入）
@@ -307,19 +306,8 @@ async function doEnd(event, openid) {
   return ok({ ended: true });
 }
 
-/** 拉取当前状态（云函数兜底通道）：客户端 watch 直读被数据库安全规则拦截时，
- * 非房主靠它轮询拿到公开状态与本人手牌，保证进局与对局同步不依赖集合读权限。 */
-async function doSync(event, openid) {
-  const code = normCode(event.code);
-  const room = await getDoc(ROOMS, code);
-  if (!room || !room.game) return fail('对局不存在');
-  const idx = (room.game.playersOpenid || []).indexOf(openid);
-  if (idx < 0) return fail('你不在该房间中');
-  const secret = await getDoc(SECRETS, code);
-  if (!secret) return fail('对局正在初始化，请稍后重试');
-  const engine = RummikubEngine.fromState(secret.fullState);
-  return ok(payloadFor(room, engine, room.game.version, room.game.turnDeadline, openid));
-}
+// 曾实现 doSync action（watch 被数据库安全规则拦截时的客户端兜底轮询通道），
+// 集合读权限已放开后按用户要求移除；若再现卡加载问题，按客户端记忆恢复。
 
 /** Pass：摸 1 张并结束回合（引擎内部回滚本回合桌面操作）。 */
 async function doPass(event, openid) {
@@ -613,8 +601,6 @@ exports.main = async (event) => {
         return await doMove(event, OPENID);
       case 'pass':
         return await doPass(event, OPENID);
-      case 'sync':
-        return await doSync(event, OPENID);
       case 'end':
         return await doEnd(event, OPENID);
       case 'log':
