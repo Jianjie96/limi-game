@@ -1855,7 +1855,8 @@ export class GameScene {
     ctx.restore();
   }
 
-  /** 信息行（顶栏下方）：从左到右各家牌数（含机器人与本人）→「回合 x」→ xx 的回合。 */
+  /** 信息行（顶栏下方）：从左到右「回合 x」徽章 → 各家牌数（含机器人与本人；
+   *  当前回合玩家的头像金色光晕高亮）。 */
   private buildOpponents(state: GameState): void {
     const ctx = this.ctx;
     // 信息行贴着顶栏下沿，整体位于桌面区域（topY）上方，避免被桌面遮盖。
@@ -1866,26 +1867,52 @@ export class GameScene {
     // 记录各家头像中心：机器人出牌飞行动画的起飞点。
     this.opponentBadgePoints.clear();
 
-    // 尾部必留：「回合 x」徽章 + 「xx 的回合」文字，先算出占宽。
-    const player = this.engine.getCurrentPlayer();
+    // 「回合 x」徽章占最左；当前回合改用头像高亮指示（不再有文字提示）。
+    const currentPlayerId = this.engine.getCurrentPlayer().id;
     const turnText = `回合 ${state.turnNumber}`;
     ctx.font = `bold ${FONT_SIZE_LABEL - 2}px ${FONT_FAMILY}`;
     const turnW = ctx.measureText(turnText).width;
-    const nameText = `${player.name} 的回合`;
-    ctx.font = `bold ${FONT_SIZE_LABEL}px ${FONT_FAMILY}`;
-    const nameW = ctx.measureText(nameText).width;
-    const badgesMax = rightLimit - (turnW + 18 + 12 + nameW) - 8;
+    const badgesMax = rightLimit;
+
+    // 「回合数」香槟金渐变胶囊徽章：信息行最左。
+    let x = this.safeLeft + 12;
+    const badgeX = x;
+    const badge = ctx.createLinearGradient(0, y - 10, 0, y + 10);
+    badge.addColorStop(0, '#F0D89C');
+    badge.addColorStop(1, '#D3A85C');
+    ctx.fillStyle = badge;
+    roundRectPath(ctx, badgeX, y - 10, turnW + 18, 20, 10);
+    ctx.fill();
+    this.drawText(badgeX + 9 + turnW / 2, y + 0.5, turnText, {
+      size: FONT_SIZE_LABEL - 2,
+      color: '#FFFFFF',
+      bold: true,
+    });
+    x += turnW + 18 + 12;
 
     // 各家牌数徽章（含本人；本人用自定义头像，其余元素色圆片）。
-    let x = this.safeLeft + 12;
     for (const p of state.players) {
-      // 先量出徽章总宽，整枚放不下时才截断，保回合信息完整。
+      // 先量出徽章总宽，整枚放不下时才截断。
       const text = `${p.rack.length}张`;
       ctx.font = `${FONT_SIZE_LABEL - 3}px ${FONT_FAMILY}`;
       const tw = ctx.measureText(text).width;
       const badgeW = 23 + tw + 14;
       if (x + badgeW > badgesMax) break;
       this.opponentBadgePoints.set(p.id, { x: x + 10, y });
+
+      // 当前回合玩家：头像金色光晕 + 外圈，牌数徽章香槟金渐变实底 + 白字，一眼可辨（与全局金色点缀同风格）。
+      const isCurrent = p.id === currentPlayerId;
+      if (isCurrent) {
+        ctx.fillStyle = 'rgba(233,201,127,0.28)';
+        ctx.beginPath();
+        ctx.arc(x + 10, y, 15, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = GOLD;
+        ctx.lineWidth = 2.5;
+        ctx.beginPath();
+        ctx.arc(x + 10, y, 13, 0, Math.PI * 2);
+        ctx.stroke();
+      }
 
       if (p.id === this.selfIndex) {
         // 本人：个人中心同款头像（微信图片优先，元素色兜底）。
@@ -1906,43 +1933,29 @@ export class GameScene {
         });
       }
 
-      // 剩余牌数磨砂胶囊。
-      ctx.fillStyle = FROST_STRONG;
+      // 剩余牌数胶囊（磨砂；当前回合玩家用香槟金渐变实底 + 白字，与「回合 x」徽章同款）。
+      if (isCurrent) {
+        const capGrad = ctx.createLinearGradient(0, y - 9, 0, y + 9);
+        capGrad.addColorStop(0, '#F0D89C');
+        capGrad.addColorStop(1, '#D3A85C');
+        ctx.fillStyle = capGrad;
+      } else {
+        ctx.fillStyle = FROST_STRONG;
+      }
       roundRectPath(ctx, x + 23, y - 9, tw + 14, 18, 9);
       ctx.fill();
-      ctx.strokeStyle = 'rgba(211,188,142,0.6)';
-      ctx.lineWidth = 1;
+      ctx.strokeStyle = isCurrent ? GOLD : 'rgba(211,188,142,0.6)';
+      ctx.lineWidth = isCurrent ? 1.5 : 1;
       roundRectPath(ctx, x + 23, y - 9, tw + 14, 18, 9);
       ctx.stroke();
       this.drawText(x + 30 + tw / 2, y + 0.5, text, {
         size: FONT_SIZE_LABEL - 3,
-        color: INK,
+        color: isCurrent ? '#FFFFFF' : INK,
+        bold: isCurrent,
       });
 
       x += 23 + tw + 14 + 16;
     }
-
-    // 「回合数」香槟金渐变胶囊徽章。
-    const badgeX = x + 2;
-    const badge = ctx.createLinearGradient(0, y - 10, 0, y + 10);
-    badge.addColorStop(0, '#F0D89C');
-    badge.addColorStop(1, '#D3A85C');
-    ctx.fillStyle = badge;
-    roundRectPath(ctx, badgeX, y - 10, turnW + 18, 20, 10);
-    ctx.fill();
-    this.drawText(badgeX + 9 + turnW / 2, y + 0.5, turnText, {
-      size: FONT_SIZE_LABEL - 2,
-      color: '#FFFFFF',
-      bold: true,
-    });
-
-    // 当前回合玩家。
-    this.drawText(badgeX + turnW + 30, y + 0.5, nameText, {
-      size: FONT_SIZE_LABEL,
-      color: INK,
-      bold: true,
-      align: 'left',
-    });
   }
 
   /** 计算桌面布局：内容超出可用高度时适度缩放（不低于 0.8），
