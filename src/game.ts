@@ -123,10 +123,21 @@ function goHome(): void {
     });
 }
 
-/** 首页各入口接线：建房 / 个人中心 / 联机测试房 / 断线重连。 */
+/** 首页各入口接线：建房 / 房号入房 / 个人中心 / 联机测试房 / 断线重连。 */
 function wireHome(home: HomeScene): void {
   home.onCreateRoom = (capacity: number) => {
     createRoom(capacity, getNickname())
+      .then((result) => {
+        home.closePicker();
+        enterRoom(result);
+      })
+      .catch((e: Error) => {
+        home.showError(e.message);
+      });
+  };
+  // 房号入房：体验版同伴无法通过分享卡片进入时，口口相传房号即可真人对战。
+  home.onJoinByCode = (code: string) => {
+    joinRoom(code, getNickname())
       .then((result) => {
         home.closePicker();
         enterRoom(result);

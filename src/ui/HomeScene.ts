@@ -2,7 +2,7 @@
 // HomeScene.ts — 首页场景
 // ----------------------------------------------------------------------------
 // 进入游戏的第一屏：「创建房间」与「加入房间」两个入口。
-// 创建房间弹出人数选择（2/3/4 人）；加入房间暂未开放，提示开发中。
+// 创建房间弹出人数选择（2/3/4 人）；加入房间弹窗输入 5 位房号进房。
 // 与 GameScene 共享同一块画布，通过 dispose() 交还触控与渲染循环。
 // ============================================================================
 
@@ -21,6 +21,8 @@ import { getNickname, drawAvatar } from './profile';
 export class HomeScene {
   /** 选择人数并确认后回调（创建房间请求由外部发起） */
   onCreateRoom: ((capacity: number) => void) | null = null;
+  /** 输入房号后回调（加入房间请求由外部发起） */
+  onJoinByCode: ((code: string) => void) | null = null;
   /** 开发后门：联机测试房（机器人补位），单人即可联调实时对战。 */
   onDevRoom: (() => void) | null = null;
   /** 断线重连：回到上次未结束的对局 */
@@ -42,8 +44,8 @@ export class HomeScene {
   private pickerVisible = false;
   private pickerCapacity = 4;
 
-  /** 正在处理的入口（建房/回对局/测试房）：只有对应入口显示自己的进度文案。 */
-  private busySource: 'create' | 'resume' | 'dev' | null = null;
+  /** 正在处理的入口（建房/入房/回对局/测试房）：只有对应入口显示自己的进度文案。 */
+  private busySource: 'create' | 'join' | 'resume' | 'dev' | null = null;
 
   // 轻提示
   private message = '';
@@ -97,6 +99,27 @@ export class HomeScene {
   showError(msg: string): void {
     this.busySource = null;
     this.showInfo(msg);
+  }
+
+  /** 「加入房间」：弹窗输入 5 位房号（不区分大小写），交给外部发起加入请求。 */
+  promptJoinCode(): void {
+    wx.showModal({
+      title: '加入房间',
+      editable: true,
+      placeholderText: '请输入 5 位房号',
+      confirmText: '加入',
+      success: (res) => {
+        if (!res.confirm) return;
+        const code = (res.content || '').trim().toUpperCase();
+        if (!code) {
+          this.showInfo('房号不能为空');
+          return;
+        }
+        this.busySource = 'join';
+        this.dirty = true;
+        this.onJoinByCode?.(code);
+      },
+    });
   }
 
   showInfo(msg: string, duration = 2600): void {
@@ -176,7 +199,7 @@ export class HomeScene {
       return;
     }
     if (hitRect(px, py, this.joinBtnRect)) {
-      this.showInfo('开发中，敬请期待～');
+      this.promptJoinCode();
       return;
     }
     if (this.resumeCode && hitRect(px, py, this.resumeBtnRect)) {
@@ -284,7 +307,7 @@ export class HomeScene {
       'primary',
       18
     );
-    drawCapsuleButton(ctx, this.joinBtnRect, '加入房间', 'secondary', 18);
+    drawCapsuleButton(ctx, this.joinBtnRect, this.busySource === 'join' ? '进入中…' : '加入房间', 'secondary', 18);
 
     // 底部开发入口（仅开发版）：联机测试房（机器人补位）
     if (this.onDevRoom) {

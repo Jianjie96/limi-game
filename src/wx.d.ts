@@ -152,13 +152,15 @@ declare namespace wx {
   function onKeyboardComplete(callback: (res: { value: string }) => void): void;
   function offKeyboardComplete(callback: (res: { value: string }) => void): void;
 
-  // 模态弹窗（结束对局等二次确认）
+  // 模态弹窗（结束对局等二次确认；editable 开启输入框，如输入房号）
   function showModal(options: {
     title?: string;
     content?: string;
+    editable?: boolean;
+    placeholderText?: string;
     confirmText?: string;
     cancelText?: string;
-    success?: (res: { confirm: boolean; cancel: boolean }) => void;
+    success?: (res: { confirm: boolean; cancel: boolean; content?: string }) => void;
     fail?: (err: any) => void;
   }): void;
 
