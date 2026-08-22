@@ -6,6 +6,8 @@
 //   join    — 通过房号加入房间（分享链接进入时调用）
 //   get     — 查询房间最新状态（客户端轮询用）
 //   start   — 房主在人齐后开始游戏
+//   addBot  — 房主逐个添加机器人补位（真人+机器人混战）
+//   disband — 房主解散等待中的房间（删除文档）
 //   devFill — 开发调试：房主用测试机器人补满空位，单人即可开局；
 //             机器人回合由 lami-game 定时触发器超时自动摸牌托管
 //   myRoom  — 查询本人进行中的房间（断线重连的云端兼容，本地缓存被清也可恢复）
@@ -142,6 +144,35 @@ exports.main = async (event) => {
         });
         room.status = 'started';
         return ok({ room, self: OPENID });
+      }
+
+      // 房主逐个添加机器人（仅等待中且未满员）：真人+机器人混战，凑满即可开局。
+      // openid 以 bot_ 开头，lami-game 的 advanceBots 据此识别并代打。
+      case 'addBot': {
+        const code = normalizeCode(event.code);
+        const room = await getRoomDoc(code);
+        if (!room) return fail('房间不存在');
+        if (room.host !== OPENID) return fail('只有房主可以添加机器人');
+        if (room.status !== 'waiting') return fail('房间不在等待状态');
+        if (room.players.length >= room.capacity) return fail('房间已满员');
+        const i = room.players.length;
+        const bot = { openid: `bot_${code}_${i}`, name: `机器人${i}` };
+        await COL.doc(code).update({
+          data: { players: db.command.push([bot]) },
+        });
+        room.players.push(bot);
+        return ok({ room, self: OPENID });
+      }
+
+      // 房主解散房间（仅限等待中；开局后请用 lami-game 的 end 收尾）。
+      case 'disband': {
+        const code = normalizeCode(event.code);
+        const room = await getRoomDoc(code);
+        if (!room) return ok({ room: null, self: OPENID }); // 已被解散，幂等
+        if (room.host !== OPENID) return fail('只有房主可以解散房间');
+        if (room.status !== 'waiting') return fail('对局已开始，无法解散');
+        await COL.doc(code).remove();
+        return ok({ room: null, self: OPENID });
       }
 
       // 开发调试：房主用测试机器人补满空位（仅等待中的房间），单人即可开局。

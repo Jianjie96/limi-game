@@ -1,8 +1,9 @@
 // ============================================================================
 // RoomScene.ts — 房间等待场景
 // ----------------------------------------------------------------------------
-// 展示房号与玩家座位，房主通过微信分享邀请好友；客户端每 2 秒轮询房间状态，
-// 人齐后房主点击「开始游戏」，其余玩家轮询到 started 状态后自动进入对局。
+// 展示房号与玩家座位，房主可分享邀请好友或逐个添加机器人补位（真人+机器人混战）；
+// 客户端每 2 秒轮询房间状态，人齐后房主点击「开始游戏」，其余玩家轮询到 started 后自动进局。
+// 顶栏左上「返回」回首页（房间保留，可从首页重新进入）；房主右上「解散」关闭等待中的房间。
 // ============================================================================
 
 import { ScreenInfo, getScreenInfo, applyCanvasSize } from './screen';
@@ -25,14 +26,14 @@ import {
   INK_SOFT,
   AVATAR_COLORS,
 } from './constants';
-import { RoomInfo, RoomResult, getRoom, startRoom } from '../cloud/room';
+import { RoomInfo, RoomResult, getRoom, startRoom, addRoomBot, disbandRoom, clearLastRoom } from '../cloud/room';
 
 const POLL_INTERVAL_MS = 2000;
 
 export class RoomScene {
   /** 房间开始游戏后回调（携带最新房间数据与本人 openid） */
   onStart: ((room: RoomInfo, selfOpenid: string) => void) | null = null;
-  /** 退出房间回调 */
+  /** 返回首页回调（房间保留在云端，可从首页重新进入；解散成功后也走这里） */
   onExit: (() => void) | null = null;
 
   readonly code: string;
@@ -60,7 +61,9 @@ export class RoomScene {
 
   private shareBtnRect: SceneButtonRect = { x: 0, y: 0, w: 0, h: 0 };
   private startBtnRect: SceneButtonRect = { x: 0, y: 0, w: 0, h: 0 };
+  private addBotBtnRect: SceneButtonRect = { x: 0, y: 0, w: 0, h: 0 };
   private backBtnRect: SceneButtonRect = { x: 0, y: 0, w: 0, h: 0 };
+  private disbandBtnRect: SceneButtonRect = { x: 0, y: 0, w: 0, h: 0 };
 
   private touchStartHandler = (e: { touches: Array<{ clientX: number; clientY: number }> }) => {
     const t = e.touches[0];
@@ -161,6 +164,17 @@ export class RoomScene {
     }
 
     const full = this.room.players.length >= this.room.capacity;
+
+    if (this.isHost && hitRect(px, py, this.disbandBtnRect)) {
+      this.confirmDisband();
+      return;
+    }
+
+    if (this.isHost && !full && hitRect(px, py, this.addBotBtnRect)) {
+      this.addBot();
+      return;
+    }
+
     if (this.isHost && full && hitRect(px, py, this.startBtnRect)) {
       this.busy = true;
       this.dirty = true;
@@ -174,6 +188,45 @@ export class RoomScene {
           this.showInfo(e.message);
         });
     }
+  }
+
+  /** 房主解散房间（二次确认）：云端删除文档后清本地房间记忆，回首页。 */
+  private confirmDisband(): void {
+    wx.showModal({
+      title: '解散房间',
+      content: '解散后房间将关闭，所有玩家都会移出。确定解散吗？',
+      confirmText: '解散',
+      success: (res) => {
+        if (!res.confirm) return;
+        this.busy = true;
+        this.dirty = true;
+        disbandRoom(this.code)
+          .then(() => {
+            clearLastRoom();
+            this.onExit?.();
+          })
+          .catch((e: Error) => {
+            this.busy = false;
+            this.showInfo(e.message);
+          });
+      },
+    });
+  }
+
+  /** 房主添加一个机器人补位；凑满人数后即可真人+机器人开局。 */
+  private addBot(): void {
+    this.busy = true;
+    this.dirty = true;
+    addRoomBot(this.code)
+      .then((result) => {
+        this.room = result.room;
+        this.busy = false;
+        this.dirty = true;
+      })
+      .catch((e: Error) => {
+        this.busy = false;
+        this.showInfo(e.message);
+      });
   }
 
   /** 微信分享邀请好友（好友点开分享卡片会携带 roomId 直接进入房间） */
@@ -223,13 +276,24 @@ export class RoomScene {
 
     drawBackdrop(ctx, w, h);
     this.drawBackButton();
+    this.drawDisbandButton();
     this.drawRoomCard();
     if (this.message && Date.now() < this.messageUntil) this.drawMessage();
   }
 
   private drawBackButton(): void {
     this.backBtnRect = { x: 12, y: this.safeTop + 8, w: 64, h: 30 };
-    drawCapsuleButton(this.ctx, this.backBtnRect, '退出', 'secondary', 13);
+    drawCapsuleButton(this.ctx, this.backBtnRect, '返回', 'secondary', 13);
+  }
+
+  /** 房主专属：解散等待中的房间（danger 醒目样式，区别于普通返回）。 */
+  private drawDisbandButton(): void {
+    if (!this.isHost || this.room.status !== 'waiting') {
+      this.disbandBtnRect = { x: 0, y: 0, w: 0, h: 0 };
+      return;
+    }
+    this.disbandBtnRect = { x: this.screenW - 92, y: this.safeTop + 8, w: 80, h: 30 };
+    drawCapsuleButton(this.ctx, this.disbandBtnRect, this.busy ? '解散中…' : '解散房间', 'danger', 13);
   }
 
   private drawRoomCard(): void {
@@ -238,9 +302,9 @@ export class RoomScene {
     const room = this.room;
     const full = room.players.length >= room.capacity;
 
-    // 墨玻璃主卡片
+    // 墨玻璃主卡片（高度容纳标题+座位+操作区+底部提示，矮屏时按屏幕夹住）
     const cardW = Math.min(460, w * 0.86);
-    const cardH = Math.min(230, h * 0.8);
+    const cardH = Math.min(280, h * 0.86);
     const cardX = (w - cardW) / 2;
     const cardY = (h - cardH) / 2;
 
@@ -313,10 +377,11 @@ export class RoomScene {
       }
     }
 
-    // 操作区
-    const actionY = cardY + cardH - 58;
+    // 操作区（按钮与底部提示分开两行，避免重叠）
+    const actionY = cardY + cardH - 70;
     const shareW = Math.min(180, cardW * 0.4);
     this.shareBtnRect = { x: w / 2 - shareW / 2, y: actionY, w: shareW, h: 40 };
+    this.addBotBtnRect = { x: 0, y: 0, w: 0, h: 0 };
 
     if (room.status !== 'waiting') {
       const text = room.status === 'finished' ? '该房间对局已结束' : '正在进入游戏…';
@@ -325,11 +390,24 @@ export class RoomScene {
     }
 
     if (!full) {
-      drawCapsuleButton(ctx, this.shareBtnRect, this.isHost ? '分享邀请好友' : '邀请好友', 'primary', 16);
-      drawSceneText(ctx, w / 2, cardY + cardH - 12, '人齐后自动提示开始', {
-        size: 11,
-        color: INK_SOFT,
-      });
+      if (this.isHost) {
+        // 房主：邀请好友 + 添加机器人双按钮，凑满即可开局
+        const btnW = Math.min(150, cardW * 0.34);
+        this.shareBtnRect = { x: w / 2 - btnW - 8, y: actionY, w: btnW, h: 40 };
+        this.addBotBtnRect = { x: w / 2 + 8, y: actionY, w: btnW, h: 40 };
+        drawCapsuleButton(ctx, this.shareBtnRect, '邀请好友', 'secondary', 15);
+        drawCapsuleButton(ctx, this.addBotBtnRect, this.busy ? '添加中…' : '+ 机器人', 'primary', 15);
+        drawSceneText(ctx, w / 2, cardY + cardH - 12, '凑满人数即可开始（机器人可补位）', {
+          size: 11,
+          color: INK_SOFT,
+        });
+      } else {
+        drawCapsuleButton(ctx, this.shareBtnRect, '邀请好友', 'primary', 16);
+        drawSceneText(ctx, w / 2, cardY + cardH - 12, '人齐后自动提示开始', {
+          size: 11,
+          color: INK_SOFT,
+        });
+      }
     } else if (this.isHost) {
       // 人齐：分享 + 开始双按钮
       const btnW = Math.min(150, cardW * 0.34);

@@ -61,8 +61,10 @@ export class HomeScene {
   private resumeBtnRect: SceneButtonRect = { x: 0, y: 0, w: 0, h: 0 };
   private profileRect: SceneButtonRect = { x: 0, y: 0, w: 0, h: 0 };
 
-  /** 断线重连入口房号（外部校验房间仍在对局后调 showResume 激活） */
+  /** 断线重连入口房号（外部校验房间仍在对局/等待后调 showResume 激活） */
   private resumeCode = '';
+  /** 重连入口文案前缀：对局中「回到对局」，等待中「回到房间」 */
+  private resumeLabel = '回到对局';
 
   private touchStartHandler = (e: { touches: Array<{ clientX: number; clientY: number }> }) => {
     const t = e.touches[0];
@@ -135,9 +137,10 @@ export class HomeScene {
     this.dirty = true;
   }
 
-  /** 展示「回到对局」入口（仅当上次房间仍在对局中且本人在场时由外部激活） */
-  showResume(code: string): void {
+  /** 展示重连入口（房间仍在对局中/等待中且本人在场时由外部激活） */
+  showResume(code: string, label = '回到对局'): void {
     this.resumeCode = code;
+    this.resumeLabel = label;
     this.dirty = true;
   }
 
@@ -287,7 +290,7 @@ export class HomeScene {
 
     // 断线重连入口：置于主按钮上方最醒目的位置；宽度按文案自适应（含房号，比主按钮长）。
     if (this.resumeCode) {
-      const label = this.busySource === 'resume' ? '进入中…' : `回到对局 · 房间 ${this.resumeCode}`;
+      const label = this.busySource === 'resume' ? '进入中…' : `${this.resumeLabel} · 房间 ${this.resumeCode}`;
       ctx.font = `bold 16px ${FONT_FAMILY}`;
       const resumeW = Math.min(w * 0.86, Math.max(btnW, ctx.measureText(label).width + 56));
       this.resumeBtnRect = { x: cx - resumeW / 2, y: createY - btnH - 22, w: resumeW, h: btnH };

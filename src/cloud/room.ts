@@ -135,6 +135,16 @@ export function startRoom(code: string): Promise<RoomResult> {
   return callRoom<RoomResponse>('start', { code });
 }
 
+/** 房主逐个添加机器人补位（等待中且未满员），凑满即可真人+机器人开局。 */
+export function addRoomBot(code: string): Promise<RoomResult> {
+  return callRoom<RoomResponse>('addBot', { code });
+}
+
+/** 房主解散等待中的房间（云端删除文档；幂等，已解散也返回成功）。 */
+export function disbandRoom(code: string): Promise<void> {
+  return callRoom<{ ok: boolean }>('disband', { code }).then(() => undefined);
+}
+
 /** 开发调试：房主用测试机器人补满空位，单人即可开局联调实时对战。 */
 export function fillDevBots(code: string): Promise<RoomResult> {
   return callRoom<RoomResponse>('devFill', { code });

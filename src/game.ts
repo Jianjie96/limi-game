@@ -166,7 +166,7 @@ function wireHome(home: HomeScene): void {
     };
   }
   // 断线重连：优先本地房间记忆；本地无记录（如清过缓存）则查云端进行中的房间，
-  // 保证清缓存不会导致进不去对局。房间仍在对局中且本人在场时展示「回到对局」入口。
+  // 保证清缓存不会导致进不去对局。房间在对局中或等待中且本人在场时展示回进入口。
   const lastCode = getLastRoom();
   const probe: Promise<{ room: RoomInfo | null; self: string }> = lastCode
     ? getRoom(lastCode).catch(() => ({ room: null, self: '' }))
@@ -177,7 +177,7 @@ function wireHome(home: HomeScene): void {
       if (!room) return;
       const isMember = room.players.some((p) => p.openid === result.self);
       const inGame = room.status === 'started' || room.status === 'playing';
-      if (isMember && inGame) {
+      if (isMember && (inGame || room.status === 'waiting')) {
         home.onResume = () => {
           joinRoom(room.code, getNickname())
             .then((joinResult) => {
@@ -186,10 +186,10 @@ function wireHome(home: HomeScene): void {
             })
             .catch((e: Error) => {
               home.hideResume();
-              home.showError(`回到对局失败：${e.message}`);
+              home.showError(`进入房间失败：${e.message}`);
             });
         };
-        home.showResume(room.code);
+        home.showResume(room.code, inGame ? '回到对局' : '回到房间');
       } else if (room.status === 'finished') {
         // 对局已收尾：清除记忆，下次不再提示。
         clearLastRoom();
