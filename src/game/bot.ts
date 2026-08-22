@@ -105,7 +105,7 @@ function planFreePlay(engine: RummikubEngine): boolean {
 }
 
 /**
- * 尝试用牌架内真实牌换回桌面某牌组里的 Joker（拉密核心操作）。
+ * 尝试用牌架内真实牌换回桌面某牌组里的 Joker（拉密牌核心操作）。
  * 规则要求换下的 Joker 当回合必须重新上桌，因此先预演：
  * Joker 回手后能组成含 Joker 的新牌组，或能挂靠到桌面某牌组，才执行替换。
  * 每次最多替换一枚，替换后由外层循环重新规划（Joker 可能立刻促成新牌组）。

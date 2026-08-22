@@ -320,8 +320,8 @@ export class RoomScene {
     const remain = this.room.capacity - this.room.players.length;
     wx.shareAppMessage({
       title: remain > 0
-        ? `来一起玩拉密！房间 ${this.code} 还差 ${remain} 人`
-        : `来围观拉密对局！房间 ${this.code}`,
+        ? `来一起玩拉密牌！房间 ${this.code} 还差 ${remain} 人`
+        : `来围观拉密牌对局！房间 ${this.code}`,
       query: `roomId=${this.code}`,
       fail: () => {
         this.showInfo('分享失败，请重试');

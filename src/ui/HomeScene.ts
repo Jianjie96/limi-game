@@ -231,7 +231,7 @@ export class HomeScene {
 
     // 标题区
     const titleY = this.safeTop + Math.min(72, h * 0.2);
-    drawSceneText(ctx, w / 2, titleY, '拉 密', {
+    drawSceneText(ctx, w / 2, titleY, '拉 密 牌', {
       size: 46,
       bold: true,
       color: INK,

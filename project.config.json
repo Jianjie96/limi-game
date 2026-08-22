@@ -1,5 +1,5 @@
 {
-  "description": "拉密 Rummikub 微信小游戏",
+  "description": "拉密牌 Rummikub 微信小游戏",
   "packOptions": {
     "ignore": [
       { "type": "folder", "value": "assets" },

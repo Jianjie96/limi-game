@@ -1,7 +1,7 @@
 {
   "name": "lami-room",
   "version": "1.0.0",
-  "description": "拉密房间云函数（创建/加入/查询/开始）",
+  "description": "拉密牌房间云函数（创建/加入/查询/开始）",
   "main": "index.js",
   "dependencies": {
     "wx-server-sdk": "~2.6.3"

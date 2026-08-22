@@ -1653,7 +1653,7 @@ export class GameScene {
     // 清新等待页：白字香槟描边标题 + 三张装饰牌。
     const cx = this.screenW / 2;
     const cy = this.screenH / 2;
-    this.drawText(cx, cy - 60, '拉密 Rummikub', {
+    this.drawText(cx, cy - 60, '拉密牌 Rummikub', {
       size: 30,
       color: '#FFFFFF',
       bold: true,
