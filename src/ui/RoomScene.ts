@@ -3,7 +3,8 @@
 // ----------------------------------------------------------------------------
 // 展示房号与玩家座位，房主可分享邀请好友或逐个添加机器人补位（真人+机器人混战）；
 // 客户端每 2 秒轮询房间状态，人齐后房主点击「开始游戏」，其余玩家轮询到 started 后自动进局。
-// 顶栏左上「返回」回首页（房间保留，可从首页重新进入）；房主右上「解散」关闭等待中的房间。
+// 顶栏左上「返回」回首页（房间保留，可从首页重新进入）；房主右上「解散房间」关闭房间，
+// 非房主右上「退出房间」把自己移出座位。
 // ============================================================================
 
 import { ScreenInfo, getScreenInfo, applyCanvasSize } from './screen';
@@ -26,7 +27,7 @@ import {
   INK_SOFT,
   AVATAR_COLORS,
 } from './constants';
-import { RoomInfo, RoomResult, getRoom, startRoom, addRoomBot, disbandRoom, clearLastRoom } from '../cloud/room';
+import { RoomInfo, RoomResult, getRoom, startRoom, addRoomBot, leaveRoom, disbandRoom, clearLastRoom } from '../cloud/room';
 
 const POLL_INTERVAL_MS = 2000;
 
@@ -64,6 +65,7 @@ export class RoomScene {
   private addBotBtnRect: SceneButtonRect = { x: 0, y: 0, w: 0, h: 0 };
   private backBtnRect: SceneButtonRect = { x: 0, y: 0, w: 0, h: 0 };
   private disbandBtnRect: SceneButtonRect = { x: 0, y: 0, w: 0, h: 0 };
+  private leaveBtnRect: SceneButtonRect = { x: 0, y: 0, w: 0, h: 0 };
 
   private touchStartHandler = (e: { touches: Array<{ clientX: number; clientY: number }> }) => {
     const t = e.touches[0];
@@ -170,6 +172,11 @@ export class RoomScene {
       return;
     }
 
+    if (!this.isHost && hitRect(px, py, this.leaveBtnRect)) {
+      this.confirmLeave();
+      return;
+    }
+
     if (this.isHost && !full && hitRect(px, py, this.addBotBtnRect)) {
       this.addBot();
       return;
@@ -201,6 +208,29 @@ export class RoomScene {
         this.busy = true;
         this.dirty = true;
         disbandRoom(this.code)
+          .then(() => {
+            clearLastRoom();
+            this.onExit?.();
+          })
+          .catch((e: Error) => {
+            this.busy = false;
+            this.showInfo(e.message);
+          });
+      },
+    });
+  }
+
+  /** 非房主退出房间（二次确认）：把自己移出座位后清本地房间记忆，回首页。 */
+  private confirmLeave(): void {
+    wx.showModal({
+      title: '退出房间',
+      content: '退出后你会离开这个房间，想再玩需要重新加入。确定退出吗？',
+      confirmText: '退出',
+      success: (res) => {
+        if (!res.confirm) return;
+        this.busy = true;
+        this.dirty = true;
+        leaveRoom(this.code)
           .then(() => {
             clearLastRoom();
             this.onExit?.();
@@ -277,6 +307,7 @@ export class RoomScene {
     drawBackdrop(ctx, w, h);
     this.drawBackButton();
     this.drawDisbandButton();
+    this.drawLeaveButton();
     this.drawRoomCard();
     if (this.message && Date.now() < this.messageUntil) this.drawMessage();
   }
@@ -294,6 +325,16 @@ export class RoomScene {
     }
     this.disbandBtnRect = { x: this.screenW - 92, y: this.safeTop + 8, w: 80, h: 30 };
     drawCapsuleButton(this.ctx, this.disbandBtnRect, this.busy ? '解散中…' : '解散房间', 'danger', 13);
+  }
+
+  /** 非房主专属：退出等待中的房间（把自己移出座位，与「返回」区分）。 */
+  private drawLeaveButton(): void {
+    if (this.isHost || this.room.status !== 'waiting') {
+      this.leaveBtnRect = { x: 0, y: 0, w: 0, h: 0 };
+      return;
+    }
+    this.leaveBtnRect = { x: this.screenW - 92, y: this.safeTop + 8, w: 80, h: 30 };
+    drawCapsuleButton(this.ctx, this.leaveBtnRect, this.busy ? '退出中…' : '退出房间', 'secondary', 13);
   }
 
   private drawRoomCard(): void {
@@ -403,18 +444,17 @@ export class RoomScene {
         });
       } else {
         drawCapsuleButton(ctx, this.shareBtnRect, '邀请好友', 'primary', 16);
-        drawSceneText(ctx, w / 2, cardY + cardH - 12, '人齐后自动提示开始', {
+        drawSceneText(ctx, w / 2, cardY + cardH - 12, '等人齐，房主开始后自动进入', {
           size: 11,
           color: INK_SOFT,
         });
       }
     } else if (this.isHost) {
-      // 人齐：分享 + 开始双按钮
-      const btnW = Math.min(150, cardW * 0.34);
-      this.shareBtnRect = { x: w / 2 - btnW - 8, y: actionY, w: btnW, h: 40 };
-      this.startBtnRect = { x: w / 2 + 8, y: actionY, w: btnW, h: 40 };
-      drawCapsuleButton(ctx, this.shareBtnRect, '继续邀请', 'secondary', 15);
-      drawCapsuleButton(ctx, this.startBtnRect, this.busy ? '开始中…' : '开始游戏', 'primary', 15);
+      // 人齐：只留开始按钮（满员后分享邀请已无意义，join 会被拒）
+      const btnW = Math.min(180, cardW * 0.4);
+      this.shareBtnRect = { x: 0, y: 0, w: 0, h: 0 };
+      this.startBtnRect = { x: w / 2 - btnW / 2, y: actionY, w: btnW, h: 40 };
+      drawCapsuleButton(ctx, this.startBtnRect, this.busy ? '开始中…' : '开始游戏', 'primary', 16);
     } else {
       drawSceneText(ctx, w / 2, actionY + 20, '人已齐，等待房主开始…', { size: 16, color: INK });
     }

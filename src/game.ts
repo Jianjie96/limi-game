@@ -232,8 +232,8 @@ function startOnlineGame(room: RoomInfo, selfOpenid: string): void {
   scene.onExitGameOver = () => {
     goHome();
   };
-  // 含机器人的对局：给房主挂「结束对局」出口，机器人局可随时收尾。
-  if (room.host === selfOpenid && room.players.some((p) => p.openid.startsWith('bot_'))) {
+  // 房主专属出口：对局中随时「结束对局」（云端 end 仅限房主），真人局/机器人局都能收尾。
+  if (room.host === selfOpenid) {
     scene.onRequestEndGame = () => {
       wx.showModal({
         title: '结束对局',

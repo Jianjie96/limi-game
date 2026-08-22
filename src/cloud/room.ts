@@ -140,6 +140,11 @@ export function addRoomBot(code: string): Promise<RoomResult> {
   return callRoom<RoomResponse>('addBot', { code });
 }
 
+/** 非房主退出等待中的房间（移出座位；幂等，已不在房内也返回成功）。 */
+export function leaveRoom(code: string): Promise<void> {
+  return callRoom<{ ok: boolean }>('leave', { code }).then(() => undefined);
+}
+
 /** 房主解散等待中的房间（云端删除文档；幂等，已解散也返回成功）。 */
 export function disbandRoom(code: string): Promise<void> {
   return callRoom<{ ok: boolean }>('disband', { code }).then(() => undefined);

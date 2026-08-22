@@ -7,6 +7,7 @@
 //   get     — 查询房间最新状态（客户端轮询用）
 //   start   — 房主在人齐后开始游戏
 //   addBot  — 房主逐个添加机器人补位（真人+机器人混战）
+//   leave   — 非房主在等待中退出房间（移出座位，避免幽灵座占位）
 //   disband — 房主解散等待中的房间（删除文档）
 //   myRoom  — 查询本人进行中的房间（断线重连的云端兼容，本地缓存被清也可恢复）
 // 数据集合：lami_rooms（以 5 位房号作为文档 _id）
@@ -159,6 +160,21 @@ exports.main = async (event) => {
           data: { players: db.command.push([bot]) },
         });
         room.players.push(bot);
+        return ok({ room, self: OPENID });
+      }
+
+      // 非房主退出等待中的房间：把自己移出 players（幂等，不在房内直接返回）。
+      // 房主不可退出（应走 disband）；开局后不可退出（对局中请用 end 收尾）。
+      case 'leave': {
+        const code = normalizeCode(event.code);
+        const room = await getRoomDoc(code);
+        if (!room) return ok({ room: null, self: OPENID });
+        if (room.host === OPENID) return fail('房主不能退出，请解散房间');
+        if (room.status !== 'waiting') return fail('对局已开始，无法退出');
+        const players = room.players.filter((p) => p.openid !== OPENID);
+        if (players.length === room.players.length) return ok({ room, self: OPENID });
+        await COL.doc(code).update({ data: { players } });
+        room.players = players;
         return ok({ room, self: OPENID });
       }
 

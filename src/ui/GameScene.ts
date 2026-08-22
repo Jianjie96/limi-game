@@ -207,7 +207,7 @@ export class GameScene {
   private touchActive = false;
 
   private buttons: ButtonState[] = [];
-  /** 结束对局回调（仅机器人房房主挂接）：挂接后顶栏右侧显示「结束对局」按钮。 */
+  /** 结束对局回调（仅房主挂接）：挂接后顶栏右侧显示「结束对局」按钮。 */
   onRequestEndGame: (() => void) | null = null;
   private endGameRect: { x: number; y: number; w: number; h: number } | null = null;
   /** 结算面板「返回」回调（对局结束后退出回首页）。 */
@@ -1778,7 +1778,7 @@ export class GameScene {
     const cy = y + PLAYER_INFO_HEIGHT / 2;
 
     // 按钮一律靠左：部分机型右上角会被微信胶囊按钮遮挡。
-    // 顺序：设置齿轮 → 回合记录 → 结束对局（仅机器人房房主）→ 回合徽章与文字。
+    // 顺序：设置齿轮 → 回合记录 → 结束对局（仅房主）→ 回合徽章与文字。
     let lx = this.safeLeft + 10;
 
     // 设置齿轮按钮。
@@ -1803,7 +1803,7 @@ export class GameScene {
     drawCapsuleButton(ctx, this.historyButtonRect, hrLabel, 'secondary', 12);
     lx += hrW + 8;
 
-    // 机器人房出口：「结束对局」（仅机器人房房主挂接回调时显示）。
+    // 房主出口：「结束对局」（仅房主挂接回调时显示）。
     if (this.onRequestEndGame) {
       const ebw = 76;
       const ebh = 26;
