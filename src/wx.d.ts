@@ -143,6 +143,45 @@ declare namespace wx {
     fail?: (err?: any) => void;
   }): void;
 
+  // 用户信息按钮（个人中心：授权后获取微信头像，小游戏无 WXML，
+  // 是小程序 <button open-type="chooseAvatar"> 的小游戏侧等价物）
+  interface UserInfoButton {
+    onTap(callback: (res: {
+      errMsg: string;
+      userInfo?: { nickName?: string; avatarUrl?: string };
+    }) => void): void;
+    destroy(): void;
+    hide(): void;
+    show(): void;
+  }
+  function createUserInfoButton(options: {
+    type: 'text' | 'image';
+    text?: string;
+    image?: string;
+    style: {
+      left: number;
+      top: number;
+      width: number;
+      height: number;
+      lineHeight?: number;
+      fontSize?: number;
+      backgroundColor?: string;
+      color?: string;
+      borderRadius?: number;
+      textAlign?: string;
+    };
+    withCredentials?: boolean;
+    lang?: string;
+  }): UserInfoButton;
+
+  // 原生操作菜单（个人中心：头像来源三选一）
+  function showActionSheet(options: {
+    itemList: string[];
+    itemColor?: string;
+    success?: (res: { tapIndex: number }) => void;
+    fail?: (err: any) => void;
+  }): void;
+
   // 原生键盘（个人中心昵称输入）
   function showKeyboard(options: {
     defaultValue?: string;

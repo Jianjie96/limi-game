@@ -1,8 +1,8 @@
 // ============================================================================
 // ProfileScene.ts — 个人中心场景
 // ----------------------------------------------------------------------------
-// 从首页「个人中心」进入：头像（微信相册/拍照选择，元素色兜底）+
-// 昵称（原生键盘修改）+ 历史战绩（云端 lami_history 查库：可滚动摘要列表，
+// 从首页「个人中心」进入：头像（微信头像/拍照/相册三选一；未设置时
+// 元素色圆片 + 昵称末字兜底）+ 昵称（原生键盘修改）+ 历史战绩（云端 lami_history 查库：可滚动摘要列表，
 // 点击单局弹详情弹窗：开始时间/时长/MVP/参与者/得分/完整回合记录），以及 背景音 / 音效 / 震动反馈 / 横屏模式 四个开关。
 // 与 HomeScene 共享画布与 backdrop 视觉语言，通过 dispose() 交还。
 // ============================================================================
@@ -16,7 +16,7 @@ import {
   hitRect,
   SceneButtonRect,
 } from './backdrop';
-import { FROST_STRONG, FROST_BORDER, GOLD, INK, INK_SOFT, AVATAR_COLORS, FONT_FAMILY } from './constants';
+import { FROST_STRONG, FROST_BORDER, GOLD, INK, INK_SOFT, FONT_FAMILY } from './constants';
 import { audio } from './audio';
 import { requestOrientation, orientationSupported } from './orientation';
 import { clearLastRoom } from '../cloud/room';
@@ -29,12 +29,9 @@ import {
 import type { TurnLogEntry } from '../game/log';
 import {
   getNickname,
-  getAvatarIndex,
-  getAvatarPath,
   chooseAvatarFromWeChat,
   drawAvatar,
   saveNicknameToCloud,
-  saveAvatarColorToCloud,
   saveAvatarImageToCloud,
   isVibrateEnabled,
   setVibrateEnabled,
@@ -73,7 +70,6 @@ export class ProfileScene {
   private backRect: SceneButtonRect = { x: 0, y: 0, w: 0, h: 0 };
   private avatarRect: SceneButtonRect = { x: 0, y: 0, w: 0, h: 0 };
   private nickEditRect: SceneButtonRect = { x: 0, y: 0, w: 0, h: 0 };
-  private swatchRects: SceneButtonRect[] = [];
   private bgmRowRect: SceneButtonRect = { x: 0, y: 0, w: 0, h: 0 };
   private sfxRowRect: SceneButtonRect = { x: 0, y: 0, w: 0, h: 0 };
   private vibrateRowRect: SceneButtonRect = { x: 0, y: 0, w: 0, h: 0 };
@@ -284,25 +280,6 @@ export class ProfileScene {
       this.openNicknameKeyboard();
       return;
     }
-    for (let i = 0; i < this.swatchRects.length; i++) {
-      if (hitRect(px, py, this.swatchRects[i])) {
-        // 选色卡 = 恢复默认头像（如已设微信头像则清除）并切换底色：
-        // 云端先行，保存成功才应用变更，失败提示且保持不变。
-        const hadCustom = !!getAvatarPath();
-        if (!hadCustom && getAvatarIndex() === i) return; // 无任何变化
-        saveAvatarColorToCloud(i).then((ok) => {
-          if (this.disposed) return;
-          if (!ok) {
-            this.showInfo('保存失败，请检查网络后重试', 4200);
-          } else {
-            if (hadCustom) this.showInfo('已恢复默认头像');
-            vibrateIfEnabled();
-          }
-          this.dirty = true;
-        });
-        return;
-      }
-    }
     if (hitRect(px, py, this.bgmRowRect)) {
       const muted = audio.toggleBgmMute();
       if (!muted) vibrateIfEnabled();
@@ -385,7 +362,7 @@ export class ProfileScene {
     this.dirty = true;
   }
 
-  /** 拉起微信原生选择器更换头像（相册/拍照）：云端先行，保存成功才启用新图。 */
+  /** 头像来源三选一（微信头像/拍照/相册）：云端先行，保存成功才启用新图。 */
   private pickAvatar(): void {
     vibrateIfEnabled();
     chooseAvatarFromWeChat().then((result) => {
@@ -408,11 +385,15 @@ export class ProfileScene {
     });
   }
 
-  /** 把 chooseMedia 的原始 errMsg 翻译成玩家能看懂的提示。 */
+  /** 把头像选择的原始 errMsg 翻译成玩家能看懂的提示。 */
   private avatarPickFailTip(errMsg: string): string {
     if (/privacy/i.test(errMsg)) {
       // 已自动尝试重新拉起隐私授权弹窗仍失败：引导用户同意后再试。
       return '需要同意隐私授权才能选择头像：请在弹出的授权窗中点击同意，或重启小游戏后重试';
+    }
+    if (/not in domain list/i.test(errMsg)) {
+      // 微信头像 CDN 域名未配进 downloadFile 合法域名（后台配置问题）：引导替代方式。
+      return '微信头像暂不可用，请改用拍照或从相册选择';
     }
     if (/auth\s*deny|authorize|permission/i.test(errMsg)) {
       return '相册未授权：请在微信「设置 → 隐私 → 个人信息与权限」中允许本小游戏访问相册';
@@ -489,7 +470,7 @@ export class ProfileScene {
 
     // 内容卡片：贴顶放（下方还要留给历史战绩卡片）。
     const cardW = Math.min(380, w * 0.92);
-    const cardH = 96 + 46 + ROW_H * 4 + 26; // 横屏模式入口暂隐藏，4 行
+    const cardH = 96 + ROW_H * 4 + 26; // 头像颜色入口已移除，横屏入口暂隐藏，4 行
     const cardX = (w - cardW) / 2;
     const cardY = this.safeTop + 56;
 
@@ -505,9 +486,8 @@ export class ProfileScene {
     ctx.stroke();
 
     this.drawProfileRow(cardX, cardY, cardW);
-    this.drawSwatchRow(cardX, cardY + 96, cardW);
 
-    const rowsY = cardY + 96 + 46;
+    const rowsY = cardY + 96;
     this.bgmRowRect = { x: cardX + 16, y: rowsY, w: cardW - 32, h: ROW_H };
     this.sfxRowRect = { x: cardX + 16, y: rowsY + ROW_H, w: cardW - 32, h: ROW_H };
     this.vibrateRowRect = { x: cardX + 16, y: rowsY + ROW_H * 2, w: cardW - 32, h: ROW_H };
@@ -532,7 +512,7 @@ export class ProfileScene {
     if (this.message && Date.now() < this.messageUntil) this.drawMessage();
   }
 
-  /** 横屏双卡片：左卡片头像/昵称/色卡/开关，右卡片历史战绩。 */
+  /** 横屏双卡片：左卡片头像/昵称/开关，右卡片历史战绩。 */
   private drawLandscapeCard(w: number, h: number): void {
     const ctx = this.ctx;
     const availW = w - this.safeLeft - this.safeRight;
@@ -554,7 +534,7 @@ export class ProfileScene {
     roundRectPath(ctx, cardX, cardY, cardW, cardH, 16);
     ctx.stroke();
 
-    // ---- 左列：头像 + 昵称 + 头像颜色 ----
+    // ---- 左列：头像 + 昵称 ----
     const leftW = cardW * 0.42;
     const name = getNickname();
     const cx = cardX + 50;
@@ -577,34 +557,6 @@ export class ProfileScene {
       align: 'left',
     });
     this.nickEditRect = { x: nameX - 8, y: cardY + 14, w: leftW - 24 - (nameX - cardX - 8), h: 76 };
-
-    drawSceneText(ctx, cardX + 24, cardY + cardH - 56, '头像颜色', {
-      size: 12,
-      color: INK_SOFT,
-      align: 'left',
-    });
-    this.swatchRects = [];
-    const hasCustomAvatar = !!getAvatarPath();
-    const selected = hasCustomAvatar ? -1 : getAvatarIndex();
-    const r = 11;
-    const gap = 14;
-    let x = cardX + 24;
-    const sy = cardY + cardH - 26;
-    for (let i = 0; i < AVATAR_COLORS.length; i++) {
-      ctx.fillStyle = AVATAR_COLORS[i];
-      ctx.beginPath();
-      ctx.arc(x + r, sy, r, 0, Math.PI * 2);
-      ctx.fill();
-      if (i === selected) {
-        ctx.strokeStyle = GOLD;
-        ctx.lineWidth = 2.5;
-        ctx.beginPath();
-        ctx.arc(x + r, sy, r + 3, 0, Math.PI * 2);
-        ctx.stroke();
-      }
-      this.swatchRects.push({ x: x - 4, y: sy - r - 6, w: r * 2 + 8, h: r * 2 + 12 });
-      x += r * 2 + gap;
-    }
 
     // 中间竖向分隔线
     ctx.strokeStyle = 'rgba(211,188,142,0.22)';
@@ -963,40 +915,6 @@ export class ProfileScene {
       align: 'left',
     });
     this.nickEditRect = { x: nameX - 8, y: cardY + 16, w: cardW - 100 - 8, h: 64 };
-  }
-
-  /** 头像色选择行（选中即恢复默认头像并换底色） */
-  private drawSwatchRow(cardX: number, y: number, cardW: number): void {
-    const ctx = this.ctx;
-    drawSceneText(ctx, cardX + 24, y + 16, '头像颜色', {
-      size: 14,
-      color: INK_SOFT,
-      align: 'left',
-    });
-
-    this.swatchRects = [];
-    const hasCustom = !!getAvatarPath();
-    const selected = hasCustom ? -1 : getAvatarIndex();
-    const r = 13;
-    const gap = 18;
-    const totalW = AVATAR_COLORS.length * r * 2 + (AVATAR_COLORS.length - 1) * gap;
-    let x = cardX + cardW - 24 - totalW;
-    const cy = y + 16;
-    for (let i = 0; i < AVATAR_COLORS.length; i++) {
-      ctx.fillStyle = AVATAR_COLORS[i];
-      ctx.beginPath();
-      ctx.arc(x + r, cy, r, 0, Math.PI * 2);
-      ctx.fill();
-      if (i === selected) {
-        ctx.strokeStyle = GOLD;
-        ctx.lineWidth = 2.5;
-        ctx.beginPath();
-        ctx.arc(x + r, cy, r + 3, 0, Math.PI * 2);
-        ctx.stroke();
-      }
-      this.swatchRects.push({ x: x - 4, y: cy - r - 6, w: r * 2 + 8, h: r * 2 + 12 });
-      x += r * 2 + gap;
-    }
   }
 
   /** 开关行：左侧标签 + 右侧拨杆（整行可点） */

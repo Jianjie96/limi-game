@@ -1,7 +1,7 @@
 // ============================================================================
 // src/ui/profile.ts — 个人资料与偏好设置（个人中心页的数据层）
 // ----------------------------------------------------------------------------
-// 昵称、头像（微信相册图片 / 元素色兜底）以云端为唯一权威数据源
+// 昵称、头像（微信头像 / 拍照 / 相册图片 / 元素色兜底）以云端为唯一权威数据源
 // （lami_profiles 集合，见 src/cloud/profile.ts）：所有修改云端先行，
 // 写入成功才落本地缓存，失败明确提示且不应用变更；本地 storage
 // 仅作读取/展示缓存，不再有独立的本地状态。
@@ -63,7 +63,7 @@ export function setNickname(name: string): boolean {
 // 头像（元素色圆片 + 昵称末字，与房间页头像同一视觉语言）
 // ----------------------------------------------------------------------------
 
-/** 头像色在 AVATAR_COLORS 中的下标。 */
+/** 头像色在 AVATAR_COLORS 中的下标：未设置时按昵称派生自动取一个（已无手动选色入口）。 */
 export function getAvatarIndex(): number {
   try {
     const v = wx.getStorageSync(AVATAR_KEY);
@@ -74,21 +74,12 @@ export function getAvatarIndex(): number {
   return getNickname().charCodeAt(0) % AVATAR_COLORS.length;
 }
 
-export function setAvatarIndex(index: number): void {
-  if (index < 0 || index >= AVATAR_COLORS.length) return;
-  try {
-    wx.setStorageSync(AVATAR_KEY, index);
-  } catch (e) {
-    // 静默
-  }
-}
-
 export function getAvatarColor(): string {
   return AVATAR_COLORS[getAvatarIndex() % AVATAR_COLORS.length];
 }
 
 // ----------------------------------------------------------------------------
-// 自定义头像（微信相册/拍照选择，支持随时重选或恢复默认）
+// 自定义头像（微信头像/拍照/相册三选一，支持随时重选）
 // ----------------------------------------------------------------------------
 
 /** 读取自定义头像的永久化本地路径；文件丢失时自动清理并返回 null。 */
@@ -133,15 +124,35 @@ export interface ChooseAvatarResult {
 }
 
 /**
- * 拉起微信原生媒体选择器选头像（相册/拍照），选中后 saveFile 持久化，
- * 但不启用为当前头像：返回临时路径，由调用方先写云端、成功后再生效。
+ * 头像来源三选一（原生操作菜单）：微信头像 / 拍照 / 从相册选择。
+ * 选中后仅返回临时路径（不启用），由调用方先写云端、成功后再生效。
  * 用户取消静默（tempPath/errorMsg 均空）；接口被拒（隐私未授权等）
  * 时返回原始 errMsg，由调用方给出可操作的提示。
- * 隐私授权被拒后不会自动重弹，这里主动调 requirePrivacyAuthorize
+ * 拍照/相册分支：隐私授权被拒后不会自动重弹，主动调 requirePrivacyAuthorize
  * 重新拉起授权弹窗并自动重试一次，用户同意后无需再点一次头像。
  */
 export function chooseAvatarFromWeChat(): Promise<ChooseAvatarResult> {
-  return chooseAvatarOnce().then((result) => {
+  return new Promise<ChooseAvatarResult>((resolve) => {
+    if (typeof wx.showActionSheet !== 'function') {
+      // 无操作菜单的环境退回旧行为：相册/拍照合并选择器。
+      resolve(chooseMediaWithPrivacyRetry(['album', 'camera']));
+      return;
+    }
+    wx.showActionSheet({
+      itemList: ['微信头像', '拍照', '从相册选择'],
+      success: (res) => {
+        if (res.tapIndex === 0) resolve(chooseWeChatAvatar());
+        else if (res.tapIndex === 1) resolve(chooseMediaWithPrivacyRetry(['camera']));
+        else resolve(chooseMediaWithPrivacyRetry(['album']));
+      },
+      fail: () => resolve({}), // 取消菜单：静默
+    });
+  });
+}
+
+/** 拍照/相册分支：隐私被拒后重新拉授权弹窗并自动重试一次。 */
+function chooseMediaWithPrivacyRetry(sourceType: string[]): Promise<ChooseAvatarResult> {
+  return chooseMediaOnce(sourceType).then((result) => {
     const msg = result.errorMsg || '';
     // 仅「用户拒绝过隐私授权」分支可恢复：重新拉起隐私授权弹窗。
     if (!/privacy/i.test(msg) || typeof wx.requirePrivacyAuthorize !== 'function') {
@@ -150,7 +161,7 @@ export function chooseAvatarFromWeChat(): Promise<ChooseAvatarResult> {
     return new Promise<ChooseAvatarResult>((resolve) => {
       try {
         wx.requirePrivacyAuthorize({
-          success: () => resolve(chooseAvatarOnce()),
+          success: () => resolve(chooseMediaOnce(sourceType)),
           fail: () => resolve(result), // 低版本不支持或仍被拒：原样透出提示
         });
       } catch (e) {
@@ -160,7 +171,63 @@ export function chooseAvatarFromWeChat(): Promise<ChooseAvatarResult> {
   });
 }
 
-function chooseAvatarOnce(): Promise<ChooseAvatarResult> {
+/**
+ * 微信头像分支：小游戏无 WXML，用 wx.createUserInfoButton 在屏幕中央创建
+ * 原生授权按钮，用户点击后授权并回调头像 URL，再 downloadFile 落为本地临时文件。
+ * 返回契约与其余分支一致：成功给 tempPath；取消/拒绝授权静默；接口异常透出 errMsg。
+ */
+function chooseWeChatAvatar(): Promise<ChooseAvatarResult> {
+  return new Promise((resolve) => {
+    if (typeof wx.createUserInfoButton !== 'function') {
+      resolve({ errorMsg: '当前环境不支持获取微信头像，请用拍照或相册' });
+      return;
+    }
+    let btn: { onTap(cb: any): void; destroy(): void } | null = null;
+    try {
+      const win = wx.getWindowInfo();
+      const bw = Math.min(220, win.windowWidth - 60);
+      const bh = 48;
+      btn = wx.createUserInfoButton({
+        type: 'text',
+        text: '点击授权并使用微信头像',
+        style: {
+          left: (win.windowWidth - bw) / 2,
+          top: win.windowHeight * 0.42,
+          width: bw,
+          height: bh,
+          lineHeight: bh,
+          fontSize: 16,
+          backgroundColor: '#e9c97f',
+          color: '#20303c',
+          borderRadius: bh / 2,
+          textAlign: 'center',
+        },
+      });
+    } catch (e) {
+      resolve({ errorMsg: '微信头像按钮创建失败，请重试' });
+      return;
+    }
+    const button = btn;
+    button.onTap((res: { errMsg: string; userInfo?: { avatarUrl?: string } }) => {
+      try { button.destroy(); } catch (e) { /* 静默 */ }
+      const avatarUrl = res.userInfo && res.userInfo.avatarUrl;
+      if (res.errMsg && res.errMsg.indexOf(':ok') >= 0 && avatarUrl) {
+        wx.downloadFile({
+          url: avatarUrl,
+          success: (dl) => resolve({ tempPath: dl.tempFilePath }),
+          fail: (err) => resolve({ errorMsg: (err && err.errMsg) || '微信头像下载失败，请重试' }),
+        });
+        return;
+      }
+      // 用户取消/拒绝授权静默；隐私等异常透出原始 errMsg 供调用方提示。
+      const msg = (res && res.errMsg) || '';
+      if (/privacy|auth\s*deny|cancel/i.test(msg) || !msg) resolve({});
+      else resolve({ errorMsg: msg });
+    });
+  });
+}
+
+function chooseMediaOnce(sourceType: string[]): Promise<ChooseAvatarResult> {
   return new Promise((resolve) => {
     if (typeof wx.chooseMedia !== 'function') {
       resolve({ errorMsg: '当前环境不支持选择头像' });
@@ -170,7 +237,7 @@ function chooseAvatarOnce(): Promise<ChooseAvatarResult> {
       wx.chooseMedia({
         count: 1,
         mediaType: ['image'],
-        sourceType: ['album', 'camera'],
+        sourceType,
         sizeType: ['compressed'],
         success: (res) => {
           const temp = res.tempFiles && res.tempFiles[0] && res.tempFiles[0].tempFilePath;
@@ -253,24 +320,6 @@ export function saveNicknameToCloud(name: string): Promise<boolean> {
   return saveCloudProfile({ name: v })
     .then(() => {
       setNickname(v);
-      return true;
-    })
-    .catch(() => false);
-}
-
-/**
- * 保存头像底色（云端先行）：成功后本地切换底色，
- * 若当前有自定义头像则一并清除（与云端 avatarFileId='' 对齐）。
- */
-export function saveAvatarColorToCloud(index: number): Promise<boolean> {
-  if (index < 0 || index >= AVATAR_COLORS.length) return Promise.resolve(false);
-  const hasCustom = !!getAvatarPath();
-  const patch: { avatarIndex: number; avatarFileId?: string } = { avatarIndex: index };
-  if (hasCustom) patch.avatarFileId = ''; // 选色卡 = 恢复默认头像
-  return saveCloudProfile(patch)
-    .then(() => {
-      if (hasCustom) resetAvatar();
-      setAvatarIndex(index);
       return true;
     })
     .catch(() => false);
