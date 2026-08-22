@@ -92,7 +92,7 @@ function bootOrientation(): Promise<void> {
 }
 bootOrientationDone = bootOrientation();
 
-// 资料云端同步：启动拉取云端档案覆盖本地（跨设备一致）；
+// 资料云端同步：启动拉取云端档案覆盖本地缓存（云端是唯一权威源）；
 // 从未设置过资料时弹框引导用户设置昵称头像（微信已无头像昵称授权接口，
 // 改为自助设置），只弹一次。
 function bootProfile(): void {

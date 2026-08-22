@@ -23,14 +23,13 @@ import { clearLastRoom } from '../cloud/room';
 import { fetchMatchHistory, type MatchHistoryRecord } from '../cloud/game';
 import {
   getNickname,
-  setNickname,
   getAvatarIndex,
-  setAvatarIndex,
   getAvatarPath,
   chooseAvatarFromWeChat,
-  resetAvatar,
   drawAvatar,
-  syncProfileToCloud,
+  saveNicknameToCloud,
+  saveAvatarColorToCloud,
+  saveAvatarImageToCloud,
   isVibrateEnabled,
   setVibrateEnabled,
   vibrateIfEnabled,
@@ -90,18 +89,18 @@ export class ProfileScene {
     this.dirty = true;
   };
 
-  /** 键盘「完成/发送」：提交昵称并落库云端。 */
+  /** 键盘「完成/发送」：云端先行保存昵称，失败不应用变更并提示。 */
   private keyboardConfirmHandler = (res: { value: string }) => {
     const name = (res.value ?? '').trim();
     if (!name) {
       this.showInfo('昵称不能为空');
       return;
     }
-    if (setNickname(name)) {
-      this.showInfo('昵称已更新');
-      this.pushProfileToCloud();
-    }
-    this.dirty = true;
+    saveNicknameToCloud(name).then((ok) => {
+      if (this.disposed) return;
+      this.showInfo(ok ? '昵称已更新' : '昵称保存失败，请检查网络后重试', ok ? 2000 : 4200);
+      this.dirty = true;
+    });
   };
 
   /** 键盘收起：复位编辑态。 */
@@ -203,20 +202,20 @@ export class ProfileScene {
     }
     for (let i = 0; i < this.swatchRects.length; i++) {
       if (hitRect(px, py, this.swatchRects[i])) {
-        // 选色卡 = 恢复默认头像（如已设微信头像则清除）并切换底色。
-        let changed = false;
-        if (getAvatarPath()) {
-          resetAvatar();
-          this.showInfo('已恢复默认头像');
-          changed = true;
-        }
-        if (getAvatarIndex() !== i) {
-          setAvatarIndex(i);
-          vibrateIfEnabled();
-          changed = true;
-        }
-        if (changed) this.pushProfileToCloud();
-        this.dirty = true;
+        // 选色卡 = 恢复默认头像（如已设微信头像则清除）并切换底色：
+        // 云端先行，保存成功才应用变更，失败提示且保持不变。
+        const hadCustom = !!getAvatarPath();
+        if (!hadCustom && getAvatarIndex() === i) return; // 无任何变化
+        saveAvatarColorToCloud(i).then((ok) => {
+          if (this.disposed) return;
+          if (!ok) {
+            this.showInfo('保存失败，请检查网络后重试', 4200);
+          } else {
+            if (hadCustom) this.showInfo('已恢复默认头像');
+            vibrateIfEnabled();
+          }
+          this.dirty = true;
+        });
         return;
       }
     }
@@ -293,21 +292,26 @@ export class ProfileScene {
     this.dirty = true;
   }
 
-  /** 拉起微信原生选择器更换头像（相册/拍照），选中后上传云存储并落库。 */
+  /** 拉起微信原生选择器更换头像（相册/拍照）：云端先行，保存成功才启用新图。 */
   private pickAvatar(): void {
     vibrateIfEnabled();
     chooseAvatarFromWeChat().then((result) => {
       if (this.disposed) return;
-      if (result.path) {
-        this.showInfo('头像已更新');
-        this.pushProfileToCloud();
-        this.dirty = true;
+      if (result.errorMsg) {
+        // 非用户取消的失败：给出可操作提示（最常见是隐私授权被拒）。
+        this.showInfo(this.avatarPickFailTip(result.errorMsg), 4200);
         return;
       }
-      if (result.errorMsg) {
-        // 非用户取消的失败：给出可操作提示（最常见是隐私指引未声明相册接口）。
-        this.showInfo(this.avatarPickFailTip(result.errorMsg), 4200);
-      }
+      if (!result.tempPath) return; // 用户主动取消：静默
+      saveAvatarImageToCloud(result.tempPath).then((r) => {
+        if (this.disposed) return;
+        if (r.ok) {
+          this.showInfo('头像已更新');
+        } else {
+          this.showInfo(r.errorMsg || '头像保存失败，请检查网络后重试', 4200);
+        }
+        this.dirty = true;
+      });
     });
   }
 
@@ -321,13 +325,6 @@ export class ProfileScene {
       return '相册未授权：请在微信「设置 → 隐私 → 个人信息与权限」中允许本小游戏访问相册';
     }
     return `头像选择失败：${errMsg}`;
-  }
-
-  /** 资料变更后推送云端（头像未传过云存储时会先上传）；失败轻提示不打断操作。 */
-  private pushProfileToCloud(): void {
-    syncProfileToCloud().catch(() => {
-      if (!this.disposed) this.showInfo('云端同步失败，下次启动将重试');
-    });
   }
 
   private openNicknameKeyboard(): void {

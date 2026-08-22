@@ -1,8 +1,10 @@
 // ============================================================================
 // src/ui/profile.ts — 个人资料与偏好设置（个人中心页的数据层）
 // ----------------------------------------------------------------------------
-// 昵称、头像（微信相册图片 / 元素色兜底）本地持久化 + 云端落库
-// （lami_profiles 集合，见 src/cloud/profile.ts），跨设备同步；
+// 昵称、头像（微信相册图片 / 元素色兜底）以云端为唯一权威数据源
+// （lami_profiles 集合，见 src/cloud/profile.ts）：所有修改云端先行，
+// 写入成功才落本地缓存，失败明确提示且不应用变更；本地 storage
+// 仅作读取/展示缓存，不再有独立的本地状态。
 // 震动反馈、屏幕方向偏好仅本地。音频开关由 audio.ts 自行持久化。
 // 历史战绩已落库云端（lami_history），见 src/cloud/game.ts fetchMatchHistory。
 // ============================================================================
@@ -122,15 +124,18 @@ function setAvatarPath(path: string | null): void {
   }
 }
 
-/** 选头像结果：path 为选中后永久化路径；errorMsg 仅非用户取消的失败才有值。 */
+/** 选头像结果：tempPath 为选中后持久化的临时路径（尚未启用，
+ *  待云端保存成功后由 saveAvatarImageToCloud 生效）；
+ *  errorMsg 仅非用户取消的失败才有值。 */
 export interface ChooseAvatarResult {
-  path: string | null;
+  tempPath?: string;
   errorMsg?: string;
 }
 
 /**
- * 拉起微信原生媒体选择器选头像（相册/拍照），选中后 saveFile 永久化。
- * 用户取消静默（errorMsg 为空）；接口被拒（未配置隐私指引/未授权）
+ * 拉起微信原生媒体选择器选头像（相册/拍照），选中后 saveFile 持久化，
+ * 但不启用为当前头像：返回临时路径，由调用方先写云端、成功后再生效。
+ * 用户取消静默（tempPath/errorMsg 均空）；接口被拒（隐私未授权等）
  * 时返回原始 errMsg，由调用方给出可操作的提示。
  * 隐私授权被拒后不会自动重弹，这里主动调 requirePrivacyAuthorize
  * 重新拉起授权弹窗并自动重试一次，用户同意后无需再点一次头像。
@@ -158,7 +163,7 @@ export function chooseAvatarFromWeChat(): Promise<ChooseAvatarResult> {
 function chooseAvatarOnce(): Promise<ChooseAvatarResult> {
   return new Promise((resolve) => {
     if (typeof wx.chooseMedia !== 'function') {
-      resolve({ path: null, errorMsg: '当前环境不支持选择头像' });
+      resolve({ errorMsg: '当前环境不支持选择头像' });
       return;
     }
     try {
@@ -170,34 +175,31 @@ function chooseAvatarOnce(): Promise<ChooseAvatarResult> {
         success: (res) => {
           const temp = res.tempFiles && res.tempFiles[0] && res.tempFiles[0].tempFilePath;
           if (!temp) {
-            resolve({ path: null });
+            resolve({});
             return;
           }
           try {
             wx.getFileSystemManager().saveFile({
               tempFilePath: temp,
-              success: (r) => {
-                setAvatarPath(r.savedFilePath);
-                resolve({ path: r.savedFilePath });
-              },
-              fail: () => resolve({ path: null, errorMsg: '头像文件保存失败，请重试' }),
+              success: (r) => resolve({ tempPath: r.savedFilePath }),
+              fail: () => resolve({ errorMsg: '头像文件保存失败，请重试' }),
             });
           } catch (e) {
-            resolve({ path: null, errorMsg: '头像文件保存失败，请重试' });
+            resolve({ errorMsg: '头像文件保存失败，请重试' });
           }
         },
         fail: (err) => {
           const msg = (err && err.errMsg) || '';
           // 用户主动取消保持静默；其余（隐私未声明/相册未授权）透出给调用方提示。
           if (msg.includes('cancel')) {
-            resolve({ path: null });
+            resolve({});
           } else {
-            resolve({ path: null, errorMsg: msg || '相册拉起失败' });
+            resolve({ errorMsg: msg || '相册拉起失败' });
           }
         },
       });
     } catch (e) {
-      resolve({ path: null, errorMsg: '相册拉起失败' });
+      resolve({ errorMsg: '相册拉起失败' });
     }
   });
 }
@@ -206,18 +208,12 @@ function chooseAvatarOnce(): Promise<ChooseAvatarResult> {
 export function resetAvatar(): void {
   const path = getAvatarPath();
   setAvatarPath(null);
-  setAvatarFileId(''); // 云端同步时据此判定「已恢复默认」
-  if (path) {
-    try {
-      (wx.getFileSystemManager() as any).unlink?.({ filePath: path, fail: () => undefined });
-    } catch (e) {
-      // 静默
-    }
-  }
+  setAvatarFileId(''); // 与云端「已恢复默认」状态对齐
+  if (path) unlinkQuiet(path);
 }
 
 // ----------------------------------------------------------------------------
-// 云端同步（昵称 + 头像落库 lami_profiles，跨设备一致）
+// 云端同步（云端为唯一权威源：写云端成功才落本地缓存，失败不应用变更）
 // ----------------------------------------------------------------------------
 
 function getAvatarFileId(): string {
@@ -238,31 +234,68 @@ function setAvatarFileId(id: string): void {
   }
 }
 
+/** 静默删除本地文件（清旧头像/作废临时文件用）。 */
+function unlinkQuiet(path: string): void {
+  try {
+    (wx.getFileSystemManager() as any).unlink?.({ filePath: path, fail: () => undefined });
+  } catch (e) {
+    // 静默
+  }
+}
+
 /**
- * 把当前本地资料推送到云端：昵称 + 头像底色 + 头像 fileID。
- * 自定义头像图片尚未上传过时先 uploadFile 再存 fileID。
- * 失败不吞，由调用方决定是否提示。
+ * 保存昵称（云端先行）：写云端成功才更新本地缓存并返回 true；
+ * 失败返回 false，本地保持原值，由调用方提示用户。
  */
-export function syncProfileToCloud(): Promise<void> {
-  const patch: { name: string; avatarIndex: number; avatarFileId?: string } = {
-    name: getNickname(),
-    avatarIndex: getAvatarIndex(),
-  };
-  const path = getAvatarPath();
-  const fileId = getAvatarFileId();
-  if (path && fileId) {
-    patch.avatarFileId = fileId;
-    return saveCloudProfile(patch);
-  }
-  if (path) {
-    // 新选的头像：先传云存储拿 fileID，再随档案一起落库。
-    return uploadAvatarFile(path).then((id) => {
-      setAvatarFileId(id);
-      return saveCloudProfile({ ...patch, avatarFileId: id });
+export function saveNicknameToCloud(name: string): Promise<boolean> {
+  const v = name.trim().slice(0, 12);
+  if (!v) return Promise.resolve(false);
+  return saveCloudProfile({ name: v })
+    .then(() => {
+      setNickname(v);
+      return true;
+    })
+    .catch(() => false);
+}
+
+/**
+ * 保存头像底色（云端先行）：成功后本地切换底色，
+ * 若当前有自定义头像则一并清除（与云端 avatarFileId='' 对齐）。
+ */
+export function saveAvatarColorToCloud(index: number): Promise<boolean> {
+  if (index < 0 || index >= AVATAR_COLORS.length) return Promise.resolve(false);
+  const hasCustom = !!getAvatarPath();
+  const patch: { avatarIndex: number; avatarFileId?: string } = { avatarIndex: index };
+  if (hasCustom) patch.avatarFileId = ''; // 选色卡 = 恢复默认头像
+  return saveCloudProfile(patch)
+    .then(() => {
+      if (hasCustom) resetAvatar();
+      setAvatarIndex(index);
+      return true;
+    })
+    .catch(() => false);
+}
+
+/**
+ * 保存自定义头像图片（云端先行）：先 uploadFile 拿 fileID，再写档案；
+ * 成功后本地启用新图并删除旧图；失败删除临时文件并返回错误信息，
+ * 由调用方提示用户（本地头像保持不变）。
+ */
+export function saveAvatarImageToCloud(tempPath: string): Promise<{ ok: boolean; errorMsg?: string }> {
+  return uploadAvatarFile(tempPath)
+    .then((fileId) =>
+      saveCloudProfile({ avatarFileId: fileId }).then(() => {
+        const old = getAvatarPath();
+        setAvatarPath(tempPath);
+        setAvatarFileId(fileId);
+        if (old && old !== tempPath) unlinkQuiet(old);
+        return { ok: true };
+      }),
+    )
+    .catch((e: any) => {
+      unlinkQuiet(tempPath);
+      return { ok: false, errorMsg: (e && e.message) || '头像保存失败，请重试' };
     });
-  }
-  patch.avatarFileId = ''; // 无自定义头像：显式清空云端旧头像
-  return saveCloudProfile(patch);
 }
 
 /**
