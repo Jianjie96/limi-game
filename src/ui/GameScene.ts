@@ -102,6 +102,9 @@ const DRAG_THRESHOLD = 8;
 /** 桌面滚动距底小于该阈值时隐藏「牌池剩余」徽章（底部已被牌占满，徽章让位）。 */
 const POOL_INFO_HIDE_MARGIN = 24;
 
+/** 当前回合头像呼吸灯周期（毫秒）：光晕透明度与线宽正弦缓动脉动。 */
+const BREATH_PERIOD_MS = 1600;
+
 /** 长按牌架「拿起」牌的判定时长（毫秒）：拿起后可任意方向拖拽（含牌架内重排）。 */
 const LONG_PRESS_DELAY = 400;
 
@@ -254,6 +257,8 @@ export class GameScene {
   private flashGroupTimer: any = null;
   /** 对手徽章中心点（playerId → 坐标）：机器人出牌飞行动画的起飞位置。 */
   private opponentBadgePoints = new Map<number, { x: number; y: number }>();
+  /** 呼吸灯重绘步进（~30fps 量化，避免全速重绘） */
+  private breathStep = -1;
   /** 渲染循环句柄（dispose 时取消） */
   private rafId = 0;
 
@@ -1271,6 +1276,13 @@ export class GameScene {
     if (this.gameOverStart > 0 && now - this.gameOverStart < GAME_OVER_ANIM_MS) animating = true;
     if (animating) this.dirty = true;
 
+    // 当前回合头像呼吸灯：按 ~33ms 步进置脏，静止时也保持缓动脉动。
+    const breathStep = Math.floor(now / 33);
+    if (breathStep !== this.breathStep) {
+      this.breathStep = breathStep;
+      this.dirty = true;
+    }
+
     this.rafId = requestAnimationFrame(this.tick);
   };
 
@@ -1957,15 +1969,18 @@ export class GameScene {
       if (x + badgeW > badgesMax) break;
       this.opponentBadgePoints.set(p.id, { x: x + 10, y });
 
-      // 当前回合玩家：头像金色光晕 + 外圈，牌数徽章香槟金渐变实底 + 白字，一眼可辨（与全局金色点缀同风格）。
+      // 当前回合玩家：头像呼吸灯光晕 + 外圈，牌数徽章香槟金渐变实底 + 白字，一眼可辨（与全局金色点缀同风格）。
       const isCurrent = p.id === currentPlayerId;
       if (isCurrent) {
-        ctx.fillStyle = 'rgba(233,201,127,0.28)';
+        // 呼吸灯：正弦缓动 0→1→0，光晕透明度/半径与外圈线宽同步脉动。
+        const breathT = (Date.now() % BREATH_PERIOD_MS) / BREATH_PERIOD_MS;
+        const pulse = 0.5 - 0.5 * Math.cos(breathT * Math.PI * 2);
+        ctx.fillStyle = `rgba(233,201,127,${(0.16 + 0.22 * pulse).toFixed(3)})`;
         ctx.beginPath();
-        ctx.arc(x + 10, y, 15, 0, Math.PI * 2);
+        ctx.arc(x + 10, y, 14 + 2 * pulse, 0, Math.PI * 2);
         ctx.fill();
         ctx.strokeStyle = GOLD;
-        ctx.lineWidth = 2.5;
+        ctx.lineWidth = 2 + pulse;
         ctx.beginPath();
         ctx.arc(x + 10, y, 13, 0, Math.PI * 2);
         ctx.stroke();
