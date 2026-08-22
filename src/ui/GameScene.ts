@@ -210,6 +210,9 @@ export class GameScene {
   /** 结束对局回调（仅测试房房主挂接）：挂接后顶栏右侧显示「结束对局」按钮。 */
   onRequestEndGame: (() => void) | null = null;
   private endGameRect: { x: number; y: number; w: number; h: number } | null = null;
+  /** 结算面板「返回」回调（对局结束后退出回首页）。 */
+  onExitGameOver: (() => void) | null = null;
+  private gameOverBackRect: { x: number; y: number; w: number; h: number } | null = null;
 
   /** 设置弹窗（背景音/音效/震动/横屏）：打开时屏蔽一切牌面交互。 */
   private settingsPanelOpen = false;
@@ -780,6 +783,15 @@ export class GameScene {
     }
     // 云端操作进行中：屏蔽一切交互，避免重复提交或在请求在飞时误动牌面。
     if (this.submitting) return;
+
+    // 结算面板「返回」：对局已结束，命中即退出回首页。
+    const gb = this.gameOverBackRect;
+    if (gb && x >= gb.x && x <= gb.x + gb.w && y >= gb.y && y <= gb.y + gb.h) {
+      audio.play('pickup');
+      this.onExitGameOver?.();
+      return;
+    }
+
     const sr = this.settingsButtonRect;
     if (sr && x >= sr.x && x <= sr.x + sr.w && y >= sr.y && y <= sr.y + sr.h) {
       this.settingsPanelOpen = true;
@@ -1152,10 +1164,12 @@ export class GameScene {
     this.drawSkyDecor();
 
     if (state.phase === GamePhase.WAITING) {
+      this.gameOverBackRect = null; // 非结算阶段清空命中区，避免残留误触
       this.buildWaiting();
     } else if (state.phase === GamePhase.GAME_OVER) {
       this.buildGameOver(state, now);
     } else {
+      this.gameOverBackRect = null;
       this.buildTopBar(state);
       this.buildOpponents(state);
 
@@ -1552,7 +1566,10 @@ export class GameScene {
   /** 对局结束面板（历史战绩已由云端在对局结束时写入 lami_history）。 */
   private buildGameOver(state: GameState, now: number): void {
     const result = state.result;
-    if (!result) return;
+    if (!result) {
+      this.gameOverBackRect = null;
+      return;
+    }
     const ctx = this.ctx;
 
     // 面板弹出动画：easeOutBack 回弹 + 遮罩淡入。
@@ -1565,7 +1582,7 @@ export class GameScene {
     // 中央卡通结算面板：米色圆角卡片 + 金色描边。
     const panelW = Math.min(300, this.screenW * 0.85);
     const rows = result.playerResults.length;
-    const panelH = 150 + rows * 32;
+    const panelH = 150 + rows * 32 + 46;
     const px = (this.screenW - panelW) / 2;
     const py = (this.screenH - panelH) / 2;
 
@@ -1625,6 +1642,18 @@ export class GameScene {
       });
       y += 32;
     }
+
+    // 「返回」按钮：对局已结束，退出回首页（面板底部居中，随面板一起弹出）。
+    const bw = 120;
+    const bh = 32;
+    this.gameOverBackRect = {
+      x: (this.screenW - bw) / 2,
+      y: py + panelH - bh - 16,
+      w: bw,
+      h: bh,
+    };
+    drawCapsuleButton(ctx, this.gameOverBackRect, '返回', 'primary', 15);
+
     ctx.restore();
   }
 

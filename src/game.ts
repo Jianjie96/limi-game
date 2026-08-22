@@ -235,6 +235,10 @@ function startOnlineGame(room: RoomInfo, selfOpenid: string): void {
     room.host === selfOpenid
   );
   scene.coordinator = coordinator;
+  // 结算面板「返回」：对局已结束，退出回首页（重连入口由首页自行探测房间状态）。
+  scene.onExitGameOver = () => {
+    goHome();
+  };
   // 测试房（机器人补位）：给房主挂「结束对局」应急出口，否则开局后无法关闭。
   if (room.host === selfOpenid && room.players.some((p) => p.openid.startsWith('bot_'))) {
     scene.onRequestEndGame = () => {
