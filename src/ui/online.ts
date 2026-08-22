@@ -168,12 +168,10 @@ export class OnlineCoordinator {
     } else {
       this.tryApply();
     }
-
-    // 操作日志存在云端（game.log）：进入对局先拉全量，断线重连也能看到完整历史。
-    this.refreshLog();
   }
 
   /** 拉取云端操作日志并与本地缓存合并（按回合号去重，最新在顶）后交给场景。
+   *  仅点击「回合记录」按钮时调用，避免每次操作都多发一次请求。
    *  云端在对局结束时清空日志，本地缓存保证结算面板仍可查看本局记录。 */
   refreshLog(): void {
     fetchTurnLog(this.code)
@@ -391,12 +389,6 @@ export class OnlineCoordinator {
 
     const myTurn = pub.phase === 'PLAYING' && pub.currentPlayerIndex === this.selfIndex;
     this.turnStartJson = myTurn ? json : '';
-
-    // 回合号推进（或进入结算）→ 云端已写入新的操作日志条目，拉取刷新弹窗数据。
-    if (prev && prev.phase === 'PLAYING'
-        && (pub.turnNumber > prev.turnNumber || pub.phase === 'GAME_OVER')) {
-      this.refreshLog();
-    }
 
     // 对手行动感知：机器人/对手在云端行棋，本地只有 loadState 静默覆盖；
     // 对比前后状态给出「消息 + 音效 + 牌组高亮」反馈（须晚于 loadState，
