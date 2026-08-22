@@ -99,6 +99,9 @@ interface TextOptions {
 /** 拖拽触发阈值（逻辑像素）：移动超过该距离才进入拖拽状态。 */
 const DRAG_THRESHOLD = 8;
 
+/** 桌面滚动距底小于该阈值时隐藏「牌池剩余」徽章（底部已被牌占满，徽章让位）。 */
+const POOL_INFO_HIDE_MARGIN = 24;
+
 /** 长按牌架「拿起」牌的判定时长（毫秒）：拿起后可任意方向拖拽（含牌架内重排）。 */
 const LONG_PRESS_DELAY = 400;
 
@@ -1337,7 +1340,6 @@ export class GameScene {
       for (const draw of this.flyingDraws) draw();
       this.flyingDraws = [];
       this.buildButtons();
-      this.buildPoolInfo(state);
       if (this.message) this.buildMessage();
     }
 
@@ -2001,6 +2003,10 @@ export class GameScene {
     ctx.stroke();
     this.drawDiamond(bcx, top + 3, 4, GOLD_SOFT);
 
+    // 「牌池剩余」徽章：画在桌面板之上、桌面牌之下（层级最低，
+    // 万一遮挡也是牌盖住徽章；滚动到底时让位隐藏，见 buildPoolInfo）。
+    this.buildPoolInfo(state);
+
     // 纵向滚动：内容溢出时裁剪绘制区域并上移内容，避免盖到牌架。
     const scrolled = this.boardMaxScroll > 0;
     if (scrolled) {
@@ -2386,6 +2392,8 @@ export class GameScene {
   }
 
   private buildPoolInfo(state: GameState): void {
+    // 滚动接近到底时隐藏：底部已被最后一行牌占满，徽章不再悬浮在留白上。
+    if (this.boardMaxScroll > 0 && this.boardScrollY >= this.boardMaxScroll - POOL_INFO_HIDE_MARGIN) return;
     const ctx = this.ctx;
     const text = `牌池剩余: ${state.pool.length} 张`;
     ctx.font = `bold ${FONT_SIZE_LABEL - 2}px ${FONT_FAMILY}`;
