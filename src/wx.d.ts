@@ -79,6 +79,12 @@ declare namespace wx {
   }): void;
   function getLaunchOptionsSync(): { scene: number; query: Record<string, string> };
   function onShow(callback: (res: { scene: number; query?: Record<string, string> }) => void): void;
+  // 重启小游戏（对局内「刷新」自救入口：携带 roomId 重启后自动重进房间）
+  function restartMiniProgram(options: {
+    path?: string;
+    success?: () => void;
+    fail?: (err: any) => void;
+  }): void;
 
   // 本地存储（断线重连：记忆上次房间号）
   function setStorageSync(key: string, data: any): void;

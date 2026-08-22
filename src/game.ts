@@ -270,6 +270,25 @@ function startOnlineGame(room: RoomInfo, selfOpenid: string): void {
   scene.onExitToHome = () => {
     goHome();
   };
+  // 「刷新」自救入口（联机局全员可用）：先模态说明用途防误触，确认后重启小游戏，
+  // 启动入口会解析 roomId 自动重新加入当前房间，对局进度由云端保存不受影响。
+  scene.onRefreshRoom = () => {
+    wx.showModal({
+      title: '刷新对局',
+      content: '画面卡住或状态异常时可尝试刷新：将重启小游戏并自动重新进入当前房间，对局进度不会丢失。',
+      confirmText: '刷新',
+      cancelText: '取消',
+      success: (res) => {
+        if (!res.confirm) return;
+        wx.restartMiniProgram({
+          path: `game.js?roomId=${room.code}`,
+          fail: () => {
+            scene.showMessage('刷新失败，请手动重启小游戏', 2400);
+          },
+        });
+      },
+    });
+  };
   // 房主专属出口：对局中随时「结束对局」（云端 end 仅限房主），真人局/机器人局都能收尾。
   if (room.host === selfOpenid) {
     scene.onRequestEndGame = () => {

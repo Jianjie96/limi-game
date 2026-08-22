@@ -221,6 +221,11 @@ export class GameScene {
   onExitToHome: (() => void) | null = null;
   private backHomeRect: { x: number; y: number; w: number; h: number } | null = null;
 
+  /** 刷新对局回调（仅联机局挂接）：挂接后「回合记录」右侧显示刷新图标，
+   *  点击经模态确认后重启小游戏并自动重进当前房间（卡死/异常时的自救入口）。 */
+  onRefreshRoom: (() => void) | null = null;
+  private refreshButtonRect: { x: number; y: number; w: number; h: number } | null = null;
+
   /** 设置弹窗（背景音/音效/震动/横屏）：打开时屏蔽一切牌面交互。 */
   private settingsPanelOpen = false;
   private settingsButtonRect: { x: number; y: number; w: number; h: number } | null = null;
@@ -903,6 +908,12 @@ export class GameScene {
       this.coordinator?.refreshLog();
       audio.play('pickup');
       this.markDirty();
+      return;
+    }
+    const rr = this.refreshButtonRect;
+    if (rr && x >= rr.x && x <= rr.x + rr.w && y >= rr.y && y <= rr.y + rr.h) {
+      audio.play('pickup');
+      this.onRefreshRoom?.();
       return;
     }
     const er = this.endGameRect;
@@ -1787,7 +1798,7 @@ export class GameScene {
     ctx.fillRect(0, y + PLAYER_INFO_HEIGHT - 1, this.screenW, 1);
 
     // 按钮群一律靠左：右上角避让微信胶囊；各家牌数/回合信息在顶栏下方的信息行。
-    // 从左到右「返回 → 回合记录 → 设置 → 结束对局（仅房主）」。
+    // 从左到右「返回 → 回合记录 → 刷新（仅联机局）→ 设置 → 结束对局（仅房主）」。
     const cy = y + PLAYER_INFO_HEIGHT / 2;
     let lx = this.safeLeft + 10;
 
@@ -1805,6 +1816,23 @@ export class GameScene {
     this.historyButtonRect = { x: lx, y: cy - 13, w: hrW, h: 26 };
     drawCapsuleButton(ctx, this.historyButtonRect, hrLabel, 'secondary', 12);
     lx += hrW + 8;
+
+    // 「刷新」按钮：刷新图标（磨砂小方块），仅联机局显示；重启小游戏重进当前房间。
+    if (this.onRefreshRoom) {
+      const rs = 26;
+      this.refreshButtonRect = { x: lx, y: cy - rs / 2, w: rs, h: rs };
+      ctx.fillStyle = FROST;
+      roundRectPath(ctx, lx, cy - rs / 2, rs, rs, 7);
+      ctx.fill();
+      ctx.strokeStyle = FROST_BORDER;
+      ctx.lineWidth = 1;
+      roundRectPath(ctx, lx, cy - rs / 2, rs, rs, 7);
+      ctx.stroke();
+      this.drawRefreshIcon(lx + rs / 2, cy, 7);
+      lx += rs + 8;
+    } else {
+      this.refreshButtonRect = null;
+    }
 
     // 「设置」按钮：齿轮图标（磨砂小方块），打开设置弹窗。
     const gs = 26;
@@ -1852,6 +1880,35 @@ export class GameScene {
     ctx.beginPath();
     ctx.arc(cx, cy, r * 0.2, 0, Math.PI * 2);
     ctx.stroke();
+    ctx.restore();
+  }
+
+  /** 刷新图标：约 300° 圆弧 + 端头箭头（刷新对局入口，仅联机局）。 */
+  private drawRefreshIcon(cx: number, cy: number, r: number): void {
+    const ctx = this.ctx;
+    ctx.save();
+    ctx.strokeStyle = INK;
+    ctx.fillStyle = INK;
+    ctx.lineWidth = 2;
+    ctx.lineCap = 'round';
+    // 主弧：从右上顺时针约 300°，顶部留缺口。
+    const startA = -Math.PI * 0.35;
+    const endA = Math.PI * 1.35;
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, startA, endA);
+    ctx.stroke();
+    // 箭头：缺口端沿顺时针切线方向的小三角。
+    const ex = cx + Math.cos(startA) * r;
+    const ey = cy + Math.sin(startA) * r;
+    const tx = -Math.sin(startA);
+    const ty = Math.cos(startA);
+    const s = 4.5;
+    ctx.beginPath();
+    ctx.moveTo(ex + tx * s, ey + ty * s);
+    ctx.lineTo(ex - ty * s * 0.8, ey + tx * s * 0.8);
+    ctx.lineTo(ex + ty * s * 0.8, ey - tx * s * 0.8);
+    ctx.closePath();
+    ctx.fill();
     ctx.restore();
   }
 
