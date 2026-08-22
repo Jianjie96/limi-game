@@ -136,6 +136,10 @@ export interface MatchScoreEntry {
 
 /** 单条历史战绩（云端 lami_history 查询结果，已按本人视角加工）。 */
 export interface MatchHistoryRecord {
+  /** 房间号（查对局详情 / 回合记录用）。 */
+  code: string;
+  /** 对局开始时间戳（毫秒，持久化上线前的老局回退为结束时间）。 */
+  startedAt: number;
   /** 对局结束时间戳（毫秒）。 */
   date: number;
   /** 对局时长（毫秒）。 */
@@ -150,6 +154,11 @@ export interface MatchHistoryRecord {
   scores: MatchScoreEntry[];
 }
 
+/** 单局战绩详情：列表字段 + 完整回合操作日志（持久化上线前的老局为空数组）。 */
+export interface MatchHistoryDetail extends MatchHistoryRecord {
+  log: TurnLogEntry[];
+}
+
 /** 查询本人历史战绩（云端权威，最新在前，上限 50 条）。 */
 export async function fetchMatchHistory(): Promise<MatchHistoryRecord[]> {
   const result = await callGameRaw('history', {});
@@ -157,6 +166,16 @@ export async function fetchMatchHistory(): Promise<MatchHistoryRecord[]> {
     throw new Error((result && result.message) || '查询战绩失败');
   }
   return Array.isArray(result.records) ? result.records : [];
+}
+
+/** 查询单局战绩详情（含完整回合日志；仅参与者本人可查）。 */
+export async function fetchMatchHistoryDetail(code: string): Promise<MatchHistoryDetail> {
+  const result = await callGameRaw('historyDetail', { code });
+  if (!result || !result.ok) {
+    throw new Error((result && result.message) || '查询对局详情失败');
+  }
+  if (!Array.isArray(result.log)) result.log = [];
+  return result as MatchHistoryDetail;
 }
 
 // ----------------------------------------------------------------------------

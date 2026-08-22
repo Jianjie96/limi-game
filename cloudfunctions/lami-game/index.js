@@ -354,15 +354,17 @@ async function doPass(event, openid) {
 
 /** 出牌/Pass 成功后统一落库；若分出胜负则收尾。
  * 版本号回写 room.game 内存，同一请求内多次落库（机器人连打）版本递增不重复。
- * pendingLog：本次请求产生的回合日志，追加后落库；对局结束则清空日志。 */
+ * pendingLog：本次请求产生的回合日志，追加后落库；对局结束则清空房间日志（完整日志已随战绩持久化）。 */
 async function settleAndPersist(room, engine, pendingLog) {
   const st = engine.getState();
   const version = (room.game.version || 0) + 1;
   if (pendingLog && pendingLog.length > 0) {
     room.game.log = ((room.game.log || []).concat(pendingLog)).slice(-200);
   }
+  // 对局结束：先捕获完整回合日志（随战绩文档持久化，历史详情可回看），再清空房间日志。
+  let finalLog = null;
   if (st.phase === 'GAME_OVER') {
-    // 对局结束清空操作日志（新一局从空开始；历史得分已写入 lami_history）。
+    finalLog = (room.game.log || []).slice();
     room.game.log = [];
   }
   await persistState(room, engine, version, 0);
@@ -371,13 +373,14 @@ async function settleAndPersist(room, engine, pendingLog) {
   room.game.currentPlayerIndex = st.currentPlayerIndex;
   if (st.phase === 'GAME_OVER') {
     await ROOMS.doc(room.code).update({ data: { status: 'finished' } });
-    await recordMatchResult(room, engine);
+    await recordMatchResult(room, engine, finalLog || []);
   }
 }
 
 /** 对局结束写历史战绩（云端权威，_id = 房间号，set 幂等防重复）。
+ * log：完整回合操作日志，随战绩持久化（历史详情弹窗回看用）。
  * 集合不存在时自动创建后重试一次（免控制台手工建集合）。 */
-async function recordMatchResult(room, engine) {
+async function recordMatchResult(room, engine, log) {
   const st = engine.getState();
   const result = st.result;
   if (!result) return;
@@ -403,6 +406,8 @@ async function recordMatchResult(room, engine) {
     winnerOpenid: winnerIndex >= 0 ? openids[winnerIndex] : '',
     winnerName: winner ? winner.playerName : '',
     winReason: result.winReason,
+    // 完整回合日志（与房间日志同规则截断 200 回合），历史详情弹窗展示。
+    log: Array.isArray(log) ? log : [],
   };
   try {
     await HISTORY.doc(room.code).set({ data });
@@ -442,6 +447,9 @@ async function doHistory(event, openid) {
     return ok({ records: [] });
   }
   const records = (snap.data || []).map((h) => ({
+    // 列表不带 log（体积大），详情走 historyDetail 单独查。
+    code: h.code || h._id,
+    startedAt: h.startedAt || h.endedAt,
     date: h.endedAt,
     durationMs: Math.max(0, h.endedAt - (h.startedAt || h.endedAt)),
     players: h.playerNames || [],
@@ -459,6 +467,40 @@ async function doHistory(event, openid) {
       : [],
   }));
   return ok({ records });
+}
+
+/** 查询单局战绩详情（含完整回合日志）：仅参与者本人可查。 */
+async function doHistoryDetail(event, openid) {
+  const code = normCode(event.code);
+  let doc = null;
+  try {
+    const snap = await HISTORY.doc(code).get();
+    doc = snap && snap.data ? snap.data : null;
+  } catch (e) {
+    doc = null;
+  }
+  if (!doc) return fail('未找到该场对局记录');
+  if (!(doc.playersOpenid || []).includes(openid)) return fail('你不是该场对局的参与者');
+  return ok({
+    code,
+    startedAt: doc.startedAt || doc.endedAt || 0,
+    date: doc.endedAt || 0,
+    durationMs: Math.max(0, (doc.endedAt || 0) - (doc.startedAt || doc.endedAt || 0)),
+    players: doc.playerNames || [],
+    winnerName: doc.winnerName || '',
+    selfWon: doc.winnerOpenid === openid,
+    scores: Array.isArray(doc.playerResults)
+      ? doc.playerResults.map((r) => ({
+        name: r.name || '',
+        scoreDelta: r.scoreDelta || 0,
+        remainingScore: r.remainingScore || 0,
+        remainingCount: r.remainingCount || 0,
+        isWinner: !!r.isWinner,
+      }))
+      : [],
+    // 持久化上线前结束的老局无 log → 空数组，前端展示「无回合记录」。
+    log: Array.isArray(doc.log) ? doc.log : [],
+  });
 }
 
 // ----------------------------------------------------------------------------
@@ -607,6 +649,8 @@ exports.main = async (event) => {
         return await doLog(event, OPENID);
       case 'history':
         return await doHistory(event, OPENID);
+      case 'historyDetail':
+        return await doHistoryDetail(event, OPENID);
       default:
         return fail('未知操作');
     }

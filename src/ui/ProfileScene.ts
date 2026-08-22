@@ -2,8 +2,8 @@
 // ProfileScene.ts — 个人中心场景
 // ----------------------------------------------------------------------------
 // 从首页「个人中心」进入：头像（微信相册/拍照选择，元素色兜底）+
-// 昵称（原生键盘修改）+ 历史战绩列表（云端 lami_history 查库：
-// 日期/耗时/参与者/是否冠军/各家得分详情），以及 背景音 / 音效 / 震动反馈 / 横屏模式 四个开关。
+// 昵称（原生键盘修改）+ 历史战绩（云端 lami_history 查库：可滚动摘要列表，
+// 点击单局弹详情弹窗：开始时间/时长/MVP/参与者/得分/完整回合记录），以及 背景音 / 音效 / 震动反馈 / 横屏模式 四个开关。
 // 与 HomeScene 共享画布与 backdrop 视觉语言，通过 dispose() 交还。
 // ============================================================================
 
@@ -20,7 +20,13 @@ import { FROST_STRONG, FROST_BORDER, GOLD, INK, INK_SOFT, AVATAR_COLORS, FONT_FA
 import { audio } from './audio';
 import { requestOrientation, orientationSupported } from './orientation';
 import { clearLastRoom } from '../cloud/room';
-import { fetchMatchHistory, type MatchHistoryRecord } from '../cloud/game';
+import {
+  fetchMatchHistory,
+  fetchMatchHistoryDetail,
+  type MatchHistoryRecord,
+  type MatchHistoryDetail,
+} from '../cloud/game';
+import type { TurnLogEntry } from '../game/log';
 import {
   getNickname,
   getAvatarIndex,
@@ -38,6 +44,10 @@ import {
 } from './profile';
 
 const ROW_H = 48;
+/** 历史战绩列表单条高度。 */
+const HISTORY_ITEM_H = 34;
+/** 滑动超过该阈值视为滚动，不再当点击。 */
+const DRAG_THRESHOLD = 8;
 
 export class ProfileScene {
   /** 返回上一页（首页） */
@@ -77,12 +87,70 @@ export class ProfileScene {
   /** 云端历史战绩：null = 尚未加载；加载失败也落为空列表 + 失败标记。 */
   private historyRecords: MatchHistoryRecord[] | null = null;
   private historyFailed = false;
+  /** 战绩列表滚动状态与命中区域（绘制时记录）。 */
+  private historyScrollY = 0;
+  private historyMaxScroll = 0;
+  private historyListRect: SceneButtonRect = { x: 0, y: 0, w: 0, h: 0 };
+  private historyItemRects: SceneButtonRect[] = [];
+  /** 对局详情弹窗：null = 未打开；log 为 null 表示详情加载中。 */
+  private detailRecord: MatchHistoryDetail | null = null;
+  private detailScrollY = 0;
+  private detailMaxScroll = 0;
+  private detailPanelRect: SceneButtonRect | null = null;
+  /** 触摸滚动状态：按下位置 + 滚动目标区域。 */
+  private pressPos: { x: number; y: number } | null = null;
+  private pressMoved = false;
+  private lastTouchY = 0;
+  private scrollTarget: 'history' | 'detail' | null = null;
 
   private touchStartHandler = (e: { touches: Array<{ clientX: number; clientY: number }> }) => {
     const t = e.touches[0];
     if (!t) return;
+    this.pressPos = { x: t.clientX, y: t.clientY };
+    this.pressMoved = false;
+    this.lastTouchY = t.clientY;
+    this.scrollTarget = this.scrollTargetAt(t.clientX, t.clientY);
+  };
+
+  /** 拖动：在战绩列表 / 详情弹窗内容区滚动；超阈值后不再视为点击。 */
+  private touchMoveHandler = (e: { touches: Array<{ clientX: number; clientY: number }> }) => {
+    const t = e.touches[0];
+    if (!t || !this.pressPos || !this.scrollTarget) return;
+    const dy = t.clientY - this.lastTouchY;
+    if (dy !== 0) {
+      if (this.scrollTarget === 'history') {
+        this.historyScrollY = Math.max(0, Math.min(this.historyMaxScroll, this.historyScrollY - dy));
+      } else {
+        this.detailScrollY = Math.max(0, Math.min(this.detailMaxScroll, this.detailScrollY - dy));
+      }
+      this.lastTouchY = t.clientY;
+      this.dirty = true;
+    }
+    if (Math.abs(t.clientY - this.pressPos.y) > DRAG_THRESHOLD) this.pressMoved = true;
+  };
+
+  /** 抬起：未拖动则按点击处理（与 touchStart 配对，防跨场景透触）。 */
+  private touchEndHandler = (e: { changedTouches: Array<{ clientX: number; clientY: number }> }) => {
+    const t = e.changedTouches[0];
+    const moved = this.pressMoved;
+    this.pressPos = null;
+    this.scrollTarget = null;
+    if (!t || moved) return;
     this.handleTap(t.clientX, t.clientY);
   };
+
+  /** 系统打断（来电等）：丢弃按压状态，避免后续误触。 */
+  private touchCancelHandler = () => {
+    this.pressPos = null;
+    this.scrollTarget = null;
+  };
+
+  /** 按下点命中的滚动区域：详情弹窗打开时优先弹窗内容区。 */
+  private scrollTargetAt(x: number, y: number): 'history' | 'detail' | null {
+    if (this.detailRecord && this.detailPanelRect && hitRect(x, y, this.detailPanelRect)) return 'detail';
+    if (!this.detailRecord && hitRect(x, y, this.historyListRect)) return 'history';
+    return null;
+  }
 
   private resizeHandler = (res?: { windowWidth?: number; windowHeight?: number }) => {
     this.measure(res);
@@ -121,6 +189,9 @@ export class ProfileScene {
     this.measure();
 
     wx.onTouchStart(this.touchStartHandler);
+    wx.onTouchMove(this.touchMoveHandler);
+    wx.onTouchEnd(this.touchEndHandler);
+    wx.onTouchCancel(this.touchCancelHandler);
     wx.onWindowResize(this.resizeHandler);
     try {
       wx.onKeyboardConfirm(this.keyboardConfirmHandler);
@@ -152,6 +223,9 @@ export class ProfileScene {
     this.disposed = true;
     cancelAnimationFrame(this.rafId);
     wx.offTouchStart(this.touchStartHandler);
+    wx.offTouchMove(this.touchMoveHandler);
+    wx.offTouchEnd(this.touchEndHandler);
+    wx.offTouchCancel(this.touchCancelHandler);
     wx.offWindowResize(this.resizeHandler);
     try {
       wx.offKeyboardConfirm(this.keyboardConfirmHandler);
@@ -188,6 +262,16 @@ export class ProfileScene {
   }
 
   private handleTap(px: number, py: number): void {
+    // 详情弹窗打开时屏蔽底层交互：点弹窗外关闭，弹窗内由滚动接管。
+    if (this.detailRecord) {
+      const p = this.detailPanelRect;
+      if (!p || !hitRect(px, py, p)) {
+        this.detailRecord = null;
+        this.detailPanelRect = null;
+        this.dirty = true;
+      }
+      return;
+    }
     if (hitRect(px, py, this.backRect)) {
       this.onExit?.();
       return;
@@ -243,6 +327,15 @@ export class ProfileScene {
     if (hitRect(px, py, this.clearCacheRowRect)) {
       this.confirmClearCache();
       return;
+    }
+    // 战绩摘要行：点击打开对局详情弹窗（仅限可视列表区内）。
+    if (hitRect(px, py, this.historyListRect)) {
+      for (let i = 0; i < this.historyItemRects.length; i++) {
+        if (hitRect(px, py, this.historyItemRects[i])) {
+          this.openHistoryDetail(i);
+          return;
+        }
+      }
     }
   }
 
@@ -389,6 +482,7 @@ export class ProfileScene {
     // 横屏：屏幕高度放不下单列卡片，改用双列紧凑布局（左资料、右开关）。
     if (w > h) {
       this.drawLandscapeCard(w, h);
+      if (this.detailRecord) this.drawDetailPanel();
       if (this.message && Date.now() < this.messageUntil) this.drawMessage();
       return;
     }
@@ -434,6 +528,7 @@ export class ProfileScene {
     const histH = h - 12 - histY;
     if (histH >= 96) this.drawHistoryCard(cardX, histY, cardW, histH);
 
+    if (this.detailRecord) this.drawDetailPanel();
     if (this.message && Date.now() < this.messageUntil) this.drawMessage();
   }
 
@@ -542,7 +637,7 @@ export class ProfileScene {
     if (histW >= 160) this.drawHistoryCard(cardX + cardW + 16, cardY, histW, cardH);
   }
 
-  /** 历史战绩卡片：标题 + 最近对局记录（日期/耗时/参与者/冠军/得分详情，夺冠行金色底）。 */
+  /** 历史战绩卡片：标题 + 可滚动摘要列表（开始时间/时长/MVP；MVP 行金色底，点击查看详情）。 */
   private drawHistoryCard(x: number, y: number, w: number, h: number): void {
     const ctx = this.ctx;
     ctx.fillStyle = 'rgba(6,14,22,0.4)';
@@ -563,6 +658,11 @@ export class ProfileScene {
       align: 'left',
     });
 
+    const listTop = y + 36;
+    const listH = h - 36 - 10;
+    this.historyListRect = { x, y: listTop, w, h: listH };
+    this.historyItemRects = [];
+
     const records = this.historyRecords;
     if (records === null) {
       drawSceneText(ctx, x + w / 2, y + h / 2 + 8, this.historyFailed ? '战绩加载失败' : '战绩加载中…', {
@@ -579,71 +679,247 @@ export class ProfileScene {
       return;
     }
 
-    // 每条三行：日期/耗时 + 冠军、参与者（小字）、得分详情（老局无 scores 则两行）。
-    let ry = y + 36;
-    const bottomLimit = y + h - 8;
+    // 摘要列表：单行定高 item（开始时间 · 时长 + 右侧 MVP/冠军），裁剪后按滚动偏移平移。
+    const contentH = records.length * HISTORY_ITEM_H;
+    this.historyMaxScroll = Math.max(0, contentH - listH);
+    if (this.historyScrollY > this.historyMaxScroll) this.historyScrollY = this.historyMaxScroll;
+
+    ctx.save();
+    roundRectPath(ctx, x + 4, listTop, w - 8, listH, 8);
+    ctx.clip();
+    ctx.translate(0, -this.historyScrollY);
+    let ry = listTop;
     for (const r of records) {
-      const hasScores = r.scores && r.scores.length > 0;
-      const rowH = hasScores ? 52 : 36;
-      if (ry + rowH > bottomLimit) break;
-      const cy = ry + (hasScores ? 16 : rowH / 2);
       if (r.selfWon) {
         ctx.fillStyle = 'rgba(233,201,127,0.18)';
-        roundRectPath(ctx, x + 10, ry + 2, w - 20, rowH - 4, 8);
+        roundRectPath(ctx, x + 10, ry + 3, w - 20, HISTORY_ITEM_H - 6, 8);
         ctx.fill();
       }
-      drawSceneText(ctx, x + 16, cy - 8, `${this.fmtDate(r.date)} · ${this.fmtDuration(r.durationMs)}`, {
+      const cy = ry + HISTORY_ITEM_H / 2;
+      drawSceneText(ctx, x + 16, cy, `${this.fmtDate(r.startedAt)} · ${this.fmtDuration(r.durationMs)}`, {
         size: 11,
         color: INK,
         align: 'left',
       });
-      drawSceneText(ctx, x + w - 16, cy - 8, r.selfWon ? '🏆 我夺冠' : `🏆 ${r.winnerName}`, {
+      drawSceneText(ctx, x + w - 16, cy, r.selfWon ? '🏆 MVP' : `冠军 ${r.winnerName}`, {
         size: 11,
-        color: r.selfWon ? GOLD : INK,
+        color: r.selfWon ? GOLD : INK_SOFT,
         align: 'right',
       });
-      drawSceneText(ctx, x + 16, cy + 8, this.fitParticipantText(r, w - 32), {
-        size: 10,
-        color: INK_SOFT,
-        align: 'left',
+      // 命中矩形换算回屏幕坐标（绘制空间已平移 -historyScrollY）。
+      this.historyItemRects.push({ x: x + 4, y: ry - this.historyScrollY, w: w - 8, h: HISTORY_ITEM_H });
+      ry += HISTORY_ITEM_H;
+    }
+    ctx.restore();
+
+    // 滚动指示条：内容溢出时右侧小滑块。
+    if (this.historyMaxScroll > 0) {
+      const trackX = x + w - 7;
+      const trackY = listTop + 2;
+      const trackH = listH - 4;
+      ctx.fillStyle = 'rgba(255,255,255,0.14)';
+      roundRectPath(ctx, trackX, trackY, 3, trackH, 1.5);
+      ctx.fill();
+      const thumbH = Math.max(18, trackH * (listH / contentH));
+      const thumbY = trackY + (this.historyScrollY / this.historyMaxScroll) * (trackH - thumbH);
+      ctx.fillStyle = 'rgba(233,201,127,0.85)';
+      roundRectPath(ctx, trackX, thumbY, 3, thumbH, 1.5);
+      ctx.fill();
+    }
+  }
+
+  /** 点击摘要行：打开详情弹窗并查云端单局详情（含完整回合日志）。 */
+  private openHistoryDetail(index: number): void {
+    const records = this.historyRecords;
+    if (!records || !records[index]) return;
+    const r = records[index];
+    vibrateIfEnabled();
+    // 先以列表已有字段展示基础信息，回合记录等详情异步补齐。
+    this.detailRecord = { ...r, log: null as unknown as TurnLogEntry[] } as MatchHistoryDetail;
+    this.detailScrollY = 0;
+    this.dirty = true;
+    fetchMatchHistoryDetail(r.code)
+      .then((detail) => {
+        if (this.disposed || !this.detailRecord || this.detailRecord.code !== r.code) return;
+        this.detailRecord = detail;
+        this.dirty = true;
+      })
+      .catch((e: any) => {
+        if (this.disposed || !this.detailRecord || this.detailRecord.code !== r.code) return;
+        this.detailRecord = { ...this.detailRecord, log: [] };
+        this.showInfo((e && e.message) || '对局详情加载失败', 3000);
+        this.dirty = true;
       });
-      if (hasScores) {
-        drawSceneText(ctx, x + 16, cy + 26, this.fitScoreText(r, w - 32), {
-          size: 10,
-          color: INK_SOFT,
+  }
+
+  /** 对局详情弹窗：开始时间/时长/MVP/参与者/得分/回合记录，整块内容可滚动。 */
+  private drawDetailPanel(): void {
+    const ctx = this.ctx;
+    const d = this.detailRecord;
+    if (!d) return;
+    // 全屏遮罩：压暗背景，突出弹窗卡片。
+    ctx.fillStyle = 'rgba(24,32,44,0.55)';
+    ctx.fillRect(0, 0, this.screenW, this.screenH);
+
+    const panelW = Math.min(320, this.screenW * 0.9);
+    const panelH = Math.min(400, this.screenH * 0.82);
+    const px = (this.screenW - panelW) / 2;
+    const py = (this.screenH - panelH) / 2;
+    this.detailPanelRect = { x: px, y: py, w: panelW, h: panelH };
+
+    // 墨玻璃卡片（与回合记录弹窗同一视觉语言）。
+    ctx.fillStyle = 'rgba(6,14,22,0.4)';
+    roundRectPath(ctx, px + 2, py + 4, panelW, panelH, 14);
+    ctx.fill();
+    ctx.fillStyle = FROST_STRONG;
+    roundRectPath(ctx, px, py, panelW, panelH, 14);
+    ctx.fill();
+    ctx.strokeStyle = FROST_BORDER;
+    ctx.lineWidth = 1.5;
+    roundRectPath(ctx, px, py, panelW, panelH, 14);
+    ctx.stroke();
+
+    drawSceneText(ctx, this.screenW / 2, py + 24, `对局详情 · 房号 ${d.code}`, {
+      size: 15,
+      bold: true,
+      color: INK,
+    });
+
+    const textLeft = px + 20;
+    const maxTextW = panelW - 40;
+
+    // 内容整体一个滚动区：头部信息 + 参与者 + 得分 + 回合记录。
+    const loading = d.log === null;
+    const log = d.log || [];
+    const logLines = log.map((entry) => this.detailLogLines(entry, maxTextW - 12));
+    let contentH = 8 + 20 + 26 + 20 + 28;
+    contentH += d.players.length * 16 + 10;
+    contentH += (d.scores.length > 0 ? d.scores.length * 17 + 26 : 20);
+    contentH += 8;
+    if (loading) contentH += 24;
+    else if (log.length === 0) contentH += 24;
+    else for (const lines of logLines) contentH += 24 + lines.length * 14 + 6;
+
+    const listTop = py + 42;
+    const listH = panelH - 42 - 12;
+    this.detailMaxScroll = Math.max(0, contentH - listH);
+    if (this.detailScrollY > this.detailMaxScroll) this.detailScrollY = this.detailMaxScroll;
+
+    ctx.save();
+    roundRectPath(ctx, px + 10, listTop, panelW - 20, listH, 8);
+    ctx.clip();
+    ctx.translate(0, -this.detailScrollY);
+
+    let ry = listTop + 8;
+    drawSceneText(ctx, textLeft, ry + 10, `开始时间 ${this.fmtDate(d.startedAt)} · 时长 ${this.fmtDuration(d.durationMs)}`, {
+      size: 12,
+      color: INK,
+      align: 'left',
+    });
+    ry += 20;
+    drawSceneText(ctx, textLeft, ry + 13, d.selfWon ? '🏆 MVP（本人夺冠）' : `冠军：${d.winnerName}`.slice(0, 24), {
+      size: 12,
+      color: d.selfWon ? GOLD : INK,
+      align: 'left',
+    });
+    ry += 26;
+
+    drawSceneText(ctx, textLeft, ry + 10, '参与者', { size: 12, bold: true, color: INK_SOFT, align: 'left' });
+    ry += 20;
+    for (const name of d.players) {
+      drawSceneText(ctx, textLeft + 8, ry + 8, this.fitText(name, maxTextW - 8), { size: 11, color: INK, align: 'left' });
+      ry += 16;
+    }
+    ry += 10;
+
+    drawSceneText(ctx, textLeft, ry + 10, '得分情况', { size: 12, bold: true, color: INK_SOFT, align: 'left' });
+    ry += 20;
+    if (d.scores.length === 0) {
+      drawSceneText(ctx, textLeft + 8, ry + 8, '（老局无得分记录）', { size: 11, color: INK_SOFT, align: 'left' });
+      ry += 20;
+    } else {
+      for (const s of d.scores) {
+        const delta = s.scoreDelta > 0 ? `+${s.scoreDelta}` : `${s.scoreDelta}`;
+        const detail = s.isWinner ? '出完所有牌' : `余${s.remainingCount}张/${s.remainingScore}分`;
+        drawSceneText(ctx, textLeft + 8, ry + 8, this.fitText(`${s.isWinner ? '🏆 ' : ''}${s.name}  ${delta}（${detail}）`, maxTextW - 8), {
+          size: 11,
+          color: s.isWinner ? GOLD : INK,
           align: 'left',
         });
+        ry += 17;
       }
-      ry += rowH;
+      ry += 9;
     }
-  }
+    ry += 8;
 
-  /** 得分详情行：各家「昵称 ±本局分（余N张/M分）」，按可用宽度截断。 */
-  private fitScoreText(r: MatchHistoryRecord, maxWidth: number): string {
-    this.ctx.font = `10px ${FONT_FAMILY}`;
-    const parts = r.scores.map((s) => {
-      const delta = s.scoreDelta > 0 ? `+${s.scoreDelta}` : `${s.scoreDelta}`;
-      const detail = s.isWinner ? '出完' : `余${s.remainingCount}张/${s.remainingScore}分`;
-      return `${s.name} ${delta}（${detail}）`;
+    drawSceneText(ctx, textLeft, ry + 10, `回合记录（${loading ? '加载中…' : `${log.length} 回合`}）`, {
+      size: 12,
+      bold: true,
+      color: INK_SOFT,
+      align: 'left',
     });
-    let text = `得分：${parts.join(' ')}`;
-    while (parts.length > 1 && this.ctx.measureText(text).width > maxWidth) {
-      parts.pop();
-      text = `得分：${parts.join(' ')}…`;
+    ry += 20;
+    if (loading) {
+      drawSceneText(ctx, textLeft + 8, ry + 12, '正在加载回合记录…', { size: 11, color: INK_SOFT, align: 'left' });
+    } else if (log.length === 0) {
+      drawSceneText(ctx, textLeft + 8, ry + 12, '该对局无回合记录', { size: 11, color: INK_SOFT, align: 'left' });
+    } else {
+      log.forEach((entry, i) => {
+        const eh = 24 + logLines[i].length * 14;
+        ctx.fillStyle = 'rgba(255,255,255,0.07)';
+        roundRectPath(ctx, px + 14, ry, panelW - 28, eh, 8);
+        ctx.fill();
+        drawSceneText(ctx, px + 24, ry + 14, `回合 ${entry.turnNumber} · ${entry.playerName}`, {
+          size: 12,
+          bold: true,
+          color: INK,
+          align: 'left',
+        });
+        let ly = ry + 28;
+        for (const line of logLines[i]) {
+          drawSceneText(ctx, px + 24, ly, line, { size: 11, color: INK_SOFT, align: 'left' });
+          ly += 14;
+        }
+        ry += eh + 6;
+      });
     }
-    return text;
+    ctx.restore();
+
+    // 滚动指示条。
+    if (this.detailMaxScroll > 0) {
+      const trackX = px + panelW - 7;
+      const trackY = listTop + 2;
+      const trackH = listH - 4;
+      ctx.fillStyle = 'rgba(255,255,255,0.14)';
+      roundRectPath(ctx, trackX, trackY, 3, trackH, 1.5);
+      ctx.fill();
+      const thumbH = Math.max(18, trackH * (listH / contentH));
+      const thumbY = trackY + (this.detailScrollY / this.detailMaxScroll) * (trackH - thumbH);
+      ctx.fillStyle = 'rgba(233,201,127,0.85)';
+      roundRectPath(ctx, trackX, thumbY, 3, thumbH, 1.5);
+      ctx.fill();
+    }
   }
 
-  /** 参与者行按可用宽度截断（超出补省略号）。 */
-  private fitParticipantText(r: MatchHistoryRecord, maxWidth: number): string {
-    let names = r.players.join('、');
-    this.ctx.font = `10px ${FONT_FAMILY}`;
-    let text = `参与者：${names}`;
-    while (names.length > 1 && this.ctx.measureText(text).width > maxWidth) {
-      names = names.slice(0, -1);
-      text = `参与者：${names}…`;
+  /** 回合记录条目按可用宽度折行（首行总述与牌面明细都可能超宽）。 */
+  private detailLogLines(entry: TurnLogEntry, maxW: number): string[] {
+    const ctx = this.ctx;
+    ctx.font = `11px ${FONT_FAMILY}`;
+    const out: string[] = [];
+    for (const line of entry.lines) {
+      const wrapped = wrapTextLines(ctx, line, maxW);
+      for (const wl of wrapped) out.push(wl);
     }
-    return text;
+    return out;
+  }
+
+  /** 单行文本按可用宽度截断（超出补省略号）。 */
+  private fitText(text: string, maxWidth: number): string {
+    const ctx = this.ctx;
+    if (ctx.measureText(text).width <= maxWidth) return text;
+    let t = text;
+    while (t.length > 1 && ctx.measureText(`${t}…`).width > maxWidth) t = t.slice(0, -1);
+    return `${t}…`;
   }
 
   /** 日期时间：MM-DD HH:mm。 */
