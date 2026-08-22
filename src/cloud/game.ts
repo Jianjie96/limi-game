@@ -8,6 +8,7 @@
 
 import type { Tile, TileGroup, GameResult, GameConfig } from '../game/types';
 import type { EngineOp } from '../game/types';
+import type { TurnLogEntry } from '../game/log';
 
 const GAME_FUNCTION = 'lami-game';
 
@@ -98,6 +99,13 @@ export async function sendPass(code: string): Promise<MoveResponse> {
   const result = await callGameRaw('pass', { code });
   if (!result) throw new Error('请求失败');
   return result as MoveResponse;
+}
+
+/** 读取本局操作日志（云端逐回合写入，房间内所有成员可读；对局结束已清空则返回空） */
+export async function fetchTurnLog(code: string): Promise<TurnLogEntry[]> {
+  const result = await callGameRaw('log', { code });
+  if (!result || !result.ok) return [];
+  return Array.isArray(result.log) ? result.log : [];
 }
 
 /** 结束对局（房主）：终止当前对局并清理云端数据，用于关闭测试房 / 紧急终止。 */

@@ -22,6 +22,7 @@ var engine_entry_exports = {};
 __export(engine_entry_exports, {
   RummikubEngine: () => RummikubEngine,
   applyOps: () => applyOps,
+  buildTurnLogEntry: () => buildTurnLogEntry,
   findLowestScorePlayer: () => findLowestScorePlayer,
   planBotTurn: () => planBotTurn
 });
@@ -1325,10 +1326,91 @@ function selectDisjointMelds(candidates) {
   }
   return chosen;
 }
+
+// src/game/log.ts
+function describeMeldTiles(tiles) {
+  const reals = tiles.filter((t) => !isLogicalJoker(t));
+  const isRunGroup = reals.length > 0 && new Set(reals.map((t) => t.logicalColor)).size === 1;
+  if (isRunGroup) {
+    const nums = reals.map((t) => t.logicalNumber);
+    const min = Math.min(...nums);
+    const max = Math.max(...nums);
+    const colorName = describeTile(reals[0]).split(" ")[0];
+    return min === max ? `${colorName} ${min}` : `${colorName} ${min}-${max}`;
+  }
+  const parts = tiles.map((t, i) => {
+    if (isLogicalJoker(t)) {
+      const v = inferJokerValueAt(tiles, i);
+      return v ? `${v}\uFF08\u767E\u642D\uFF09` : "\u767E\u642D";
+    }
+    return describeTile(t);
+  });
+  return parts.join("\u3001");
+}
+function inferJokerValueAt(tiles, jokerIndex) {
+  const reals = tiles.filter((t) => !isLogicalJoker(t));
+  if (reals.length === 0) return null;
+  const isRun = new Set(reals.map((t) => t.logicalColor)).size === 1;
+  if (!isRun) return describeTile(reals[0]);
+  let left = null;
+  let right = null;
+  for (let i = jokerIndex - 1; i >= 0; i--) {
+    if (!isLogicalJoker(tiles[i])) {
+      left = { t: tiles[i], i };
+      break;
+    }
+  }
+  for (let i = jokerIndex + 1; i < tiles.length; i++) {
+    if (!isLogicalJoker(tiles[i])) {
+      right = { t: tiles[i], i };
+      break;
+    }
+  }
+  let n = null;
+  if (left) n = left.t.logicalNumber + (jokerIndex - left.i);
+  else if (right) n = right.t.logicalNumber - (right.i - jokerIndex);
+  if (n === null || n < 1 || n > 13) return null;
+  return `${describeTile(reals[0]).split(" ")[0]} ${n}`;
+}
+function buildTurnLogEntry(prevBoard, nextBoard, turnNumber, playerName, isPass) {
+  if (isPass) {
+    return { turnNumber, playerName, lines: ["Pass\uFF0C\u6478\u724C 1 \u5F20"] };
+  }
+  const prevIds = /* @__PURE__ */ new Set();
+  for (const g of prevBoard) for (const t of g.tiles) prevIds.add(t.originalTile.id);
+  const prevGroups = new Map(prevBoard.map((g) => [g.id, g]));
+  const lines = [];
+  let placedCount = 0;
+  let swapped = false;
+  for (const g of nextBoard) {
+    const prevG = prevGroups.get(g.id);
+    const added = g.tiles.filter((t) => !prevIds.has(t.originalTile.id));
+    const jokerBefore = prevG ? prevG.tiles.filter(isLogicalJoker).length : 0;
+    const jokerAfter = g.tiles.filter(isLogicalJoker).length;
+    if (!prevG) {
+      lines.push(`\u65B0\u7EC4\uFF1A${describeMeldTiles(g.tiles)}`);
+      placedCount += g.tiles.length;
+    } else if (added.length > 0) {
+      lines.push(`\u52A0\u5165 ${added.map(describeTile).join("\u3001")} \u2192 ${describeMeldTiles(g.tiles)}`);
+      placedCount += added.length;
+    }
+    if (prevG && jokerAfter < jokerBefore && added.length > 0) {
+      const beforeJokerIdx = prevG.tiles.findIndex(isLogicalJoker);
+      const val = beforeJokerIdx >= 0 ? inferJokerValueAt(prevG.tiles, beforeJokerIdx) : null;
+      lines.push(`\u6362\u56DE\u767E\u642D${val ? `\uFF08\u539F\u4EE3\u66FF ${val}\uFF09` : ""}\uFF1A${added.map(describeTile).join("\u3001")} \u66FF\u5165`);
+      swapped = true;
+    }
+  }
+  if (placedCount > 0) lines.unshift(`\u51FA\u724C ${placedCount} \u5F20`);
+  else if (swapped) lines.unshift("\u6362\u56DE\u767E\u642D");
+  else lines.unshift("\u65E0\u52A8\u4F5C");
+  return { turnNumber, playerName, lines };
+}
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {
   RummikubEngine,
   applyOps,
+  buildTurnLogEntry,
   findLowestScorePlayer,
   planBotTurn
 });

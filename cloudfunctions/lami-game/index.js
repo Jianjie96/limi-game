@@ -8,6 +8,7 @@
 //   move — 出牌提交：回放客户端操作日志 → submitTurn 校验 → 写库推送
 //   pass — Pass：摸 1 张并结束回合（回滚本回合桌面操作）
 //   end  — 房主主动结束对局（关闭测试房 / 紧急终止）
+//   log  — 读取本局操作日志（game.log，云端逐回合写入，对局结束清空）
 //   history — 查询本人历史战绩（lami_history，对局结束时云端写入）
 //   tick — 定时触发器（每分钟）：回收闲置测试房与逾期未开始的等待测试房，
 //          清理过期房间数据与过期战绩（第一版回合不限时，无超时托管）
@@ -23,7 +24,7 @@
 // ============================================================================
 
 const cloud = require('wx-server-sdk');
-const { RummikubEngine, applyOps, findLowestScorePlayer, planBotTurn } = require('./engine-bundle.js');
+const { RummikubEngine, applyOps, findLowestScorePlayer, planBotTurn, buildTurnLogEntry } = require('./engine-bundle.js');
 
 cloud.init({ env: cloud.DYNAMIC_CURRENT_ENV });
 const db = cloud.database();
@@ -135,6 +136,8 @@ async function persistState(room, engine, version, deadline) {
       'game.version': version,
       'game.turnDeadline': deadline,
       'game.currentPlayerIndex': engine.getState().currentPlayerIndex,
+      // 操作日志随每次落库整体回写（内存累积，结束时清空；_.set 防点路径展开）。
+      'game.log': _.set((room.game && room.game.log) || []),
       // 必须用 _.set 整体替换：update 传纯对象会被展开成点路径逐字段更新，
       // 对局结束时 result 从 null 变成对象，展开写 game.public.result.playerResults
       // 会报「Cannot create field in element {result: null}」导致落库失败。
@@ -219,6 +222,8 @@ async function doInit(event, openid) {
         playersOpenid,
         currentPlayerIndex: 0,
         public: buildPublic(engine, version, 0),
+        // 操作日志：云端逐回合写入，对局结束时清空（新一局从空开始）。
+        log: [],
         // 开局时间：结算历史战绩耗时的起点。
         startedAt: Date.now(),
         // 开局由房主客户端触发，记为一次真人活跃；供 tick 回收闲置测试房判定。
@@ -249,6 +254,11 @@ async function doMove(event, openid) {
     return ok({ payload: payloadFor(room, engine, room.game.version, room.game.turnDeadline, openid) });
   }
 
+  // 回合开始前快照桌面（深拷贝，后续操作不得影响它），供回合完成后生成操作日志条目。
+  const prevBoard = JSON.parse(JSON.stringify(engine.getState().board));
+  const turnNumber = engine.getState().turnNumber;
+  const playerName = engine.getState().players[idx].name;
+
   try {
     applyOps(engine, ops);
   } catch (e) {
@@ -274,7 +284,8 @@ async function doMove(event, openid) {
     return Object.assign(fail('出牌校验未通过'), { errors: res.errors, payload });
   }
 
-  await settleAndPersist(room, engine);
+  const entry = buildTurnLogEntry(prevBoard, engine.getState().board, turnNumber, playerName, false);
+  await settleAndPersist(room, engine, [entry]);
   // 回合若移交到机器人 → 云端立即连续代打，真人响应里直接拿到最新状态。
   await advanceBots(room, engine);
   // 真人成功出牌：刷新活跃时间（机器人不会调 move，tick 据此回收闲置测试房）。
@@ -313,6 +324,9 @@ async function doPass(event, openid) {
     return ok({ payload: payloadFor(room, engine, room.game.version, room.game.turnDeadline, openid) });
   }
 
+  const prevBoard = JSON.parse(JSON.stringify(engine.getState().board));
+  const turnNumber = engine.getState().turnNumber;
+  const playerName = engine.getState().players[idx].name;
   try {
     engine.pass();
   } catch (e) {
@@ -326,7 +340,8 @@ async function doPass(event, openid) {
     }
     return fail('对局数据缺失');
   }
-  await settleAndPersist(room, engine);
+  const entry = buildTurnLogEntry(prevBoard, engine.getState().board, turnNumber, playerName, true);
+  await settleAndPersist(room, engine, [entry]);
   // 回合若移交到机器人 → 云端立即连续代打。
   await advanceBots(room, engine);
   // 真人成功 Pass：刷新活跃时间（机器人不会调 pass）。
@@ -335,10 +350,18 @@ async function doPass(event, openid) {
 }
 
 /** 出牌/Pass 成功后统一落库；若分出胜负则收尾。
- * 版本号回写 room.game 内存，同一请求内多次落库（机器人连打）版本递增不重复。 */
-async function settleAndPersist(room, engine) {
+ * 版本号回写 room.game 内存，同一请求内多次落库（机器人连打）版本递增不重复。
+ * pendingLog：本次请求产生的回合日志，追加后落库；对局结束则清空日志。 */
+async function settleAndPersist(room, engine, pendingLog) {
   const st = engine.getState();
   const version = (room.game.version || 0) + 1;
+  if (pendingLog && pendingLog.length > 0) {
+    room.game.log = ((room.game.log || []).concat(pendingLog)).slice(-200);
+  }
+  if (st.phase === 'GAME_OVER') {
+    // 对局结束清空操作日志（新一局从空开始；历史得分已写入 lami_history）。
+    room.game.log = [];
+  }
   await persistState(room, engine, version, 0);
   room.game.version = version;
   room.game.turnDeadline = 0;
@@ -392,6 +415,16 @@ async function recordMatchResult(room, engine) {
   }
 }
 
+/** 读取本局操作日志（房间内所有成员可读；对局结束已清空则返回空）。 */
+async function doLog(event, openid) {
+  const code = normCode(event.code);
+  const room = await getDoc(ROOMS, code);
+  if (!room || !room.game) return fail('对局不存在');
+  const openids = room.game.playersOpenid || (room.players || []).map((p) => p.openid);
+  if (!openids.includes(openid)) return fail('你不在该房间中');
+  return ok({ log: room.game.log || [] });
+}
+
 /** 查询本人历史战绩（最新在前，上限 50 条）。 */
 async function doHistory(event, openid) {
   let snap;
@@ -430,37 +463,46 @@ async function doHistory(event, openid) {
 // ----------------------------------------------------------------------------
 
 /** 执行机器人一个回合：planBotTurn 规划落子 → submitTurn 提交；无牌可出或提交被拒则 pass。
+ * 返回本回合的结束方式（submitted / passed），供调用方生成操作日志条目。
  * 异常时回滚到回合开始状态并 pass 兜底，保证密态不损坏。 */
 function botPlayOneTurn(engine) {
   const snapshot = engine.serializeState();
   try {
     if (planBotTurn(engine)) {
       const res = engine.submitTurn();
-      if (res.valid) return;
+      if (res.valid) return 'submitted';
     }
     engine.pass();
+    return 'passed';
   } catch (e) {
     try {
       engine.loadState(snapshot);
       engine.pass();
     } catch (e2) { /* 最后兜底：状态已在内存，下次 tick 会再处理 */ }
+    return 'passed';
   }
 }
 
 /** 当前回合是机器人时连续代打，直到回到真人回合或对局结束；末尾一次性落库。 */
 async function advanceBots(room, engine) {
   const openids = (room.game && room.game.playersOpenid) || [];
+  const pendingLog = [];
   let turns = 0;
   while (turns < 100) {
     const st = engine.getState();
     if (st.phase !== 'PLAYING') break;
     const openid = openids[st.currentPlayerIndex];
     if (!String(openid || '').startsWith('bot_')) break;
-    botPlayOneTurn(engine);
+    // 回合开始前快照（深拷贝），与真人回合同规则生成操作日志条目。
+    const prevBoard = JSON.parse(JSON.stringify(st.board));
+    const turnNumber = st.turnNumber;
+    const playerName = st.players[st.currentPlayerIndex].name;
+    const outcome = botPlayOneTurn(engine);
+    pendingLog.push(buildTurnLogEntry(prevBoard, engine.getState().board, turnNumber, playerName, outcome === 'passed'));
     turns++;
   }
   if (turns > 0) {
-    await settleAndPersist(room, engine);
+    await settleAndPersist(room, engine, pendingLog);
   }
   return turns;
 }
@@ -558,6 +600,8 @@ exports.main = async (event) => {
         return await doPass(event, OPENID);
       case 'end':
         return await doEnd(event, OPENID);
+      case 'log':
+        return await doLog(event, OPENID);
       case 'history':
         return await doHistory(event, OPENID);
       default:

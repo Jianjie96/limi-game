@@ -220,6 +220,18 @@ export class GameScene {
   private settingsPanelRect: { x: number; y: number; w: number; h: number } | null = null;
   private settingsRowRects: { x: number; y: number; w: number; h: number }[] = [];
 
+  /** 回合记录弹窗：定高列表，最新在最上面，内容溢出时竖滑滚动。 */
+  private historyPanelOpen = false;
+  private historyButtonRect: { x: number; y: number; w: number; h: number } | null = null;
+  private historyPanelRect: { x: number; y: number; w: number; h: number } | null = null;
+  private historyScrollY = 0;
+  private historyMaxScroll = 0;
+  private historyScrollDrag: { lastY: number; moved: boolean } | null = null;
+  /** 回合记录（最新在顶）：云端操作日志（game.log）+ 本地缓存合并，房间内全员共享，
+   *  断线重连也能看到完整历史；云端在对局结束时清空，缓存保证结算面板仍可查看。
+   *  lines：首行动作总述（出牌 N 张/Pass），其后逐组完整牌面明细。 */
+  private turnLog: Array<{ turnNumber: number; playerName: string; lines: string[] }> = [];
+
   private isLandscape = false;
   /** dispose 后丢弃异步回调（转屏等待可能晚于场景释放）。 */
   private disposed = false;
@@ -411,6 +423,23 @@ export class GameScene {
       return;
     }
 
+    // 回合记录弹窗打开：屏蔽牌面交互；按在卡片内可竖滑滚动（松手命中在 touchEnd）。
+    if (this.historyPanelOpen) {
+      this.clearLongPressTimer();
+      this.longPressActive = false;
+      this.sweepSelectActive = false;
+      this.pressSource = null;
+      this.pressOnBoardEmpty = false;
+      this.boardScrollDrag = null;
+      this.boardTwoFingerScroll = null;
+      const hp = this.historyPanelRect;
+      this.historyScrollDrag =
+        hp && t.clientX >= hp.x && t.clientX <= hp.x + hp.w && t.clientY >= hp.y && t.clientY <= hp.y + hp.h
+          ? { lastY: t.clientY, moved: false }
+          : null;
+      return;
+    }
+
     // 桌面双指按下 → 进入双指滚动（牌面上也可启动）；取消单指手势。
     if (e.touches && e.touches.length >= 2 && !this.drag && this.boardMaxScroll > 0) {
       const a = e.touches[0];
@@ -461,6 +490,23 @@ export class GameScene {
   private touchMoveHandler = (e: { touches?: Array<{ clientX: number; clientY: number }> }) => {
     const t = e.touches?.[0];
     if (!t) return;
+
+    // 回合记录弹窗滚动：上滑看更早的回合（最新在最上）。
+    if (this.historyPanelOpen) {
+      if (this.historyScrollDrag) {
+        const dy = t.clientY - this.historyScrollDrag.lastY;
+        if (Math.abs(dy) > 0) {
+          this.historyScrollY = Math.max(
+            0,
+            Math.min(this.historyMaxScroll, this.historyScrollY - dy)
+          );
+          this.historyScrollDrag.lastY = t.clientY;
+          if (Math.abs(t.clientY - this.pressY) > DRAG_THRESHOLD) this.historyScrollDrag.moved = true;
+          this.markDirty();
+        }
+      }
+      return;
+    }
 
     // 双指滚动：按两指中点位移平移桌面内容（下拖看上、上拖看下）。
     if (this.boardTwoFingerScroll && e.touches && e.touches.length >= 2) {
@@ -571,6 +617,16 @@ export class GameScene {
     if (!this.touchActive) return;
     this.touchActive = false;
     const t = e.changedTouches?.[0];
+
+    // 回合记录弹窗：滚动过则吞掉本次松手；未滚动视作点按（卡片外关闭）。
+    if (this.historyPanelOpen) {
+      const moved = this.historyScrollDrag?.moved;
+      this.historyScrollDrag = null;
+      if (!moved && t) this.handleHistoryPanelTap(t.clientX, t.clientY);
+      this.pressSource = null;
+      this.markDirty();
+      return;
+    }
 
     // 双指滚动结束：同时吞掉第二根手指的 touchEnd，防止误判为点击。
     if (this.boardTwoFingerScroll) {
@@ -795,6 +851,16 @@ export class GameScene {
     const sr = this.settingsButtonRect;
     if (sr && x >= sr.x && x <= sr.x + sr.w && y >= sr.y && y <= sr.y + sr.h) {
       this.settingsPanelOpen = true;
+      audio.play('pickup');
+      this.markDirty();
+      return;
+    }
+    const hr = this.historyButtonRect;
+    if (hr && x >= hr.x && x <= hr.x + hr.w && y >= hr.y && y <= hr.y + hr.h) {
+      this.historyPanelOpen = true;
+      this.historyScrollY = 0;
+      // 打开时拉取云端最新日志（房间内全员共享的权威数据源）。
+      this.coordinator?.refreshLog();
       audio.play('pickup');
       this.markDirty();
       return;
@@ -1229,6 +1295,9 @@ export class GameScene {
 
     // 设置弹窗：绘制在所有图层之上（顶栏齿轮按钮打开）。
     if (this.settingsPanelOpen) this.buildSettingsPanel();
+
+    // 回合记录弹窗：定高可滚动列表（顶栏「回合记录」按钮打开）。
+    if (this.historyPanelOpen) this.buildHistoryPanel();
 
     // 拖拽幽灵牌绘制在最上层。
     this.drawDragGhost();
@@ -1670,57 +1739,13 @@ export class GameScene {
     const player = this.engine.getCurrentPlayer();
     const cy = y + PLAYER_INFO_HEIGHT / 2;
 
-    // 左侧「回合数」香槟金渐变胶囊徽章。
-    const turnText = `回合 ${state.turnNumber}`;
-    ctx.font = `bold ${FONT_SIZE_LABEL - 2}px ${FONT_FAMILY}`;
-    const tw = ctx.measureText(turnText).width;
-    const badge = ctx.createLinearGradient(0, cy - 10, 0, cy + 10);
-    badge.addColorStop(0, '#F0D89C');
-    badge.addColorStop(1, '#D3A85C');
-    ctx.fillStyle = badge;
-    roundRectPath(ctx, this.safeLeft + 10, cy - 10, tw + 18, 20, 10);
-    ctx.fill();
-    this.drawText(this.safeLeft + 19 + tw / 2, cy, turnText, {
-      size: FONT_SIZE_LABEL - 2,
-      color: '#FFFFFF',
-      bold: true,
-    });
+    // 按钮一律靠左：部分机型右上角会被微信胶囊按钮遮挡。
+    // 顺序：设置齿轮 → 回合记录 → 结束对局（仅测试房房主）→ 回合徽章与文字。
+    let lx = this.safeLeft + 10;
 
-    this.drawText(this.safeLeft + 10 + tw + 28, cy, `${player.name} 的回合`, {
-      size: FONT_SIZE_LABEL,
-      color: INK,
-      bold: true,
-      align: 'left',
-    });
-
-    if (this.onRequestEndGame) {
-      // 测试房应急出口：顶栏右侧「结束对局」按钮（设置齿轮左边）。
-      const bw = 76;
-      const bh = 26;
-      this.endGameRect = {
-        x: this.screenW - this.safeRight - 12 - bw,
-        y: cy - bh / 2,
-        w: bw,
-        h: bh,
-      };
-    } else {
-      this.endGameRect = null;
-      // 右侧留出齿轮按钮的位置（26 宽 + 间距）。
-      this.drawText(this.screenW - this.safeRight - 12 - 36, cy, '出牌 或 Pass 摸牌', {
-        size: FONT_SIZE_LABEL - 2,
-        color: INK_SOFT,
-        align: 'right',
-      });
-    }
-
-    // 设置齿轮按钮：顶栏最右（有「结束对局」时排在它右边），点开全局设置弹窗。
+    // 设置齿轮按钮。
     const gs = 26;
-    const gearRect = {
-      x: this.screenW - this.safeRight - 12 - gs,
-      y: cy - gs / 2,
-      w: gs,
-      h: gs,
-    };
+    const gearRect = { x: lx, y: cy - gs / 2, w: gs, h: gs };
     this.settingsButtonRect = gearRect;
     ctx.fillStyle = FROST;
     roundRectPath(ctx, gearRect.x, gearRect.y, gs, gs, 7);
@@ -1730,10 +1755,65 @@ export class GameScene {
     roundRectPath(ctx, gearRect.x, gearRect.y, gs, gs, 7);
     ctx.stroke();
     this.drawGearIcon(gearRect.x + gs / 2, cy, 8);
-    if (this.onRequestEndGame && this.endGameRect) {
-      // 有「结束对局」时齿轮让位：齿轮贴右边，结束对局挪到齿轮左侧。
-      this.endGameRect.x = gearRect.x - 8 - this.endGameRect.w;
+    lx += gs + 8;
+
+    // 「回合记录」按钮：打开定高可滚动列表。
+    ctx.font = `bold 12px ${FONT_FAMILY}`;
+    const hrLabel = '回合记录';
+    const hrW = ctx.measureText(hrLabel).width + 16;
+    this.historyButtonRect = { x: lx, y: cy - 13, w: hrW, h: 26 };
+    drawCapsuleButton(ctx, this.historyButtonRect, hrLabel, 'secondary', 12);
+    lx += hrW + 8;
+
+    // 测试房应急出口：「结束对局」（仅测试房房主挂接回调时显示）。
+    if (this.onRequestEndGame) {
+      const ebw = 76;
+      const ebh = 26;
+      this.endGameRect = { x: lx, y: cy - ebh / 2, w: ebw, h: ebh };
       drawCapsuleButton(ctx, this.endGameRect, '结束对局', 'danger', 12);
+      lx += ebw + 8;
+    } else {
+      this.endGameRect = null;
+    }
+
+    // 「回合数」香槟金渐变胶囊徽章。
+    const turnText = `回合 ${state.turnNumber}`;
+    ctx.font = `bold ${FONT_SIZE_LABEL - 2}px ${FONT_FAMILY}`;
+    const tw = ctx.measureText(turnText).width;
+    const badge = ctx.createLinearGradient(0, cy - 10, 0, cy + 10);
+    badge.addColorStop(0, '#F0D89C');
+    badge.addColorStop(1, '#D3A85C');
+    ctx.fillStyle = badge;
+    roundRectPath(ctx, lx + 4, cy - 10, tw + 18, 20, 10);
+    ctx.fill();
+    this.drawText(lx + 13 + tw / 2, cy, turnText, {
+      size: FONT_SIZE_LABEL - 2,
+      color: '#FFFFFF',
+      bold: true,
+    });
+
+    const nameText = `${player.name} 的回合`;
+    const nameX = lx + 10 + tw + 28;
+    this.drawText(nameX, cy, nameText, {
+      size: FONT_SIZE_LABEL,
+      color: INK,
+      bold: true,
+      align: 'left',
+    });
+
+    // 右上角保持留白（避让胶囊按钮）；左侧布局未挤到右侧时才显示操作提示。
+    const hintText = '出牌 或 Pass 摸牌';
+    ctx.font = `${FONT_SIZE_LABEL - 2}px ${FONT_FAMILY}`;
+    const hintW = ctx.measureText(hintText).width;
+    const hintX = this.screenW - this.safeRight - 12;
+    ctx.font = `bold ${FONT_SIZE_LABEL}px ${FONT_FAMILY}`;
+    const nameW = ctx.measureText(nameText).width;
+    if (nameX + nameW + 12 < hintX - hintW) {
+      this.drawText(hintX, cy, hintText, {
+        size: FONT_SIZE_LABEL - 2,
+        color: INK_SOFT,
+        align: 'right',
+      });
     }
   }
 
@@ -2096,6 +2176,115 @@ export class GameScene {
     const p = this.settingsPanelRect;
     if (!p || !inRect(p)) {
       this.settingsPanelOpen = false;
+      this.markDirty();
+    }
+  }
+
+  // =========================================================================
+  // 回合记录弹窗
+  // =========================================================================
+
+  /** 整体刷新回合记录（云端操作日志，协调器拉取并合并本地缓存后写入）。 */
+  setTurnLog(entries: Array<{ turnNumber: number; playerName: string; lines: string[] }>): void {
+    this.turnLog = entries;
+    if (this.historyPanelOpen) this.markDirty();
+  }
+
+  /** 单条回合记录占高：标题行 + 明细行（随明细行数变高）。 */
+  private historyEntryHeight(entry: { lines: string[] }): number {
+    return 14 + 18 + entry.lines.length * 15;
+  }
+
+  /** 回合记录弹窗：定高墨玻璃卡片 + 裁剪滚动列表，最新在顶。 */
+  private buildHistoryPanel(): void {
+    const ctx = this.ctx;
+    // 全屏遮罩：压暗背景，突出弹窗卡片。
+    ctx.fillStyle = 'rgba(24,32,44,0.55)';
+    ctx.fillRect(0, 0, this.screenW, this.screenH);
+
+    const panelW = Math.min(320, this.screenW * 0.9);
+    const panelH = Math.min(340, this.screenH * 0.78);
+    const px = (this.screenW - panelW) / 2;
+    const py = (this.screenH - panelH) / 2;
+    this.historyPanelRect = { x: px, y: py, w: panelW, h: panelH };
+
+    // 墨玻璃卡片（与设置弹窗同一视觉语言）。
+    ctx.fillStyle = 'rgba(6,14,22,0.4)';
+    roundRectPath(ctx, px + 2, py + 4, panelW, panelH, 14);
+    ctx.fill();
+    ctx.fillStyle = FROST_STRONG;
+    roundRectPath(ctx, px, py, panelW, panelH, 14);
+    ctx.fill();
+    ctx.strokeStyle = FROST_BORDER;
+    ctx.lineWidth = 1.5;
+    roundRectPath(ctx, px, py, panelW, panelH, 14);
+    ctx.stroke();
+
+    this.drawText(this.screenW / 2, py + 26, '回合记录', { size: 16, color: INK, bold: true });
+
+    // 列表区：定高裁剪，内容按滚动偏移平移；最新记录在顶，上滑看更早回合。
+    const listTop = py + 44;
+    const listH = panelH - 44 - 12;
+    const contentH = this.turnLog.reduce((sum, e) => sum + this.historyEntryHeight(e) + 6, 0);
+    this.historyMaxScroll = Math.max(0, contentH - listH);
+    if (this.historyScrollY > this.historyMaxScroll) this.historyScrollY = this.historyMaxScroll;
+
+    ctx.save();
+    roundRectPath(ctx, px + 10, listTop, panelW - 20, listH, 8);
+    ctx.clip();
+    ctx.translate(0, -this.historyScrollY);
+
+    if (this.turnLog.length === 0) {
+      this.drawText(this.screenW / 2, listTop + listH / 2, '暂无记录', { size: 13, color: INK_SOFT });
+    }
+    let ry = listTop;
+    for (const entry of this.turnLog) {
+      const eh = this.historyEntryHeight(entry);
+      // 单条卡片：标题行「回合 N · 玩家 · 总述」加粗，其后逐行完整牌面明细。
+      ctx.fillStyle = 'rgba(255,255,255,0.07)';
+      roundRectPath(ctx, px + 14, ry + 2, panelW - 28, eh, 8);
+      ctx.fill();
+      this.drawText(px + 24, ry + 14, `回合 ${entry.turnNumber} · ${entry.playerName}`, {
+        size: 12,
+        color: INK,
+        bold: true,
+        align: 'left',
+      });
+      let ly = ry + 14 + 15;
+      entry.lines.forEach((line, li) => {
+        this.drawText(px + 24, ly, line, {
+          size: 11,
+          color: li === 0 ? INK : INK_SOFT,
+          bold: li === 0,
+          align: 'left',
+        });
+        ly += 15;
+      });
+      ry += eh + 6;
+    }
+    ctx.restore();
+
+    // 滚动指示条：内容溢出时右侧显示小滑块。
+    if (this.historyMaxScroll > 0) {
+      const trackX = px + panelW - 7;
+      const trackY = listTop + 2;
+      const trackH = listH - 4;
+      ctx.fillStyle = 'rgba(255,255,255,0.14)';
+      roundRectPath(ctx, trackX, trackY, 3, trackH, 1.5);
+      ctx.fill();
+      const thumbH = Math.max(18, trackH * (listH / contentH));
+      const thumbY = trackY + (this.historyScrollY / this.historyMaxScroll) * (trackH - thumbH);
+      ctx.fillStyle = 'rgba(233,201,127,0.85)';
+      roundRectPath(ctx, trackX, thumbY, 3, thumbH, 1.5);
+      ctx.fill();
+    }
+  }
+
+  /** 回合记录弹窗命中：点在卡片外关闭。 */
+  private handleHistoryPanelTap(x: number, y: number): void {
+    const p = this.historyPanelRect;
+    if (!p || x < p.x || x > p.x + p.w || y < p.y || y > p.y + p.h) {
+      this.historyPanelOpen = false;
       this.markDirty();
     }
   }

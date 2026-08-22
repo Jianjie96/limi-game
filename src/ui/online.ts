@@ -14,11 +14,13 @@
 import { RummikubEngine } from '../game/engine';
 import type { Tile, TileGroup, PlayerState, GameState } from '../game/types';
 import { TurnPhase } from '../game/types';
+import type { TurnLogEntry } from '../game/log';
 import {
   initGame,
   sendMove,
   sendPass,
   watchGame,
+  fetchTurnLog,
   type PublicGameState,
   type GameSyncPayload,
   type MoveResponse,
@@ -28,7 +30,7 @@ import { audio } from './audio';
 /** GameScene 暴露给协调器的最小接口（避免循环依赖）。 */
 export interface OnlineSceneHost {
   showMessage(msg: string, duration?: number): void;
-  /** 辅助提示：仅开发版展示，线上静默。 */
+  /** 辅助提示：全环境静默（与线上一致），保留接口供调用点使用。 */
   showTip(msg: string, duration?: number): void;
   /** 发牌动画开关（一次性）：断线重连首次全量加载前置 false，原地全量展示。 */
   setDealAnimEnabled(enabled: boolean): void;
@@ -37,6 +39,8 @@ export interface OnlineSceneHost {
   setSubmitting(busy: boolean, action?: 'submit' | 'pass'): void;
   /** 短暂高亮指定桌面牌组（他人出牌落点提示，到期自动清除）。 */
   flashBoardGroups(groupIds: string[], duration?: number): void;
+  /** 整体刷新回合记录（云端操作日志，权威数据源；合并本地缓存避免结束时清空闪失）。 */
+  setTurnLog(entries: TurnLogEntry[]): void;
 }
 
 /** 占位牌：仅用于填充他人牌架数量与牌池数量，不参与任何规则计算。 */
@@ -137,6 +141,9 @@ export class OnlineCoordinator {
   /** 上一次应用的公开状态（对比检测对手出牌/摸牌用）。 */
   private lastApplied: PublicGameState | null = null;
 
+  /** 操作日志本地缓存（云端结束时清空，缓存保证结算面板仍可查看）。 */
+  private logCache: TurnLogEntry[] = [];
+
   constructor(
     private engine: RummikubEngine,
     private scene: OnlineSceneHost,
@@ -161,6 +168,25 @@ export class OnlineCoordinator {
     } else {
       this.tryApply();
     }
+
+    // 操作日志存在云端（game.log）：进入对局先拉全量，断线重连也能看到完整历史。
+    this.refreshLog();
+  }
+
+  /** 拉取云端操作日志并与本地缓存合并（按回合号去重，最新在顶）后交给场景。
+   *  云端在对局结束时清空日志，本地缓存保证结算面板仍可查看本局记录。 */
+  refreshLog(): void {
+    fetchTurnLog(this.code)
+      .then((server) => {
+        const byTurn = new Map<number, TurnLogEntry>();
+        for (const e of this.logCache) byTurn.set(e.turnNumber, e);
+        for (const e of server) byTurn.set(e.turnNumber, e);
+        this.logCache = [...byTurn.values()].sort((a, b) => b.turnNumber - a.turnNumber);
+        this.scene.setTurnLog(this.logCache);
+      })
+      .catch(() => {
+        // 拉取失败不打断对局；弹窗沿用本地缓存。
+      });
   }
 
   dispose(): void {
@@ -365,6 +391,12 @@ export class OnlineCoordinator {
 
     const myTurn = pub.phase === 'PLAYING' && pub.currentPlayerIndex === this.selfIndex;
     this.turnStartJson = myTurn ? json : '';
+
+    // 回合号推进（或进入结算）→ 云端已写入新的操作日志条目，拉取刷新弹窗数据。
+    if (prev && prev.phase === 'PLAYING'
+        && (pub.turnNumber > prev.turnNumber || pub.phase === 'GAME_OVER')) {
+      this.refreshLog();
+    }
 
     // 对手行动感知：机器人/对手在云端行棋，本地只有 loadState 静默覆盖；
     // 对比前后状态给出「消息 + 音效 + 牌组高亮」反馈（须晚于 loadState，

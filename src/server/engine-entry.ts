@@ -9,4 +9,6 @@
 export { RummikubEngine, applyOps } from '../game/engine';
 export { planBotTurn } from '../game/bot';
 export { findLowestScorePlayer } from '../game/scoring';
+export { buildTurnLogEntry } from '../game/log';
 export type { EngineOp, GameState } from '../game/types';
+export type { TurnLogEntry } from '../game/log';
