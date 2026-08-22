@@ -2140,7 +2140,7 @@ export class GameScene {
 
     const rowH = 42;
     const panelW = Math.min(280, this.screenW * 0.86);
-    const panelH = 44 + rowH * 4 + 12;
+    const panelH = 44 + rowH * 3 + 12; // 横屏模式入口暂隐藏，3 行
     const px = (this.screenW - panelW) / 2;
     const py = (this.screenH - panelH) / 2;
     this.settingsPanelRect = { x: px, y: py, w: panelW, h: panelH };
@@ -2163,7 +2163,7 @@ export class GameScene {
       { label: '背景音', on: !audio.isBgmMuted() },
       { label: '音效', on: !audio.isSfxMuted() },
       { label: '震动反馈', on: isVibrateEnabled() },
-      { label: '横屏模式', on: getPreferredOrientation() === 'landscape' },
+      // 横屏模式入口暂时隐藏（待优化后恢复）。
     ];
     this.settingsRowRects = [];
     let y = py + 44;
@@ -2193,12 +2193,12 @@ export class GameScene {
     ctx.fill();
   }
 
-  /** 设置弹窗命中：四个开关行优先，点在卡片外则关闭。 */
+  /** 设置弹窗命中：三个开关行优先，点在卡片外则关闭。 */
   private handleSettingsPanelTap(x: number, y: number): void {
     const rows = this.settingsRowRects;
     const inRect = (r: { x: number; y: number; w: number; h: number }) =>
       x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h;
-    if (rows.length === 4) {
+    if (rows.length === 3) {
       if (inRect(rows[0])) {
         const muted = audio.toggleBgmMute();
         if (!muted) vibrateIfEnabled();
@@ -2218,10 +2218,7 @@ export class GameScene {
         this.markDirty();
         return;
       }
-      if (inRect(rows[3])) {
-        this.toggleOrientationPref();
-        return;
-      }
+      // 横屏模式入口暂时隐藏（待优化后恢复）。
     }
     const p = this.settingsPanelRect;
     if (!p || !inRect(p)) {

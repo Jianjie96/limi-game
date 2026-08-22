@@ -239,10 +239,8 @@ export class ProfileScene {
       this.dirty = true;
       return;
     }
-    if (hitRect(px, py, this.landscapeRowRect)) {
-      this.toggleOrientationPref();
-      return;
-    }
+    // 横屏模式入口暂时隐藏（待优化后恢复）：置零使其不可命中。
+    this.landscapeRowRect = { x: 0, y: 0, w: 0, h: 0 };
     if (hitRect(px, py, this.clearCacheRowRect)) {
       this.confirmClearCache();
       return;
@@ -399,7 +397,7 @@ export class ProfileScene {
 
     // 内容卡片：贴顶放（下方还要留给历史战绩卡片）。
     const cardW = Math.min(380, w * 0.92);
-    const cardH = 96 + 46 + ROW_H * 5 + 26;
+    const cardH = 96 + 46 + ROW_H * 4 + 26; // 横屏模式入口暂隐藏，4 行
     const cardX = (w - cardW) / 2;
     const cardY = this.safeTop + 56;
 
@@ -421,8 +419,9 @@ export class ProfileScene {
     this.bgmRowRect = { x: cardX + 16, y: rowsY, w: cardW - 32, h: ROW_H };
     this.sfxRowRect = { x: cardX + 16, y: rowsY + ROW_H, w: cardW - 32, h: ROW_H };
     this.vibrateRowRect = { x: cardX + 16, y: rowsY + ROW_H * 2, w: cardW - 32, h: ROW_H };
-    this.landscapeRowRect = { x: cardX + 16, y: rowsY + ROW_H * 3, w: cardW - 32, h: ROW_H };
-    this.clearCacheRowRect = { x: cardX + 16, y: rowsY + ROW_H * 4, w: cardW - 32, h: ROW_H };
+    // 横屏模式入口暂时隐藏（待优化后恢复），清除缓存行上移补位。
+    this.landscapeRowRect = { x: 0, y: 0, w: 0, h: 0 };
+    this.clearCacheRowRect = { x: cardX + 16, y: rowsY + ROW_H * 3, w: cardW - 32, h: ROW_H };
 
     this.drawToggleRow(this.bgmRowRect, '背景音', !audio.isBgmMuted());
     this.drawDivider(this.bgmRowRect);
@@ -430,8 +429,6 @@ export class ProfileScene {
     this.drawDivider(this.sfxRowRect);
     this.drawToggleRow(this.vibrateRowRect, '震动反馈', isVibrateEnabled());
     this.drawDivider(this.vibrateRowRect);
-    this.drawToggleRow(this.landscapeRowRect, '横屏模式', getPreferredOrientation() === 'landscape');
-    this.drawDivider(this.landscapeRowRect);
     this.drawClearCacheRow(this.clearCacheRowRect);
 
     // 历史战绩卡片：填满下方剩余空间（放不下则不画）。
@@ -528,12 +525,12 @@ export class ProfileScene {
     const rowX = cardX + leftW + 16;
     const rowW = cardW - leftW - 32;
     const rowH = 42;
-    const rowsY = cardY + (cardH - rowH * 5) / 2;
+    const rowsY = cardY + (cardH - rowH * 4) / 2; // 横屏模式入口暂隐藏，4 行
     this.bgmRowRect = { x: rowX, y: rowsY, w: rowW, h: rowH };
     this.sfxRowRect = { x: rowX, y: rowsY + rowH, w: rowW, h: rowH };
     this.vibrateRowRect = { x: rowX, y: rowsY + rowH * 2, w: rowW, h: rowH };
-    this.landscapeRowRect = { x: rowX, y: rowsY + rowH * 3, w: rowW, h: rowH };
-    this.clearCacheRowRect = { x: rowX, y: rowsY + rowH * 4, w: rowW, h: rowH };
+    this.landscapeRowRect = { x: 0, y: 0, w: 0, h: 0 };
+    this.clearCacheRowRect = { x: rowX, y: rowsY + rowH * 3, w: rowW, h: rowH };
 
     this.drawToggleRow(this.bgmRowRect, '背景音', !audio.isBgmMuted());
     this.drawDivider(this.bgmRowRect);
@@ -541,8 +538,6 @@ export class ProfileScene {
     this.drawDivider(this.sfxRowRect);
     this.drawToggleRow(this.vibrateRowRect, '震动反馈', isVibrateEnabled());
     this.drawDivider(this.vibrateRowRect);
-    this.drawToggleRow(this.landscapeRowRect, '横屏模式', getPreferredOrientation() === 'landscape');
-    this.drawDivider(this.landscapeRowRect);
     this.drawClearCacheRow(this.clearCacheRowRect);
 
     // 右侧历史战绩卡片（与主卡等高）。
