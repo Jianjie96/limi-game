@@ -16,7 +16,15 @@ import { ProfileScene } from './ui/ProfileScene';
 import { OnlineCoordinator } from './ui/online';
 import { getScreenInfo, getScreenInfoAfterRotation, applyCanvasSize, type ScreenInfo } from './ui/screen';
 import { audio } from './ui/audio';
-import { getNickname, getPreferredOrientation, setPreferredOrientation } from './ui/profile';
+import {
+  getNickname,
+  getPreferredOrientation,
+  setPreferredOrientation,
+  applyCloudProfile,
+  loadCloudProfile,
+  hasPromptedProfileSetup,
+  markProfileSetupPrompted,
+} from './ui/profile';
 import { requestOrientation, orientationSupported } from './ui/orientation';
 import type { PublicGameState } from './cloud/game';
 import { endGame } from './cloud/game';
@@ -83,6 +91,32 @@ function bootOrientation(): Promise<void> {
   });
 }
 bootOrientationDone = bootOrientation();
+
+// 资料云端同步：启动拉取云端档案覆盖本地（跨设备一致）；
+// 从未设置过资料时弹框引导用户设置昵称头像（微信已无头像昵称授权接口，
+// 改为自助设置），只弹一次。
+function bootProfile(): void {
+  loadCloudProfile()
+    .then((result) => {
+      applyCloudProfile(result);
+      if (result.profile) return; // 已有云端档案，无需引导
+      if (hasPromptedProfileSetup()) return;
+      markProfileSetupPrompted();
+      wx.showModal({
+        title: '设置你的资料',
+        content: '设置一个好认的昵称和头像，牌桌上同伴能一眼认出你。',
+        confirmText: '去设置',
+        cancelText: '以后再说',
+        success: (res) => {
+          if (res.confirm) goProfile();
+        },
+      });
+    })
+    .catch(() => {
+      // 云开发未就绪/网络异常：用本地资料照常游戏，下次启动再同步。
+    });
+}
+bootProfile();
 
 // ----------------------------------------------------------------------------
 // 场景切换

@@ -192,6 +192,13 @@ declare namespace wx {
       complete?: () => void;
     }): void;
     database(options?: { env?: string }): CloudDatabase;
+    /** 上传本地文件到云存储，返回 fileID（头像图片落库用）。 */
+    uploadFile(options: {
+      cloudPath: string;
+      filePath: string;
+      success?: (res: { fileID: string }) => void;
+      fail?: (err: any) => void;
+    }): void;
     getTempFileURL(options: {
       fileList: string[];
       /** 显式指定文件所在云环境（跨环境换取时必传）。 */

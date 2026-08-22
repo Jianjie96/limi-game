@@ -10,7 +10,9 @@
 //   leave   — 非房主在等待中退出房间（移出座位，避免幽灵座占位）
 //   disband — 房主解散等待中的房间（删除文档）
 //   myRoom  — 查询本人进行中的房间（断线重连的云端兼容，本地缓存被清也可恢复）
-// 数据集合：lami_rooms（以 5 位房号作为文档 _id）
+//   profileGet — 读取本人资料（昵称/头像，跨设备同步；头像 fileID 换临时链接返回）
+//   profileSet — 保存本人资料（_id=openid 幂等 upsert）
+// 数据集合：lami_rooms（以 5 位房号作为文档 _id）、lami_profiles（以 openid 作为 _id）
 // ============================================================================
 
 const cloud = require('wx-server-sdk');
@@ -18,6 +20,7 @@ const cloud = require('wx-server-sdk');
 cloud.init({ env: cloud.DYNAMIC_CURRENT_ENV });
 const db = cloud.database();
 const COL = db.collection('lami_rooms');
+const PROFILES = db.collection('lami_profiles');
 
 /** 房号字符集：去掉易混淆的 0/O/1/I */
 const CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -200,6 +203,57 @@ exports.main = async (event) => {
           .get();
         const room = snap && snap.data && snap.data.length > 0 ? snap.data[0] : null;
         return ok({ room, self: OPENID });
+      }
+
+      // 读取本人资料：头像 fileID 在云端换成临时链接一并返回，客户端下载即可用。
+      case 'profileGet': {
+        let profile = null;
+        try {
+          const snap = await PROFILES.doc(OPENID).get();
+          profile = snap && snap.data ? snap.data : null;
+        } catch (e) {
+          profile = null; // 首次使用无档案：返回 null，客户端引导设置
+        }
+        if (!profile) return ok({ profile: null, self: OPENID });
+        let avatarTempUrl = '';
+        if (profile.avatarFileId) {
+          try {
+            const r = await cloud.getTempFileURL({ fileList: [profile.avatarFileId] });
+            const item = r && r.fileList && r.fileList[0];
+            if (item && item.tempFileURL && item.status === 0) avatarTempUrl = item.tempFileURL;
+          } catch (e) {
+            // 换取失败不阻断：客户端回退元素色头像
+          }
+        }
+        return ok({ profile, avatarTempUrl, self: OPENID });
+      }
+
+      // 保存本人资料（昵称/头像底色/头像 fileID）：_id=openid 幂等 upsert。
+      // 注意：set 对已存在文档是整体覆盖，必须先读旧档合并后再写，
+      // 否则只传 name 时会抹掉头像字段。
+      // 头像图片本体由客户端 wx.cloud.uploadFile 传到云存储，此处只存 fileID。
+      case 'profileSet': {
+        const patch = { updatedAt: Date.now() };
+        if (typeof event.name === 'string') {
+          const name = event.name.trim().slice(0, 12);
+          if (name) patch.name = name;
+        }
+        if (typeof event.avatarIndex === 'number' && event.avatarIndex >= 0) {
+          patch.avatarIndex = event.avatarIndex;
+        }
+        if (typeof event.avatarFileId === 'string') {
+          patch.avatarFileId = event.avatarFileId; // 空串 = 恢复默认头像
+        }
+        let base = {};
+        try {
+          const snap = await PROFILES.doc(OPENID).get();
+          base = snap && snap.data ? snap.data : {};
+        } catch (e) {
+          base = {}; // 首次写入
+        }
+        delete base._id;
+        await PROFILES.doc(OPENID).set({ data: Object.assign(base, patch) });
+        return ok({ self: OPENID });
       }
 
       default:

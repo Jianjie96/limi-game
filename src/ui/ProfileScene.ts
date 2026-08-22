@@ -30,6 +30,7 @@ import {
   chooseAvatarFromWeChat,
   resetAvatar,
   drawAvatar,
+  syncProfileToCloud,
   isVibrateEnabled,
   setVibrateEnabled,
   vibrateIfEnabled,
@@ -89,7 +90,7 @@ export class ProfileScene {
     this.dirty = true;
   };
 
-  /** 键盘「完成/发送」：提交昵称。 */
+  /** 键盘「完成/发送」：提交昵称并落库云端。 */
   private keyboardConfirmHandler = (res: { value: string }) => {
     const name = (res.value ?? '').trim();
     if (!name) {
@@ -98,6 +99,7 @@ export class ProfileScene {
     }
     if (setNickname(name)) {
       this.showInfo('昵称已更新');
+      this.pushProfileToCloud();
     }
     this.dirty = true;
   };
@@ -202,14 +204,18 @@ export class ProfileScene {
     for (let i = 0; i < this.swatchRects.length; i++) {
       if (hitRect(px, py, this.swatchRects[i])) {
         // 选色卡 = 恢复默认头像（如已设微信头像则清除）并切换底色。
+        let changed = false;
         if (getAvatarPath()) {
           resetAvatar();
           this.showInfo('已恢复默认头像');
+          changed = true;
         }
         if (getAvatarIndex() !== i) {
           setAvatarIndex(i);
           vibrateIfEnabled();
+          changed = true;
         }
+        if (changed) this.pushProfileToCloud();
         this.dirty = true;
         return;
       }
@@ -289,7 +295,7 @@ export class ProfileScene {
     this.dirty = true;
   }
 
-  /** 拉起微信原生选择器更换头像（相册/拍照），随时可再点重选。 */
+  /** 拉起微信原生选择器更换头像（相册/拍照），选中后上传云存储并落库。 */
   private pickAvatar(): void {
     if (typeof wx.chooseMedia !== 'function') {
       this.showInfo('当前环境不支持选择头像');
@@ -300,8 +306,16 @@ export class ProfileScene {
       if (this.disposed) return;
       if (path) {
         this.showInfo('头像已更新');
+        this.pushProfileToCloud();
         this.dirty = true;
       }
+    });
+  }
+
+  /** 资料变更后推送云端（头像未传过云存储时会先上传）；失败轻提示不打断操作。 */
+  private pushProfileToCloud(): void {
+    syncProfileToCloud().catch(() => {
+      if (!this.disposed) this.showInfo('云端同步失败，下次启动将重试');
     });
   }
 

@@ -1,18 +1,28 @@
 // ============================================================================
 // src/ui/profile.ts — 个人资料与偏好设置（个人中心页的数据层）
 // ----------------------------------------------------------------------------
-// 统一持久化到本地存储：昵称、头像（微信相册图片 / 元素色兜底）、
-// 震动反馈、屏幕方向偏好。
-// 音频两个开关（音乐/音效）由 audio.ts 自行持久化，此处不重复。
+// 昵称、头像（微信相册图片 / 元素色兜底）本地持久化 + 云端落库
+// （lami_profiles 集合，见 src/cloud/profile.ts），跨设备同步；
+// 震动反馈、屏幕方向偏好仅本地。音频开关由 audio.ts 自行持久化。
 // 历史战绩已落库云端（lami_history），见 src/cloud/game.ts fetchMatchHistory。
 // ============================================================================
 
 import { AVATAR_COLORS, FONT_FAMILY } from './constants';
+import {
+  fetchCloudProfile,
+  saveCloudProfile,
+  uploadAvatarFile,
+  type CloudProfileResult,
+} from '../cloud/profile';
 
 const NICK_KEY = 'lami_nickname';
 const AVATAR_KEY = 'lami_avatar_index';
 /** 自定义头像的永久化本地路径（saveFile 产物）；为空时用元素色兜底。 */
 const AVATAR_PATH_KEY = 'lami_avatar_path';
+/** 本地头像图片对应的云存储 fileID（与云端档案对比，避免重复下载）。 */
+const AVATAR_FILEID_KEY = 'lami_avatar_fileid';
+/** 首次启动的资料设置引导弹框只弹一次。 */
+const PROFILE_PROMPT_KEY = 'lami_profile_prompted';
 const VIBRATE_KEY = 'lami_vibrate_on';
 const ORIENTATION_KEY = 'lami_orientation';
 
@@ -159,12 +169,139 @@ export function chooseAvatarFromWeChat(): Promise<string | null> {
 export function resetAvatar(): void {
   const path = getAvatarPath();
   setAvatarPath(null);
+  setAvatarFileId(''); // 云端同步时据此判定「已恢复默认」
   if (path) {
     try {
       (wx.getFileSystemManager() as any).unlink?.({ filePath: path, fail: () => undefined });
     } catch (e) {
       // 静默
     }
+  }
+}
+
+// ----------------------------------------------------------------------------
+// 云端同步（昵称 + 头像落库 lami_profiles，跨设备一致）
+// ----------------------------------------------------------------------------
+
+function getAvatarFileId(): string {
+  try {
+    const v = wx.getStorageSync(AVATAR_FILEID_KEY);
+    return typeof v === 'string' ? v : '';
+  } catch (e) {
+    return '';
+  }
+}
+
+function setAvatarFileId(id: string): void {
+  try {
+    if (id) wx.setStorageSync(AVATAR_FILEID_KEY, id);
+    else wx.removeStorageSync(AVATAR_FILEID_KEY);
+  } catch (e) {
+    // 静默
+  }
+}
+
+/**
+ * 把当前本地资料推送到云端：昵称 + 头像底色 + 头像 fileID。
+ * 自定义头像图片尚未上传过时先 uploadFile 再存 fileID。
+ * 失败不吞，由调用方决定是否提示。
+ */
+export function syncProfileToCloud(): Promise<void> {
+  const patch: { name: string; avatarIndex: number; avatarFileId?: string } = {
+    name: getNickname(),
+    avatarIndex: getAvatarIndex(),
+  };
+  const path = getAvatarPath();
+  const fileId = getAvatarFileId();
+  if (path && fileId) {
+    patch.avatarFileId = fileId;
+    return saveCloudProfile(patch);
+  }
+  if (path) {
+    // 新选的头像：先传云存储拿 fileID，再随档案一起落库。
+    return uploadAvatarFile(path).then((id) => {
+      setAvatarFileId(id);
+      return saveCloudProfile({ ...patch, avatarFileId: id });
+    });
+  }
+  patch.avatarFileId = ''; // 无自定义头像：显式清空云端旧头像
+  return saveCloudProfile(patch);
+}
+
+/**
+ * 启动时用云端档案覆盖本地（云端是权威源）：
+ * 昵称/头像底色直接写入；头像图片按 fileID 比对，不同则下载替换。
+ * 档案为 null（从未设置）时不动本地，由调用方引导授权。
+ */
+export function applyCloudProfile(result: CloudProfileResult): void {
+  const p = result.profile;
+  if (!p) return;
+  if (typeof p.name === 'string' && p.name.trim()) {
+    try {
+      wx.setStorageSync(NICK_KEY, p.name.trim().slice(0, 12));
+    } catch (e) {
+      // 静默
+    }
+  }
+  if (typeof p.avatarIndex === 'number' && p.avatarIndex >= 0 && p.avatarIndex < AVATAR_COLORS.length) {
+    try {
+      wx.setStorageSync(AVATAR_KEY, p.avatarIndex);
+    } catch (e) {
+      // 静默
+    }
+  }
+  const cloudFileId = p.avatarFileId || '';
+  const localFileId = getAvatarFileId();
+  if (cloudFileId === localFileId && (cloudFileId === '') === !getAvatarPath()) return;
+  if (!cloudFileId) {
+    // 其他设备已恢复默认头像：本地同步清除。
+    resetAvatar();
+    return;
+  }
+  if (!result.avatarTempUrl) return; // 临时链接换取失败：下次启动再试
+  wx.downloadFile({
+    url: result.avatarTempUrl,
+    success: (res) => {
+      if (res.statusCode !== 200) return;
+      try {
+        wx.getFileSystemManager().saveFile({
+          tempFilePath: res.tempFilePath,
+          success: (r) => {
+            setAvatarPath(r.savedFilePath);
+            setAvatarFileId(cloudFileId);
+          },
+          fail: () => undefined,
+        });
+      } catch (e) {
+        // 静默：下次启动重试
+      }
+    },
+    fail: () => undefined,
+  });
+}
+
+/** 拉取云端档案（供启动流程：覆盖本地 + 判断是否需要引导授权）。 */
+export function loadCloudProfile(): Promise<CloudProfileResult> {
+  return fetchCloudProfile();
+}
+
+// ----------------------------------------------------------------------------
+// 首次启动资料设置引导（微信已不提供头像昵称授权接口，改为引导自助设置）
+// ----------------------------------------------------------------------------
+
+export function hasPromptedProfileSetup(): boolean {
+  try {
+    return wx.getStorageSync(PROFILE_PROMPT_KEY) === true;
+  } catch (e) {
+    return true; // 存储异常时不弹，避免反复打扰
+  }
+}
+
+export function markProfileSetupPrompted(): void {
+  try {
+    wx.setStorageSync(PROFILE_PROMPT_KEY, true);
+  } catch (e) {
+    // 静默
   }
 }
 
