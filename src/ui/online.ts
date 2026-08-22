@@ -39,6 +39,8 @@ export interface OnlineSceneHost {
   setSubmitting(busy: boolean, action?: 'submit' | 'pass'): void;
   /** 短暂高亮指定桌面牌组（他人出牌落点提示，到期自动清除）。 */
   flashBoardGroups(groupIds: string[], duration?: number): void;
+  /** 他人出牌飞行动画：指定牌从该玩家徽章处飞向桌面落点。 */
+  flyBoardTilesFrom(playerId: number, tileIds: number[]): void;
   /** 整体刷新回合记录（云端操作日志，权威数据源；合并本地缓存避免结束时清空闪失）。 */
   setTurnLog(entries: TurnLogEntry[]): void;
 }
@@ -404,14 +406,18 @@ export class OnlineCoordinator {
   }
 
   /** 对比相邻两次云端状态，提示非本人玩家的动作（出牌/摸牌）。
-   *  依据：手牌数量变化（出牌减少/摸牌增加）与桌面新增牌所属牌组。 */
+   *  依据：手牌数量变化（出牌减少/摸牌增加）与桌面新增牌所属牌组。
+   *  机器人反馈错峰：牌从玩家徽章飞向桌面；音效与玩家操作同源（place/pass），
+   *  但按动作顺序逐条排队播放：首条延迟约 0.4s（落位时刻，与本人操作声错开），
+   *  之后每条间隔一个音效时长，出牌/摸牌都有声且不重叠，听节奏即可分辨。 */
   private notifyOthersAction(prev: PublicGameState | null, pub: PublicGameState): void {
     this.lastApplied = pub;
     if (!prev || prev.phase !== 'PLAYING' || pub.phase !== 'PLAYING') return;
 
     const parts: string[] = [];
-    let placed = false;
-    let drawn = false;
+    const placers: number[] = [];
+    // 按玩家顺序记录动作（出牌/摸牌）：音效随后逐条错峰播放，避免重叠。
+    const actions: Array<'play' | 'draw'> = [];
     for (let i = 0; i < pub.players.length; i++) {
       if (i === this.selfIndex) continue;
       const before = prev.players[i];
@@ -420,26 +426,44 @@ export class OnlineCoordinator {
       const delta = before.rackCount - after.rackCount;
       if (delta > 0) {
         parts.push(`${after.name} 出牌 ${delta} 张`);
-        placed = true;
+        placers.push(i);
+        actions.push('play');
       } else if (delta < 0) {
         parts.push(`${after.name} 摸牌`);
-        drawn = true;
+        actions.push('draw');
       }
     }
     if (parts.length === 0) return;
 
-    if (placed) {
+    if (placers.length > 0) {
       // 高亮含新增牌的牌组（对手出牌落点），到期自动清除。
       const prevIds = new Set<number>();
       for (const g of prev.board) for (const t of g.tiles) prevIds.add(t.originalTile.id);
       const flashIds: string[] = [];
+      const newTileIds: number[] = [];
       for (const g of pub.board) {
-        if (g.tiles.some((t) => !prevIds.has(t.originalTile.id))) flashIds.push(g.id);
+        let hasNew = false;
+        for (const t of g.tiles) {
+          if (!prevIds.has(t.originalTile.id)) {
+            newTileIds.push(t.originalTile.id);
+            hasNew = true;
+          }
+        }
+        if (hasNew) flashIds.push(g.id);
       }
       if (flashIds.length > 0) this.scene.flashBoardGroups(flashIds);
-      audio.play('place');
-    } else if (drawn) {
-      audio.play('pass');
+      // 飞行动画：从出牌玩家徽章处起飞；同一推送多人出牌（机器人连打）时
+      // 桌面 diff 无法逐张归属，统一从先出牌的玩家处起飞。
+      if (newTileIds.length > 0) this.scene.flyBoardTilesFrom(placers[0], newTileIds);
+    }
+
+    // 音效排队错峰：与玩家操作复用同一批音效（出牌 place、摸牌 pass），
+    // 首条延迟到飞牌落位时刻（与本人操作声错开），后续每条间隔约一个音效时长不重叠。
+    let sfxAt = 380;
+    for (const act of actions) {
+      const name = act === 'play' ? 'place' : 'pass';
+      setTimeout(() => audio.play(name), sfxAt);
+      sfxAt += 460;
     }
     this.scene.showMessage(parts.join('；'), 2800);
   }

@@ -2,6 +2,7 @@
   "description": "拉密 Rummikub 微信小游戏",
   "packOptions": {
     "ignore": [
+      { "type": "folder", "value": "assets" },
       { "type": "folder", "value": "src" },
       { "type": "folder", "value": "tools" },
       { "type": "folder", "value": "node_modules" },

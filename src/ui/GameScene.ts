@@ -240,6 +240,8 @@ export class GameScene {
   private messageTimer: any = null;
   /** 临时牌组高亮到期句柄（他人出牌落点提示，dispose 时清理）。 */
   private flashGroupTimer: any = null;
+  /** 对手徽章中心点（playerId → 坐标）：机器人出牌飞行动画的起飞位置。 */
+  private opponentBadgePoints = new Map<number, { x: number; y: number }>();
   /** 渲染循环句柄（dispose 时取消） */
   private rafId = 0;
 
@@ -390,6 +392,30 @@ export class GameScene {
       for (const id of groupIds) this.highlightedGroupIds.delete(id);
       this.markDirty();
     }, duration);
+    this.markDirty();
+  }
+
+  /** 机器人/对手出牌飞行：把新增桌面牌的动画起点预种到该玩家徽章处，
+   *  之后 registerAnimTargets 会把目标更新到桌面槽位，拱形飞行自动完成（置顶绘制）。
+   *  目标坐标在桌面内容坐标系（受 boardScrollY 平移），起点需补上滚动偏移。 */
+  flyBoardTilesFrom(playerId: number, tileIds: number[]): void {
+    if (this.disposed || tileIds.length === 0) return;
+    const origin = this.opponentBadgePoints.get(playerId);
+    if (!origin) return;
+    let i = 0;
+    for (const id of tileIds) {
+      // 已有动画状态的不重播（如本地草稿里刚动过的牌）。
+      if (this.tileAnims.has(id)) continue;
+      const sx = origin.x + (i % 3) * 2;
+      const sy = origin.y + this.boardScrollY;
+      this.tileAnims.set(id, {
+        x: sx, y: sy, scale: 0.5,
+        tx: sx, ty: sy, tscale: 1,
+        pending: i * 70,
+        arc: { sx, sy, ss: 0.5, t: 0, dur: 430, delay: 0, back: true },
+      });
+      i++;
+    }
     this.markDirty();
   }
 
@@ -1851,6 +1877,9 @@ export class GameScene {
     // 右侧止于安全区，徽章不与右侧 UI 重叠。
     const maxX = this.screenW - this.safeRight - 12;
 
+    // 记录各对手头像中心：机器人出牌飞行动画的起飞点。
+    this.opponentBadgePoints.clear();
+
     let x = this.safeLeft + 12;
     for (const opp of opponents) {
       const avatarColor = AVATAR_COLORS[opp.id % AVATAR_COLORS.length];
@@ -1861,6 +1890,7 @@ export class GameScene {
       const tw = ctx.measureText(text).width;
       const badgeW = 23 + tw + 14;
       if (x + badgeW > maxX) break;
+      this.opponentBadgePoints.set(opp.id, { x: x + 10, y });
 
       // 元素风头像圆片 + 白环 + 末字。
       ctx.fillStyle = avatarColor;
