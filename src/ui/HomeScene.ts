@@ -242,10 +242,10 @@ export class HomeScene {
       color: INK_SOFT,
     });
 
-    // 个人中心入口：居中置于副标题下方（头像 + 昵称），融入页面动线不突兀。
+    // 个人中心入口：居中置于页面最底部（头像 + 昵称），不干扰主按钮动线。
     if (this.onOpenProfile) {
       const name = getNickname();
-      const entryY = titleY + 86;
+      const entryY = h - 80;
       const avatarR = 15;
       ctx.font = `bold 14px ${FONT_FAMILY}`;
       const nameW = ctx.measureText(name).width;

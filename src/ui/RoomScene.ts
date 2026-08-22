@@ -52,7 +52,8 @@ export class RoomScene {
 
   private rafId = 0;
   private dirty = true;
-  private busy = false;
+  /** 正在进行的云端操作：各按钮各自显示自己的「…中」，互不串状态。 */
+  private busyAction: 'disband' | 'leave' | 'start' | 'addBot' | 'removeBot' | 'setCapacity' | null = null;
   /** 已触发进场（防止重复 enterGame） */
   private entered = false;
   private pollTimer: ReturnType<typeof setInterval> | null = null;
@@ -126,7 +127,7 @@ export class RoomScene {
   // --------------------------------------------------------------------------
 
   private poll(): void {
-    if (this.busy || this.entered) return;
+    if (this.busyAction || this.entered) return;
     getRoom(this.code)
       .then((result) => {
         this.room = result.room;
@@ -156,7 +157,7 @@ export class RoomScene {
   }
 
   private handleTap(px: number, py: number): void {
-    if (this.busy) return;
+    if (this.busyAction) return;
 
     if (hitRect(px, py, this.backBtnRect)) {
       this.onExit?.();
@@ -206,7 +207,7 @@ export class RoomScene {
     }
 
     if (this.isHost && full && hitRect(px, py, this.startBtnRect)) {
-      this.busy = true;
+      this.busyAction = 'start';
       this.dirty = true;
       startRoom(this.code)
         .then((result) => {
@@ -214,7 +215,7 @@ export class RoomScene {
           this.enterGame();
         })
         .catch((e: Error) => {
-          this.busy = false;
+          this.busyAction = null;
           this.showInfo(e.message);
         });
     }
@@ -228,7 +229,7 @@ export class RoomScene {
       confirmText: '解散',
       success: (res) => {
         if (!res.confirm) return;
-        this.busy = true;
+        this.busyAction = 'disband';
         this.dirty = true;
         disbandRoom(this.code)
           .then(() => {
@@ -236,7 +237,7 @@ export class RoomScene {
             this.onExit?.();
           })
           .catch((e: Error) => {
-            this.busy = false;
+            this.busyAction = null;
             this.showInfo(e.message);
           });
       },
@@ -251,7 +252,7 @@ export class RoomScene {
       confirmText: '退出',
       success: (res) => {
         if (!res.confirm) return;
-        this.busy = true;
+        this.busyAction = 'leave';
         this.dirty = true;
         leaveRoom(this.code)
           .then(() => {
@@ -259,7 +260,7 @@ export class RoomScene {
             this.onExit?.();
           })
           .catch((e: Error) => {
-            this.busy = false;
+            this.busyAction = null;
             this.showInfo(e.message);
           });
       },
@@ -268,48 +269,48 @@ export class RoomScene {
 
   /** 房主添加一个机器人补位；凑满人数后即可真人+机器人开局。 */
   private addBot(): void {
-    this.busy = true;
+    this.busyAction = 'addBot';
     this.dirty = true;
     addRoomBot(this.code)
       .then((result) => {
         this.room = result.room;
-        this.busy = false;
+        this.busyAction = null;
         this.dirty = true;
       })
       .catch((e: Error) => {
-        this.busy = false;
+        this.busyAction = null;
         this.showInfo(e.message);
       });
   }
 
   /** 房主调整人数上限（2/3/4；越界时按钮已禁用，云端另做兜底校验）。 */
   private setCapacity(capacity: number): void {
-    this.busy = true;
+    this.busyAction = 'setCapacity';
     this.dirty = true;
     setRoomCapacity(this.code, capacity)
       .then((result) => {
         this.room = result.room;
-        this.busy = false;
+        this.busyAction = null;
         this.dirty = true;
       })
       .catch((e: Error) => {
-        this.busy = false;
+        this.busyAction = null;
         this.showInfo(e.message);
       });
   }
 
   /** 房主移除误加的机器人（点机器人座位右上角的「×」）。 */
   private removeBot(botOpenid: string): void {
-    this.busy = true;
+    this.busyAction = 'removeBot';
     this.dirty = true;
     removeRoomBot(this.code, botOpenid)
       .then((result) => {
         this.room = result.room;
-        this.busy = false;
+        this.busyAction = null;
         this.dirty = true;
       })
       .catch((e: Error) => {
-        this.busy = false;
+        this.busyAction = null;
         this.showInfo(e.message);
       });
   }
@@ -380,7 +381,7 @@ export class RoomScene {
       return;
     }
     this.disbandBtnRect = { x: 88, y: this.safeTop + 8, w: 80, h: 30 };
-    drawCapsuleButton(this.ctx, this.disbandBtnRect, this.busy ? '解散中…' : '解散房间', 'danger', 13);
+    drawCapsuleButton(this.ctx, this.disbandBtnRect, this.busyAction === 'disband' ? '解散中…' : '解散房间', 'danger', 13);
   }
 
   /** 非房主专属：退出等待中的房间（把自己移出座位，与「返回」区分）。 */
@@ -390,7 +391,7 @@ export class RoomScene {
       return;
     }
     this.leaveBtnRect = { x: 88, y: this.safeTop + 8, w: 80, h: 30 };
-    drawCapsuleButton(this.ctx, this.leaveBtnRect, this.busy ? '退出中…' : '退出房间', 'secondary', 13);
+    drawCapsuleButton(this.ctx, this.leaveBtnRect, this.busyAction === 'leave' ? '退出中…' : '退出房间', 'secondary', 13);
   }
 
   private drawRoomCard(): void {
@@ -399,9 +400,11 @@ export class RoomScene {
     const room = this.room;
     const full = room.players.length >= room.capacity;
 
-    // 墨玻璃主卡片（高度容纳标题+座位+操作区+底部提示，矮屏时按屏幕夹住）
+    // 墨玻璃主卡片：内容定高（标题→副标题→座位→按钮→提示），
+    // 整块在卡片内垂直居中，矮屏时按屏幕夹住。
+    const CONTENT_H = 248;
     const cardW = Math.min(460, w * 0.86);
-    const cardH = Math.min(280, h * 0.86);
+    const cardH = Math.min(CONTENT_H + 40, h * 0.86);
     const cardX = (w - cardW) / 2;
     const cardY = (h - cardH) / 2;
 
@@ -416,8 +419,17 @@ export class RoomScene {
     roundRectPath(ctx, cardX, cardY, cardW, cardH, 18);
     ctx.stroke();
 
+    // 竖向节奏（相对内容块顶端，各段间距均匀）：
+    // 标题 +16 → 副标题 +34 → 座位中心 +58 → 按钮顶 +72（高 40）
+    // → 提示 +62（按钮底边下留 16px，避免贴脸）。
+    const contentTop = cardY + (cardH - CONTENT_H) / 2;
+    const titleY = contentTop + 16;
+    const subtitleY = titleY + 34;
+    const slotY = subtitleY + 58;
+    const actionY = slotY + 72;
+    const hintY = actionY + 62;
+
     // 房号标题（两侧光斑点缀）
-    const titleY = cardY + 34;
     const title = `房间 ${room.code}`;
     drawSceneText(ctx, w / 2, titleY, title, {
       size: 24,
@@ -426,7 +438,7 @@ export class RoomScene {
     });
     drawSparkle(ctx, w / 2 - 104, titleY, 4, GOLD_SOFT);
     drawSparkle(ctx, w / 2 + 104, titleY, 4, GOLD_SOFT);
-    drawSceneText(ctx, w / 2, titleY + 24, `${room.players.length} / ${room.capacity} 人`, {
+    drawSceneText(ctx, w / 2, subtitleY, `${room.players.length} / ${room.capacity} 人`, {
       size: 13,
       color: INK_SOFT,
     });
@@ -437,13 +449,12 @@ export class RoomScene {
       // 不可低于已入座人数（含机器人），上限 4 人。
       const canMinus = room.capacity > Math.max(2, room.players.length);
       const canPlus = room.capacity < 4;
-      this.drawCapacityButton(w / 2 - 58, titleY + 24, '−', canMinus, 'minus');
-      this.drawCapacityButton(w / 2 + 58, titleY + 24, '+', canPlus, 'plus');
+      this.drawCapacityButton(w / 2 - 58, subtitleY, '−', canMinus, 'minus');
+      this.drawCapacityButton(w / 2 + 58, subtitleY, '+', canPlus, 'plus');
     }
 
     // 玩家座位
     this.botRemoveRects = [];
-    const slotY = titleY + 52;
     const slotGap = Math.min(96, (cardW - 60) / room.capacity);
     const rowW = slotGap * room.capacity;
     for (let i = 0; i < room.capacity; i++) {
@@ -508,7 +519,6 @@ export class RoomScene {
     }
 
     // 操作区（按钮与底部提示分开两行，避免重叠）
-    const actionY = cardY + cardH - 70;
     const shareW = Math.min(180, cardW * 0.4);
     this.shareBtnRect = { x: w / 2 - shareW / 2, y: actionY, w: shareW, h: 40 };
     this.addBotBtnRect = { x: 0, y: 0, w: 0, h: 0 };
@@ -526,14 +536,14 @@ export class RoomScene {
         this.shareBtnRect = { x: w / 2 - btnW - 8, y: actionY, w: btnW, h: 40 };
         this.addBotBtnRect = { x: w / 2 + 8, y: actionY, w: btnW, h: 40 };
         drawCapsuleButton(ctx, this.shareBtnRect, '邀请好友', 'secondary', 15);
-        drawCapsuleButton(ctx, this.addBotBtnRect, this.busy ? '添加中…' : '+ 机器人', 'primary', 15);
-        drawSceneText(ctx, w / 2, cardY + cardH - 12, '凑满人数即可开始（机器人可补位）', {
+        drawCapsuleButton(ctx, this.addBotBtnRect, this.busyAction === 'addBot' ? '添加中…' : '+ 机器人', 'primary', 15);
+        drawSceneText(ctx, w / 2, hintY, '凑满人数即可开始（机器人可补位）', {
           size: 11,
           color: INK_SOFT,
         });
       } else {
         drawCapsuleButton(ctx, this.shareBtnRect, '邀请好友', 'primary', 16);
-        drawSceneText(ctx, w / 2, cardY + cardH - 12, '等人齐，房主开始后自动进入', {
+        drawSceneText(ctx, w / 2, hintY, '等人齐，房主开始后自动进入', {
           size: 11,
           color: INK_SOFT,
         });
@@ -543,7 +553,7 @@ export class RoomScene {
       const btnW = Math.min(180, cardW * 0.4);
       this.shareBtnRect = { x: 0, y: 0, w: 0, h: 0 };
       this.startBtnRect = { x: w / 2 - btnW / 2, y: actionY, w: btnW, h: 40 };
-      drawCapsuleButton(ctx, this.startBtnRect, this.busy ? '开始中…' : '开始游戏', 'primary', 16);
+      drawCapsuleButton(ctx, this.startBtnRect, this.busyAction === 'start' ? '开始中…' : '开始游戏', 'primary', 16);
     } else {
       drawSceneText(ctx, w / 2, actionY + 20, '人已齐，等待房主开始…', { size: 16, color: INK });
     }
