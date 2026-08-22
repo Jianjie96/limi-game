@@ -7,13 +7,13 @@
 //   init — 开局：洗牌发牌在云端完成，写公开状态 + 各人私有手牌
 //   move — 出牌提交：回放客户端操作日志 → submitTurn 校验 → 写库推送
 //   pass — Pass：摸 1 张并结束回合（回滚本回合桌面操作）
-//   end  — 房主主动结束对局（关闭测试房 / 紧急终止）
+//   end  — 房主主动结束对局（机器人局收尾 / 紧急终止）
 //   log  — 读取本局操作日志（game.log，云端逐回合写入，对局结束清空）
 //   history — 查询本人历史战绩（lami_history，对局结束时云端写入）
-//   tick — 定时触发器（每分钟）：回收闲置测试房与逾期未开始的等待测试房，
+//   tick — 定时触发器（每分钟）：回收闲置机器人房与逾期未开始的等待机器人房，
 //          清理过期房间数据与过期战绩（第一版回合不限时，无超时托管）
 //
-// 机器人托管：devFill 填充的测试机器人（openid 形如 bot_*）回合由云端立即代打，
+// 机器人托管：addBot 添加的机器人（openid 形如 bot_*）回合由云端立即代打，
 // 回合一旦移交机器人，advanceBots 连续执行 bot.ts 的贪心 AI 直到回到真人回合。
 //
 // 数据存储（手牌/牌池严格分离，防窥屏）：
@@ -38,12 +38,12 @@ const HISTORY = db.collection('lami_history');
 const ROOM_RETAIN_MS = 3 * 24 * 3600 * 1000;
 /** 历史战绩保留时长：超期记录由 tick 清理，防集合无限膨胀。 */
 const HISTORY_RETAIN_MS = 90 * 24 * 3600 * 1000;
-/** 测试房闲置回收：真人玩家超过该时长无任何操作 → tick 释放房间。 */
+/** 机器人房闲置回收：真人玩家超过该时长无任何操作 → tick 释放房间。 */
 const TEST_ROOM_IDLE_MS = 24 * 60 * 60 * 1000;
-/** 等待中的测试房：创建后超过该时长仍未开局 → tick 直接回收。 */
+/** 等待中的机器人房：创建后超过该时长仍未开局 → tick 直接回收。 */
 const TEST_ROOM_WAIT_MS = 60 * 60 * 1000;
 
-/** 是否测试房（含 devFill 填充的机器人玩家）。 */
+/** 是否机器人房（含 addBot 添加的机器人玩家）。 */
 function hasBots(room) {
   return Array.isArray(room.players) && room.players.some((p) => String(p.openid || '').startsWith('bot_'));
 }
@@ -226,7 +226,7 @@ async function doInit(event, openid) {
         log: [],
         // 开局时间：结算历史战绩耗时的起点。
         startedAt: Date.now(),
-        // 开局由房主客户端触发，记为一次真人活跃；供 tick 回收闲置测试房判定。
+        // 开局由房主客户端触发，记为一次真人活跃；供 tick 回收闲置机器人房判定。
         lastHumanAt: Date.now(),
       },
     },
@@ -288,13 +288,13 @@ async function doMove(event, openid) {
   await settleAndPersist(room, engine, [entry]);
   // 回合若移交到机器人 → 云端立即连续代打，真人响应里直接拿到最新状态。
   await advanceBots(room, engine);
-  // 真人成功出牌：刷新活跃时间（机器人不会调 move，tick 据此回收闲置测试房）。
+  // 真人成功出牌：刷新活跃时间（机器人不会调 move，tick 据此回收闲置机器人房）。
   try { await ROOMS.doc(code).update({ data: { 'game.lastHumanAt': Date.now() } }); } catch (e) { /* 忽略 */ }
   // 客户端 MoveResponse 约定成功态携带 payload（与校验失败路径一致）。
   return ok({ payload: payloadFor(room, engine, room.game.version, room.game.turnDeadline, openid) });
 }
 
-/** 结束对局：房主主动终止（开发调试关闭测试房 / 紧急终止），
+/** 结束对局：房主主动终止（机器人局收尾 / 紧急终止），
  * 直接置为 finished 并清理密态与手牌数据。 */
 async function doEnd(event, openid) {
   const code = normCode(event.code);
@@ -507,7 +507,7 @@ async function advanceBots(room, engine) {
   return turns;
 }
 
-/** 定时任务：回收闲置测试房、同步已结束状态；顺带清理过期房间数据。 */
+/** 定时任务：回收闲置机器人房、同步已结束状态；顺带清理过期房间数据。 */
 async function doTick() {
   const now = Date.now();
   const snap = await ROOMS.where({ status: 'playing' }).limit(50).get();

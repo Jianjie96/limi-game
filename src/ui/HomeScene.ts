@@ -23,8 +23,6 @@ export class HomeScene {
   onCreateRoom: ((capacity: number) => void) | null = null;
   /** 输入房号后回调（加入房间请求由外部发起） */
   onJoinByCode: ((code: string) => void) | null = null;
-  /** 开发后门：联机测试房（机器人补位），单人即可联调实时对战。 */
-  onDevRoom: (() => void) | null = null;
   /** 断线重连：回到上次未结束的对局 */
   onResume: (() => void) | null = null;
   /** 打开个人中心（设置页） */
@@ -44,8 +42,8 @@ export class HomeScene {
   private pickerVisible = false;
   private pickerCapacity = 4;
 
-  /** 正在处理的入口（建房/入房/回对局/测试房）：只有对应入口显示自己的进度文案。 */
-  private busySource: 'create' | 'join' | 'resume' | 'dev' | null = null;
+  /** 正在处理的入口（建房/入房/回对局）：只有对应入口显示自己的进度文案。 */
+  private busySource: 'create' | 'join' | 'resume' | null = null;
 
   // 轻提示
   private message = '';
@@ -57,7 +55,6 @@ export class HomeScene {
   private optionRects: SceneButtonRect[] = [];
   private confirmRect: SceneButtonRect = { x: 0, y: 0, w: 0, h: 0 };
   private cancelRect: SceneButtonRect = { x: 0, y: 0, w: 0, h: 0 };
-  private devRoomRect: SceneButtonRect = { x: 0, y: 0, w: 0, h: 0 };
   private resumeBtnRect: SceneButtonRect = { x: 0, y: 0, w: 0, h: 0 };
   private profileRect: SceneButtonRect = { x: 0, y: 0, w: 0, h: 0 };
 
@@ -211,11 +208,6 @@ export class HomeScene {
       this.onResume?.();
       return;
     }
-    if (this.onDevRoom && hitRect(px, py, this.devRoomRect)) {
-      this.busySource = 'dev';
-      this.dirty = true;
-      this.onDevRoom();
-    }
   }
 
   // --------------------------------------------------------------------------
@@ -311,22 +303,6 @@ export class HomeScene {
       18
     );
     drawCapsuleButton(ctx, this.joinBtnRect, this.busySource === 'join' ? '进入中…' : '加入房间', 'secondary', 18);
-
-    // 底部开发入口（仅开发版）：联机测试房（机器人补位）
-    if (this.onDevRoom) {
-      const lpH = 26;
-      const y = h - this.safeTop - lpH - 8;
-      ctx.font = `13px ${FONT_FAMILY}`;
-      const devLabel = '联机测试房 ›';
-      const devW = ctx.measureText(devLabel).width + 16;
-      const x = (w - devW) / 2;
-      this.devRoomRect = { x, y, w: devW, h: lpH };
-      const devText = this.busySource === 'dev' ? '进入测试房…' : devLabel;
-      drawSceneText(ctx, x + devW / 2, y + lpH / 2, devText, {
-        size: 13,
-        color: INK_SOFT,
-      });
-    }
 
     if (this.pickerVisible) this.drawPicker();
     if (this.message && Date.now() < this.messageUntil) this.drawMessage();

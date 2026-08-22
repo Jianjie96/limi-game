@@ -16,7 +16,6 @@ import { ProfileScene } from './ui/ProfileScene';
 import { OnlineCoordinator } from './ui/online';
 import { getScreenInfo, getScreenInfoAfterRotation, applyCanvasSize, type ScreenInfo } from './ui/screen';
 import { audio } from './ui/audio';
-import { isDevEnvironment } from './ui/env';
 import { getNickname, getPreferredOrientation, setPreferredOrientation } from './ui/profile';
 import { requestOrientation, orientationSupported } from './ui/orientation';
 import type { PublicGameState } from './cloud/game';
@@ -27,7 +26,6 @@ import {
   joinRoom,
   getRoom,
   startRoom,
-  fillDevBots,
   findMyActiveRoom,
   getLastRoom,
   clearLastRoom,
@@ -123,7 +121,7 @@ function goHome(): void {
     });
 }
 
-/** 首页各入口接线：建房 / 房号入房 / 个人中心 / 联机测试房 / 断线重连。 */
+/** 首页各入口接线：建房 / 房号入房 / 个人中心 / 断线重连。 */
 function wireHome(home: HomeScene): void {
   home.onCreateRoom = (capacity: number) => {
     createRoom(capacity, getNickname())
@@ -149,22 +147,6 @@ function wireHome(home: HomeScene): void {
   home.onOpenProfile = () => {
     goProfile();
   };
-  // 开发后门：仅开发版显示。联机测试房：真实云房间 + 测试机器人补位，
-  // 机器人回合由云端 AI 立即代打，单人即可联调实时对战全流程。
-  // 一键直达对局：建房 → 机器人补位 → 自动开局，跳过房间等待页。
-  if (isDevEnvironment()) {
-    home.onDevRoom = () => {
-      createRoom(2, getNickname())
-        .then((result) => fillDevBots(result.room.code))
-        .then((result) => startRoom(result.room.code))
-        .then((result) => {
-          startOnlineGame(result.room, result.self);
-        })
-        .catch((e: Error) => {
-          home.showError(e.message);
-        });
-    };
-  }
   // 断线重连：优先本地房间记忆；本地无记录（如清过缓存）则查云端进行中的房间，
   // 保证清缓存不会导致进不去对局。房间在对局中或等待中且本人在场时展示回进入口。
   const lastCode = getLastRoom();
@@ -250,12 +232,12 @@ function startOnlineGame(room: RoomInfo, selfOpenid: string): void {
   scene.onExitGameOver = () => {
     goHome();
   };
-  // 测试房（机器人补位）：给房主挂「结束对局」应急出口，否则开局后无法关闭。
+  // 含机器人的对局：给房主挂「结束对局」出口，机器人局可随时收尾。
   if (room.host === selfOpenid && room.players.some((p) => p.openid.startsWith('bot_'))) {
     scene.onRequestEndGame = () => {
       wx.showModal({
         title: '结束对局',
-        content: '确定结束当前测试对局吗？房间将被关闭。',
+        content: '确定结束当前对局吗？房间将被关闭。',
         confirmText: '结束',
         success: (res) => {
           if (!res.confirm) return;

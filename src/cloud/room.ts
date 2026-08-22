@@ -145,11 +145,6 @@ export function disbandRoom(code: string): Promise<void> {
   return callRoom<{ ok: boolean }>('disband', { code }).then(() => undefined);
 }
 
-/** 开发调试：房主用测试机器人补满空位，单人即可开局联调实时对战。 */
-export function fillDevBots(code: string): Promise<RoomResult> {
-  return callRoom<RoomResponse>('devFill', { code });
-}
-
 /**
  * 查询本人进行中的房间（云端权威）。
  * 本地房间记忆（lastRoom）被清除后的兜底：从数据库恢复房号，
