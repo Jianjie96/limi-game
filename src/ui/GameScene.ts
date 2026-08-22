@@ -309,6 +309,7 @@ export class GameScene {
     // 主按钮「出牌」放右侧（用户习惯右边是主操作）；布局按数组顺序从左到右。
     this.buttons = createButtonStates([
       { id: 'pass', label: 'Pass 摸牌', x: 0, y: 0, width: 0, variant: 'secondary' },
+      { id: 'reset', label: '复位', x: 0, y: 0, width: 0, variant: 'danger' },
       { id: 'submit', label: '出牌', x: 0, y: 0, width: 0, variant: 'primary' },
     ]);
   }
@@ -332,7 +333,8 @@ export class GameScene {
     };
 
     const contentW = this.screenW - this.safeLeft - this.safeRight;
-    const btnW = (contentW - 40) / 2;
+    const n = this.buttons.length;
+    const btnW = (contentW - 16 - (n - 1) * 8) / n;
     const btnY = this.layoutY(LAYOUT.buttonAreaTop);
     for (let i = 0; i < this.buttons.length; i++) {
       this.buttons[i].config.x = this.safeLeft + 8 + i * (btnW + 8);
@@ -355,11 +357,16 @@ export class GameScene {
       }
       return;
     }
-    // 仅本人回合处于可操作阶段：玩家可随时「出牌」或选择「Pass 摸牌」。
+    // 仅本人回合处于可操作阶段：可随时出牌、复位，或选择「Pass 摸牌」。
     const canAct = this.canAct();
     for (const btn of this.buttons) {
       btn.config.enabled = canAct;
-      btn.config.label = btn.config.id === 'submit' ? '出牌' : 'Pass 摸牌';
+      btn.config.label =
+        btn.config.id === 'submit'
+          ? '出牌'
+          : btn.config.id === 'reset'
+            ? '复位'
+            : 'Pass 摸牌';
     }
   }
 
@@ -1102,7 +1109,7 @@ export class GameScene {
   private onButtonTap(buttonId: string): void {
     switch (buttonId) {
       case 'submit': {
-        // 选中牌架牌 → 自动拆分成牌组 → 逐组直接落桌面成草稿组，再提交（出牌时整桌校验）。
+        // 选中牌架牌 → 自动拆分成牌组 → 逐组直接落桌面成草稿组，再提交。
         const rack = this.getSelfPlayer().rack;
         const selTiles = rack.filter((t) => this.selectedRackIds.has(t.id));
         if (selTiles.length > 0) {
@@ -1126,10 +1133,15 @@ export class GameScene {
           }
         }
 
-        // 提交操作日志给云端回放校验（云端是唯一裁判）。
+        // 提交操作日志给云端回放校验（云端是唯一裁判）；本地预校验失败时保留草稿。
         this.coordinator?.submit();
         break;
       }
+
+      case 'reset':
+        // 丢弃本回合全部草稿，回到回合开始状态。
+        this.coordinator?.resetTurn();
+        break;
 
       case 'pass':
         this.coordinator?.pass();

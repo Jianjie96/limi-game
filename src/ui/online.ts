@@ -228,6 +228,17 @@ export class OnlineCoordinator {
     this.scene.setSubmitting(v, action);
   }
 
+  /** 复位：丢弃本回合全部草稿，恢复到回合开始时的状态（turnStartJson 快照）。 */
+  resetTurn(): void {
+    if (this.busy) return;
+    const st = this.engine.getState();
+    if (st.phase !== 'PLAYING' || st.currentPlayerIndex !== this.selfIndex) return;
+    if (!this.turnStartJson) return;
+    this.engine.loadState(this.turnStartJson);
+    audio.play('sort');
+    this.scene.showMessage('已复位到回合开始', 2000);
+  }
+
   /** 出牌：本地克隆预校验（即时反馈）→ 乐观提交 → 云端回放校验（权威裁决）。 */
   submit(): void {
     if (this.busy) return;
@@ -241,8 +252,7 @@ export class OnlineCoordinator {
       const clone = RummikubEngine.fromState(this.engine.serializeState());
       const res = clone.submitTurn();
       if (!res.valid) {
-        // 与本地模式一致：失败即回滚到回合开始。
-        if (this.turnStartJson) this.engine.loadState(this.turnStartJson);
+        // 只报错误不回滚：保留草稿供玩家继续调整或点「复位」。
         audio.play('error');
         const msg = res.errors.map((er) => er.message).join('; ');
         this.scene.showMessage(`出牌失败: ${msg}`, 3000);
@@ -263,9 +273,8 @@ export class OnlineCoordinator {
     try {
       const opt = this.engine.submitTurn();
       if (!opt.valid) {
-        // 复核未通过（理论上与克隆一致）→ 回滚并放弃提交。
+        // 复核未通过（理论上与克隆一致）→ 放弃提交；submitTurn 失败不改动状态，草稿仍在。
         this.setBusy(false);
-        if (this.turnStartJson) this.engine.loadState(this.turnStartJson);
         audio.play('error');
         this.scene.showMessage('出牌失败', 2400);
         return;
