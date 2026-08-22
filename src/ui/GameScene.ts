@@ -63,7 +63,7 @@ import {
 import { getScreenInfo, getScreenInfoAfterRotation, applyCanvasSize, type ScreenInfo } from './screen';
 import { requestOrientation, orientationSupported } from './orientation';
 import { audio } from './audio';
-import { vibrateIfEnabled, isVibrateEnabled, setVibrateEnabled, getPreferredOrientation, setPreferredOrientation } from './profile';
+import { vibrateIfEnabled, isVibrateEnabled, setVibrateEnabled, getPreferredOrientation, setPreferredOrientation, drawAvatar } from './profile';
 
 /** 拖拽来源 */
 type DragSourceKind = 'rack' | 'board';
@@ -213,6 +213,9 @@ export class GameScene {
   /** 结算面板「返回」回调（对局结束后退出回首页）。 */
   onExitGameOver: (() => void) | null = null;
   private gameOverBackRect: { x: number; y: number; w: number; h: number } | null = null;
+  /** 对局中「返回」回调：不结束对局回首页，可经首页「回到对局」重进。 */
+  onExitToHome: (() => void) | null = null;
+  private backHomeRect: { x: number; y: number; w: number; h: number } | null = null;
 
   /** 设置弹窗（背景音/音效/震动/横屏）：打开时屏蔽一切牌面交互。 */
   private settingsPanelOpen = false;
@@ -901,6 +904,12 @@ export class GameScene {
     const er = this.endGameRect;
     if (er && x >= er.x && x <= er.x + er.w && y >= er.y && y <= er.y + er.h) {
       this.onRequestEndGame?.();
+      return;
+    }
+    const bh = this.backHomeRect;
+    if (bh && x >= bh.x && x <= bh.x + bh.w && y >= bh.y && y <= bh.y + bh.h) {
+      audio.play('pickup');
+      this.onExitToHome?.();
       return;
     }
 
@@ -1768,32 +1777,23 @@ export class GameScene {
     const ctx = this.ctx;
     const y = this.safeTop;
 
-    // 磨砂玻璃顶栏 + 香槟金细分隔线（原神 HUD 风）。
+    // 磨砂玻璃顶栏（单行按钮区）+ 香槟金细分隔线（原神 HUD 风）。
     ctx.fillStyle = PLAYER_INFO_BG;
     ctx.fillRect(0, y, this.screenW, PLAYER_INFO_HEIGHT);
     ctx.fillStyle = GOLD_SOFT;
     ctx.fillRect(0, y + PLAYER_INFO_HEIGHT - 1, this.screenW, 1);
 
-    const player = this.engine.getCurrentPlayer();
+    // 按钮群一律靠左：右上角避让微信胶囊；各家牌数/回合信息在顶栏下方的信息行。
+    // 从左到右「返回 → 回合记录 → 设置 → 结束对局（仅房主）」。
     const cy = y + PLAYER_INFO_HEIGHT / 2;
-
-    // 按钮一律靠左：部分机型右上角会被微信胶囊按钮遮挡。
-    // 顺序：设置齿轮 → 回合记录 → 结束对局（仅房主）→ 回合徽章与文字。
     let lx = this.safeLeft + 10;
 
-    // 设置齿轮按钮。
-    const gs = 26;
-    const gearRect = { x: lx, y: cy - gs / 2, w: gs, h: gs };
-    this.settingsButtonRect = gearRect;
-    ctx.fillStyle = FROST;
-    roundRectPath(ctx, gearRect.x, gearRect.y, gs, gs, 7);
-    ctx.fill();
-    ctx.strokeStyle = FROST_BORDER;
-    ctx.lineWidth = 1;
-    roundRectPath(ctx, gearRect.x, gearRect.y, gs, gs, 7);
-    ctx.stroke();
-    this.drawGearIcon(gearRect.x + gs / 2, cy, 8);
-    lx += gs + 8;
+    // 「返回」：全局统一胶囊样式，不结束对局回首页。
+    const bbw = 48;
+    const bbh = 26;
+    this.backHomeRect = { x: lx, y: cy - bbh / 2, w: bbw, h: bbh };
+    drawCapsuleButton(ctx, this.backHomeRect, '返回', 'secondary', 12);
+    lx += bbw + 8;
 
     // 「回合记录」按钮：打开定高可滚动列表。
     ctx.font = `bold 12px ${FONT_FAMILY}`;
@@ -1803,55 +1803,27 @@ export class GameScene {
     drawCapsuleButton(ctx, this.historyButtonRect, hrLabel, 'secondary', 12);
     lx += hrW + 8;
 
+    // 「设置」按钮：齿轮图标（磨砂小方块），打开设置弹窗。
+    const gs = 26;
+    this.settingsButtonRect = { x: lx, y: cy - gs / 2, w: gs, h: gs };
+    ctx.fillStyle = FROST;
+    roundRectPath(ctx, lx, cy - gs / 2, gs, gs, 7);
+    ctx.fill();
+    ctx.strokeStyle = FROST_BORDER;
+    ctx.lineWidth = 1;
+    roundRectPath(ctx, lx, cy - gs / 2, gs, gs, 7);
+    ctx.stroke();
+    this.drawGearIcon(lx + gs / 2, cy, 8);
+    lx += gs + 8;
+
     // 房主出口：「结束对局」（仅房主挂接回调时显示）。
     if (this.onRequestEndGame) {
       const ebw = 76;
       const ebh = 26;
       this.endGameRect = { x: lx, y: cy - ebh / 2, w: ebw, h: ebh };
       drawCapsuleButton(ctx, this.endGameRect, '结束对局', 'danger', 12);
-      lx += ebw + 8;
     } else {
       this.endGameRect = null;
-    }
-
-    // 「回合数」香槟金渐变胶囊徽章。
-    const turnText = `回合 ${state.turnNumber}`;
-    ctx.font = `bold ${FONT_SIZE_LABEL - 2}px ${FONT_FAMILY}`;
-    const tw = ctx.measureText(turnText).width;
-    const badge = ctx.createLinearGradient(0, cy - 10, 0, cy + 10);
-    badge.addColorStop(0, '#F0D89C');
-    badge.addColorStop(1, '#D3A85C');
-    ctx.fillStyle = badge;
-    roundRectPath(ctx, lx + 4, cy - 10, tw + 18, 20, 10);
-    ctx.fill();
-    this.drawText(lx + 13 + tw / 2, cy, turnText, {
-      size: FONT_SIZE_LABEL - 2,
-      color: '#FFFFFF',
-      bold: true,
-    });
-
-    const nameText = `${player.name} 的回合`;
-    const nameX = lx + 10 + tw + 28;
-    this.drawText(nameX, cy, nameText, {
-      size: FONT_SIZE_LABEL,
-      color: INK,
-      bold: true,
-      align: 'left',
-    });
-
-    // 右上角保持留白（避让胶囊按钮）；左侧布局未挤到右侧时才显示操作提示。
-    const hintText = '出牌 或 Pass 摸牌';
-    ctx.font = `${FONT_SIZE_LABEL - 2}px ${FONT_FAMILY}`;
-    const hintW = ctx.measureText(hintText).width;
-    const hintX = this.screenW - this.safeRight - 12;
-    ctx.font = `bold ${FONT_SIZE_LABEL}px ${FONT_FAMILY}`;
-    const nameW = ctx.measureText(nameText).width;
-    if (nameX + nameW + 12 < hintX - hintW) {
-      this.drawText(hintX, cy, hintText, {
-        size: FONT_SIZE_LABEL - 2,
-        color: INK_SOFT,
-        align: 'right',
-      });
     }
   }
 
@@ -1880,43 +1852,56 @@ export class GameScene {
     ctx.restore();
   }
 
+  /** 信息行（顶栏下方）：从左到右各家牌数（含机器人与本人）→「回合 x」→ xx 的回合。 */
   private buildOpponents(state: GameState): void {
     const ctx = this.ctx;
-    // 固定以自己为视角。
-    const opponents = state.players.filter((p) => p.id !== this.selfIndex);
-    // 对手行贴着顶栏下沿，整体位于桌面区域（topY）上方，避免被桌面遮盖。
+    // 信息行贴着顶栏下沿，整体位于桌面区域（topY）上方，避免被桌面遮盖。
     const y = this.safeTop + PLAYER_INFO_HEIGHT + 15;
-    // 右侧止于安全区，徽章不与右侧 UI 重叠。
-    const maxX = this.screenW - this.safeRight - 12;
+    // 右侧止于安全区（本行在胶囊下方，不与胶囊同高，可用满右缘）。
+    const rightLimit = this.screenW - this.safeRight - 12;
 
-    // 记录各对手头像中心：机器人出牌飞行动画的起飞点。
+    // 记录各家头像中心：机器人出牌飞行动画的起飞点。
     this.opponentBadgePoints.clear();
 
-    let x = this.safeLeft + 12;
-    for (const opp of opponents) {
-      const avatarColor = AVATAR_COLORS[opp.id % AVATAR_COLORS.length];
+    // 尾部必留：「回合 x」徽章 + 「xx 的回合」文字，先算出占宽。
+    const player = this.engine.getCurrentPlayer();
+    const turnText = `回合 ${state.turnNumber}`;
+    ctx.font = `bold ${FONT_SIZE_LABEL - 2}px ${FONT_FAMILY}`;
+    const turnW = ctx.measureText(turnText).width;
+    const nameText = `${player.name} 的回合`;
+    ctx.font = `bold ${FONT_SIZE_LABEL}px ${FONT_FAMILY}`;
+    const nameW = ctx.measureText(nameText).width;
+    const badgesMax = rightLimit - (turnW + 18 + 12 + nameW) - 8;
 
-      // 先量出徽章总宽，整枚放不下时才截断，避免画到一半遮住按钮。
-      const text = `${opp.rack.length}张`;
+    // 各家牌数徽章（含本人；本人用自定义头像，其余元素色圆片）。
+    let x = this.safeLeft + 12;
+    for (const p of state.players) {
+      // 先量出徽章总宽，整枚放不下时才截断，保回合信息完整。
+      const text = `${p.rack.length}张`;
       ctx.font = `${FONT_SIZE_LABEL - 3}px ${FONT_FAMILY}`;
       const tw = ctx.measureText(text).width;
       const badgeW = 23 + tw + 14;
-      if (x + badgeW > maxX) break;
-      this.opponentBadgePoints.set(opp.id, { x: x + 10, y });
+      if (x + badgeW > badgesMax) break;
+      this.opponentBadgePoints.set(p.id, { x: x + 10, y });
 
-      // 元素风头像圆片 + 白环 + 末字。
-      ctx.fillStyle = avatarColor;
-      ctx.beginPath();
-      ctx.arc(x + 10, y, 10, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.strokeStyle = 'rgba(255,255,255,0.9)';
-      ctx.lineWidth = 1.5;
-      ctx.stroke();
-      this.drawText(x + 10, y + 0.5, opp.name.charAt(opp.name.length - 1), {
-        size: 11,
-        color: '#FFFFFF',
-        bold: true,
-      });
+      if (p.id === this.selfIndex) {
+        // 本人：个人中心同款头像（微信图片优先，元素色兜底）。
+        drawAvatar(ctx, x + 10, y, 10, () => this.markDirty());
+      } else {
+        // 元素风头像圆片 + 白环 + 末字。
+        ctx.fillStyle = AVATAR_COLORS[p.id % AVATAR_COLORS.length];
+        ctx.beginPath();
+        ctx.arc(x + 10, y, 10, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+        this.drawText(x + 10, y + 0.5, p.name.charAt(p.name.length - 1), {
+          size: 11,
+          color: '#FFFFFF',
+          bold: true,
+        });
+      }
 
       // 剩余牌数磨砂胶囊。
       ctx.fillStyle = FROST_STRONG;
@@ -1933,6 +1918,28 @@ export class GameScene {
 
       x += 23 + tw + 14 + 16;
     }
+
+    // 「回合数」香槟金渐变胶囊徽章。
+    const badgeX = x + 2;
+    const badge = ctx.createLinearGradient(0, y - 10, 0, y + 10);
+    badge.addColorStop(0, '#F0D89C');
+    badge.addColorStop(1, '#D3A85C');
+    ctx.fillStyle = badge;
+    roundRectPath(ctx, badgeX, y - 10, turnW + 18, 20, 10);
+    ctx.fill();
+    this.drawText(badgeX + 9 + turnW / 2, y + 0.5, turnText, {
+      size: FONT_SIZE_LABEL - 2,
+      color: '#FFFFFF',
+      bold: true,
+    });
+
+    // 当前回合玩家。
+    this.drawText(badgeX + turnW + 30, y + 0.5, nameText, {
+      size: FONT_SIZE_LABEL,
+      color: INK,
+      bold: true,
+      align: 'left',
+    });
   }
 
   /** 计算桌面布局：内容超出可用高度时适度缩放（不低于 0.8），

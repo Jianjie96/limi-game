@@ -317,13 +317,14 @@ export class RoomScene {
     drawCapsuleButton(this.ctx, this.backBtnRect, '返回', 'secondary', 13);
   }
 
-  /** 房主专属：解散等待中的房间（danger 醒目样式，区别于普通返回）。 */
+  /** 房主专属：解散等待中的房间（danger 醒目样式，区别于普通返回）。
+   * 紧贴「返回」按钮右侧排布：右上角留给微信胶囊按钮，避免遮挡。 */
   private drawDisbandButton(): void {
     if (!this.isHost || this.room.status !== 'waiting') {
       this.disbandBtnRect = { x: 0, y: 0, w: 0, h: 0 };
       return;
     }
-    this.disbandBtnRect = { x: this.screenW - 92, y: this.safeTop + 8, w: 80, h: 30 };
+    this.disbandBtnRect = { x: 88, y: this.safeTop + 8, w: 80, h: 30 };
     drawCapsuleButton(this.ctx, this.disbandBtnRect, this.busy ? '解散中…' : '解散房间', 'danger', 13);
   }
 
@@ -333,7 +334,7 @@ export class RoomScene {
       this.leaveBtnRect = { x: 0, y: 0, w: 0, h: 0 };
       return;
     }
-    this.leaveBtnRect = { x: this.screenW - 92, y: this.safeTop + 8, w: 80, h: 30 };
+    this.leaveBtnRect = { x: 88, y: this.safeTop + 8, w: 80, h: 30 };
     drawCapsuleButton(this.ctx, this.leaveBtnRect, this.busy ? '退出中…' : '退出房间', 'secondary', 13);
   }
 

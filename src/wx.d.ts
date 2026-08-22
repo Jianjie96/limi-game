@@ -152,6 +152,16 @@ declare namespace wx {
   function onKeyboardComplete(callback: (res: { value: string }) => void): void;
   function offKeyboardComplete(callback: (res: { value: string }) => void): void;
 
+  // 胶囊按钮（右上角「···|○」）位置：顶栏右侧按钮避让用。
+  function getMenuButtonBoundingClientRect(): {
+    left: number;
+    top: number;
+    right: number;
+    bottom: number;
+    width: number;
+    height: number;
+  };
+
   // 模态弹窗（结束对局等二次确认；editable 开启输入框，如输入房号）
   function showModal(options: {
     title?: string;

@@ -266,6 +266,10 @@ function startOnlineGame(room: RoomInfo, selfOpenid: string): void {
   scene.onExitGameOver = () => {
     goHome();
   };
+  // 对局中「返回」：不结束对局回首页，首页「回到对局」探测入口可重进。
+  scene.onExitToHome = () => {
+    goHome();
+  };
   // 房主专属出口：对局中随时「结束对局」（云端 end 仅限房主），真人局/机器人局都能收尾。
   if (room.host === selfOpenid) {
     scene.onRequestEndGame = () => {
