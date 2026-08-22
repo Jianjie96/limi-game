@@ -74,6 +74,45 @@ describe('inferJokerDisplayValue', () => {
     expect(inferJokerDisplayValue('run', tiles, 1)).toEqual({ color: 'blue', number: 6 });
   });
 
+  it('唯一区间与存储顺序无关：同色 7,8,6,joker,3,5 任意拖拽顺序均显示 4', () => {
+    const orders: Array<Array<() => LogicalTile>> = [
+      [
+        () => makeTile(1, 'red', 7), () => makeTile(2, 'red', 8), () => makeTile(3, 'red', 6),
+        () => makeJoker(104), () => makeTile(4, 'red', 3), () => makeTile(5, 'red', 5),
+      ],
+      [
+        () => makeJoker(104), () => makeTile(1, 'red', 7), () => makeTile(2, 'red', 8),
+        () => makeTile(3, 'red', 6), () => makeTile(4, 'red', 3), () => makeTile(5, 'red', 5),
+      ],
+      [
+        () => makeTile(1, 'red', 7), () => makeTile(2, 'red', 8), () => makeTile(3, 'red', 6),
+        () => makeTile(4, 'red', 3), () => makeTile(5, 'red', 5), () => makeJoker(104),
+      ],
+      [
+        () => makeTile(4, 'red', 3), () => makeJoker(104), () => makeTile(5, 'red', 5),
+        () => makeTile(3, 'red', 6), () => makeTile(1, 'red', 7), () => makeTile(2, 'red', 8),
+      ],
+    ];
+    for (const order of orders) {
+      const tiles = order.map((f) => f());
+      const jokerIndex = tiles.findIndex((t) => t.originalTile.color === 'joker');
+      expect(inferJokerDisplayValue('run', tiles, jokerIndex)).toEqual({ color: 'red', number: 4 });
+    }
+  });
+
+  it('多百搭唯一区间：同色 3,5,6,joker,joker,8 固定显示 4、7', () => {
+    const tiles = [
+      makeTile(1, 'red', 3),
+      makeJoker(104),
+      makeTile(2, 'red', 5),
+      makeTile(3, 'red', 6),
+      makeJoker(105),
+      makeTile(4, 'red', 8),
+    ];
+    expect(inferJokerDisplayValue('run', tiles, 1)).toEqual({ color: 'red', number: 4 });
+    expect(inferJokerDisplayValue('run', tiles, 4)).toEqual({ color: 'red', number: 7 });
+  });
+
   it('中间填充防撞：9-joker-10 显示 11（不能与两侧的 9/10 重复）', () => {
     const tiles = [
       makeTile(0, 'red', 9),

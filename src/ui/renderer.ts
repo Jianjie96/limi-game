@@ -331,8 +331,11 @@ export function drawLogicalTile(ctx: CanvasRenderingContext2D, lt: LogicalTile, 
 
 /**
  * 推断桌面牌组中某张 Joker 的「显示代表值」。
- * 仅用于渲染：根据 Joker 在组内的位置动态计算，不改动逻辑牌本身。
- * - 顺子：按存储顺序（显示顺序），左侧延伸取最小值、右侧延伸取最大值、中间取相邻填充值。
+ * 仅用于渲染：不改动逻辑牌本身。
+ * - 顺子：枚举能容纳全部真实牌的合法连续区间（长度=牌数、落 1..13）：
+ *   唯一区间时结果完全由牌面集合决定，拖拽顺序不影响（修复 3,5,6,7,8+J
+ *   被误推成 2 的不确定问题）；多区间时按百搭左右邻居选延伸方向
+ *   （缺口优先、再向上延伸、再向下，与引擎 tidyRun 一致）。
  * - 刻子：取缺失颜色、与组内数字一致。
  */
 export function inferJokerDisplayValue(
@@ -356,79 +359,94 @@ export function inferJokerDisplayValue(
     return null;
   }
 
-  // Run：依据非 Joker 的真实数字区间反推代表值，与存储顺序解耦。
-  // 组内顺序只决定 Joker 位于「左端 / 中间 / 右端」，再用区间两端正确回推。
+  // Run：区间反推。枚举能容纳全部真实牌的合法连续区间（长度=牌数、落 1..13）：
+  // 唯一区间时结果完全由牌面集合决定，拖拽顺序不影响；多区间时按各百搭的
+  // 「位置优先值」给区间打分选最优，平手取 start 最大（与引擎「向上延伸优先」一致）。
   const color = nonJokers[0].logicalColor as TileColor;
   const nums = nonJokers.map(t => t.logicalNumber).sort((a, b) => a - b);
   const min = nums[0];
   const max = nums[nums.length - 1];
+  const n = tiles.length;
+  const numSet = new Set(nums);
+  const jokerCount = tiles.filter(isJokerTile).length;
 
-  const hasBefore = tiles.slice(0, jokerIndex).some(t => !isJokerTile(t));
-  const hasAfter = tiles.slice(jokerIndex + 1).some(t => !isJokerTile(t));
+  const starts: number[] = [];
+  const lo = Math.max(1, max - n + 1);
+  const hi = Math.min(min, 13 - n + 1);
+  for (let s = lo; s <= hi; s++) starts.push(s);
 
-  if (hasBefore && hasAfter) {
-    // 中间填充：对所有「两侧都有真实牌」的 Joker 从左到右连续分配，
-    // 保证显示值既不与真实牌重复、也不与其它 Joker 的显示值重复：
-    //   如 9-joker-10 左推 = 10 与右邻重复 → 向上取 11；
-    //   如 5-joker-joker-7 依次分配 6、8（第二个左推 7 重复、右推 6 也重复）。
-    const usedNums = new Set(nonJokers.map(t => t.logicalNumber));
-    let result = min;
-    for (let i = 0; i < tiles.length; i++) {
-      if (!isJokerTile(tiles[i])) continue;
-      const before = tiles.slice(0, i).some(t => !isJokerTile(t));
-      const after = tiles.slice(i + 1).some(t => !isJokerTile(t));
-      if (!before || !after) continue;
+  if (starts.length === 0) {
+    // 草稿尚不构成任何合法顺子（如 3-J-8 缺口超百搭数）：防撞启发式，
+    // 从两端向外找第一个不与真实牌重复的数字（结果仍只由牌面集合决定）。
+    let pick = -1;
+    for (let v = min - 1; v >= 1 && pick < 0; v--) if (!numSet.has(v)) pick = v;
+    for (let v = max + 1; v <= 13 && pick < 0; v++) if (!numSet.has(v)) pick = v;
+    if (pick < 0) pick = max + 1;
+    return { color, number: pick };
+  }
 
-      let left: LogicalTile | null = null;
-      for (let j = i - 1; j >= 0; j--) {
-        if (!isJokerTile(tiles[j])) {
-          left = tiles[j];
-          break;
-        }
-      }
-      let right: LogicalTile | null = null;
-      for (let j = i + 1; j < tiles.length; j++) {
-        if (!isJokerTile(tiles[j])) {
-          right = tiles[j];
-          break;
-        }
-      }
-      let jokersBefore = 0;
-      for (let j = i; j >= 0 && isJokerTile(tiles[j]); j--) jokersBefore++;
-      let jokersAfter = 0;
-      for (let j = i; j < tiles.length && isJokerTile(tiles[j]); j++) jokersAfter++;
-
-      const fromLeft = (left?.logicalNumber ?? min) + jokersBefore;
-      const fromRight = (right?.logicalNumber ?? max) - jokersAfter;
-      let pick = fromLeft;
-      if (pick < 1 || pick > 13 || usedNums.has(pick)) pick = fromRight;
-      if (pick < 1 || pick > 13 || usedNums.has(pick)) {
-        // 两端推算都重复：从左侧推算值出发向上/向下找第一个不重复的数字。
-        pick = -1;
-        for (let n = fromLeft + 1; n <= 13 && pick < 0; n++) if (!usedNums.has(n)) pick = n;
-        for (let n = fromLeft - 1; n >= 1 && pick < 0; n--) if (!usedNums.has(n)) pick = n;
-        if (pick < 0) pick = fromLeft;
-      }
-      usedNums.add(pick);
-      if (i === jokerIndex) result = pick;
+  // 每张百搭的「位置优先值」：取最近真实邻居向外推算（左链优先），
+  // 与存储顺序中「Joker 摆在哪一侧」的玩家意图一致。
+  const preferredOf = (idx: number): number => {
+    let left: LogicalTile | null = null;
+    for (let j = idx - 1; j >= 0; j--) {
+      if (!isJokerTile(tiles[j])) { left = tiles[j]; break; }
     }
-    return { color, number: result };
+    let right: LogicalTile | null = null;
+    for (let j = idx + 1; j < tiles.length; j++) {
+      if (!isJokerTile(tiles[j])) { right = tiles[j]; break; }
+    }
+    let jokersBefore = 0;
+    for (let j = idx - 1; j >= 0 && isJokerTile(tiles[j]); j--) jokersBefore++;
+    let jokersAfter = 0;
+    for (let j = idx + 1; j < tiles.length && isJokerTile(tiles[j]); j++) jokersAfter++;
+    if (left) return left.logicalNumber + jokersBefore + 1;
+    if (right) return right.logicalNumber - jokersAfter - 1;
+    return -1;
+  };
+
+  // 选区间：统计每个区间命中多少张百搭的优先值，取命中最多者；
+  // 平手取 start 最大（向上延伸优先）。任一视角调用结果一致，无随机性。
+  const gapsOf = (s: number): Set<number> => {
+    const gaps = new Set<number>();
+    for (let v = s; v < s + n; v++) if (!numSet.has(v)) gaps.add(v);
+    return gaps;
+  };
+  let start = starts[starts.length - 1];
+  if (starts.length > 1) {
+    let best = -1;
+    // 降序遍历：同分时保留 start 最大者（向上延伸优先）。
+    for (let si = starts.length - 1; si >= 0; si--) {
+      const s = starts[si];
+      const gaps = gapsOf(s);
+      let score = 0;
+      for (let i = 0; i < tiles.length; i++) {
+        if (!isJokerTile(tiles[i])) continue;
+        const p = preferredOf(i);
+        if (p >= 1 && p <= 13 && gaps.has(p)) score++;
+      }
+      if (score > best) {
+        best = score;
+        start = s;
+      }
+    }
   }
-  if (hasAfter) {
-    // 左端延伸：默认 min 向小延伸；越过 1 时（如 joker-1-2 只能取 3）改为 max 向大延伸。
-    // jokers 为从紧邻真实牌一端数起的序号，翻转后仍按此序号从 max 向上排。
-    let jokers = 0;
-    for (let i = jokerIndex; i < tiles.length && isJokerTile(tiles[i]); i++) jokers++;
-    if (min - jokers >= 1) return { color, number: min - jokers };
-    return { color, number: max + jokers };
+
+  // 缺值升序收集：缺口优先，不够再向上、再向下延伸（与引擎 tidyRun 一致）。
+  const jokerValues: number[] = [];
+  for (let v = start; v < start + n; v++) {
+    if (!numSet.has(v)) jokerValues.push(v);
   }
-  if (hasBefore) {
-    // 右端延伸：默认 max 向大延伸；越过 13 时（如 12-13-joker 只能取 11）改为 min 向小延伸。
-    // jokers 为从紧邻真实牌一端数起的序号，翻转后仍按此序号从 min 向下排。
-    let jokers = 0;
-    for (let i = jokerIndex; i >= 0 && isJokerTile(tiles[i]); i--) jokers++;
-    if (max + jokers <= 13) return { color, number: max + jokers };
-    return { color, number: min - jokers };
+  let extra = jokerCount - jokerValues.length;
+  for (let v = start + n; extra > 0 && v <= 13; v++, extra--) jokerValues.push(v);
+  for (let v = start - 1; extra > 0 && v >= 1; v--, extra--) jokerValues.push(v);
+
+  // 按出现顺序逐张分配：区间选定后结果唯一。
+  let k = 0;
+  for (let i = 0; i < tiles.length; i++) {
+    if (!isJokerTile(tiles[i])) continue;
+    if (i === jokerIndex) return { color, number: jokerValues[k] };
+    k++;
   }
   return null;
 }
