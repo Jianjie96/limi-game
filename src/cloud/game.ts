@@ -87,6 +87,16 @@ export async function initGame(code: string): Promise<GameSyncPayload> {
   return { public: result.public, hand: result.hand };
 }
 
+/** 拉取当前状态（云函数兜底通道）：watch 直读被数据库安全规则拦截时，
+ * 靠它轮询拿到公开状态与本人手牌，进局与同步不依赖集合读权限。 */
+export async function syncGame(code: string): Promise<GameSyncPayload> {
+  const result = await callGameRaw('sync', { code });
+  if (!result || !result.ok) {
+    throw new Error((result && result.message) || '同步失败');
+  }
+  return { public: result.public, hand: result.hand };
+}
+
 /** 出牌提交：携带本回合操作日志，云端回放校验 */
 export async function sendMove(code: string, ops: readonly EngineOp[]): Promise<MoveResponse> {
   const result = await callGameRaw('move', { code, ops });

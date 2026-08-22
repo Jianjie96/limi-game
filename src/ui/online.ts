@@ -19,6 +19,7 @@ import {
   initGame,
   sendMove,
   sendPass,
+  syncGame,
   watchGame,
   fetchTurnLog,
   type PublicGameState,
@@ -26,6 +27,9 @@ import {
   type MoveResponse,
 } from '../cloud/game';
 import { audio } from './audio';
+
+/** watch 失效时的云函数兜底轮询间隔：与等待页轮询同量级，实时性够用且省调用。 */
+const FALLBACK_POLL_MS = 2500;
 
 /** GameScene 暴露给协调器的最小接口（避免循环依赖）。 */
 export interface OnlineSceneHost {
@@ -129,6 +133,10 @@ export function buildMaskedStateJson(
 
 export class OnlineCoordinator {
   private closeWatch: (() => void) | null = null;
+  /** watch 失效时的云函数兜底轮询定时器。 */
+  private fallbackTimer: ReturnType<typeof setInterval> | null = null;
+  /** 兜底轮询在途标记，防叠加请求。 */
+  private fallbackBusy = false;
   private latestPublic: PublicGameState | null = null;
   private latestHand: Tile[] | null = null;
   private appliedVersion = 0;
@@ -155,7 +163,7 @@ export class OnlineCoordinator {
     private isHost: boolean
   ) {}
 
-  /** 启动同步：开局（房主）+ watch 订阅。initialPublic 为轮询拿到的最新公开状态。 */
+  /** 启动同步：开局（房主）+ watch 订阅 + 云函数兜底轮询。initialPublic 为轮询拿到的最新公开状态。 */
   begin(initialPublic?: PublicGameState): void {
     if (initialPublic) this.latestPublic = initialPublic;
 
@@ -165,11 +173,35 @@ export class OnlineCoordinator {
       this.tryApply();
     });
 
+    // 兜底通道：watch 是客户端直读数据库，会被集合安全规则拦截（同伴设备曾因此
+    // 永远卡在「正在连接对局」）；云函数调用不受读权限限制，双通道并行，
+    // tryApply 按 version/手牌键去重，两者共存不冲突。
+    this.fallbackTimer = setInterval(() => this.syncFallback(), FALLBACK_POLL_MS);
+    setTimeout(() => this.syncFallback(), 600);
+
     if (this.isHost) {
       this.requestInit();
     } else {
       this.tryApply();
     }
+  }
+
+  /** 云函数兜底拉取：静默失败（初始化中/网络抖动下一轮再试）。 */
+  private syncFallback(): void {
+    if (this.fallbackBusy) return;
+    this.fallbackBusy = true;
+    syncGame(this.code)
+      .then((payload) => {
+        this.latestPublic = payload.public;
+        this.latestHand = payload.hand;
+        this.tryApply();
+      })
+      .catch(() => {
+        // 对局尚未初始化/网络抖动：静默，下个周期重试
+      })
+      .then(() => {
+        this.fallbackBusy = false;
+      });
   }
 
   /** 拉取云端操作日志并与本地缓存合并（按回合号去重，最新在顶）后交给场景。
@@ -193,6 +225,10 @@ export class OnlineCoordinator {
     if (this.closeWatch) {
       this.closeWatch();
       this.closeWatch = null;
+    }
+    if (this.fallbackTimer) {
+      clearInterval(this.fallbackTimer);
+      this.fallbackTimer = null;
     }
   }
 
