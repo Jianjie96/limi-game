@@ -8,7 +8,7 @@
 // ============================================================================
 
 import { ScreenInfo, getScreenInfo, getScreenInfoAfterRotation, applyCanvasSize } from './screen';
-import { roundRectPath } from './renderer';
+import { roundRectPath, wrapTextLines } from './renderer';
 import {
   drawBackdrop,
   drawSceneText,
@@ -776,23 +776,29 @@ export class ProfileScene {
   private drawMessage(): void {
     const ctx = this.ctx;
     ctx.font = 'bold 14px PingFang SC, Microsoft YaHei, sans-serif';
-    const tw = ctx.measureText(this.message).width;
-    const msgW = tw + 40;
-    const msgH = 30;
+    // 长提示自动换行（最多 4 行），底边锚在原来单行位置向上长高。
+    const maxW = this.screenW - 48;
+    const lines = wrapTextLines(ctx, this.message, maxW - 40);
+    const lineH = 20;
+    const msgW = Math.min(maxW, Math.max(...lines.map((l) => ctx.measureText(l).width)) + 40);
+    const msgH = lines.length * lineH + 12;
     const x = (this.screenW - msgW) / 2;
-    const y = this.screenH * 0.86;
+    const y = this.screenH * 0.86 + 30 - msgH;
+    const radius = lines.length === 1 ? msgH / 2 : 12;
 
     ctx.fillStyle = 'rgba(24,40,52,0.92)';
-    roundRectPath(ctx, x, y, msgW, msgH, msgH / 2);
+    roundRectPath(ctx, x, y, msgW, msgH, radius);
     ctx.fill();
     ctx.strokeStyle = GOLD;
     ctx.lineWidth = 1;
-    roundRectPath(ctx, x, y, msgW, msgH, msgH / 2);
+    roundRectPath(ctx, x, y, msgW, msgH, radius);
     ctx.stroke();
 
-    drawSceneText(ctx, this.screenW / 2, y + msgH / 2, this.message, {
-      size: 14,
-      color: INK,
+    lines.forEach((line, i) => {
+      drawSceneText(ctx, this.screenW / 2, y + 6 + lineH * i + lineH / 2, line, {
+        size: 14,
+        color: INK,
+      });
     });
   }
 }

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { LogicalTile, TileColor } from '../game/types';
-import { inferJokerDisplayValue } from './renderer';
+import { inferJokerDisplayValue, wrapTextLines } from './renderer';
 
 function makeTile(id: number, color: TileColor, number: number): LogicalTile {
   return {
@@ -189,5 +189,32 @@ describe('inferJokerDisplayValue', () => {
     const d = inferJokerDisplayValue('group', tiles, 2);
     expect(d?.number).toBe(8);
     expect(['yellow', 'black']).toContain(d?.color);
+  });
+});
+
+describe('wrapTextLines', () => {
+  // 等宽 mock：每字符 10px，量宽结果确定可断言。
+  const ctx = { measureText: (t: string) => ({ width: t.length * 10 }) } as unknown as CanvasRenderingContext2D;
+
+  it('短文案不换行', () => {
+    expect(wrapTextLines(ctx, '出牌成功', 100)).toEqual(['出牌成功']);
+  });
+
+  it('长中文逐字断行', () => {
+    expect(wrapTextLines(ctx, '首出牌必须凑够三十分', 50)).toEqual([
+      '首出牌必须',
+      '凑够三十分',
+    ]);
+  });
+
+  it('ASCII 数字字母成整体单元不被拦腰截断', () => {
+    // 宽度 25：「30」若被拆开会出「3」单行，实际保持整体。
+    expect(wrapTextLines(ctx, '分数30不够', 25)).toEqual(['分数', '30', '不够']);
+  });
+
+  it('超过 maxLines 截断并补省略号', () => {
+    const lines = wrapTextLines(ctx, '一二三四五六七八九十', 20, 2);
+    expect(lines).toHaveLength(2);
+    expect(lines[1].endsWith('…')).toBe(true);
   });
 });

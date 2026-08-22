@@ -81,6 +81,56 @@ export function roundRectPath(
   ctx.closePath();
 }
 
+/**
+ * 提示文案换行：按 maxWidth 逐单位拆行，中文逐字可断，
+ * ASCII 字母/数字/常见符号成完整单元不被拦腰截断；
+ * 超过 maxLines 行时截断并在末行补「…」。
+ * 注意：调用前需自行设置好 ctx.font。
+ */
+export function wrapTextLines(
+  ctx: CanvasRenderingContext2D,
+  text: string,
+  maxWidth: number,
+  maxLines = 4,
+): string[] {
+  if (!text) return [];
+  // 拆成最小单元：「abc12」是一个单元，「中」是一个单元。
+  const units: string[] = [];
+  let word = '';
+  for (const ch of text) {
+    if (/[A-Za-z0-9.,:%]/.test(ch)) {
+      word += ch;
+      continue;
+    }
+    if (word) {
+      units.push(word);
+      word = '';
+    }
+    units.push(ch);
+  }
+  if (word) units.push(word);
+
+  const lines: string[] = [];
+  let line = '';
+  for (const u of units) {
+    if (line && ctx.measureText(line + u).width > maxWidth) {
+      lines.push(line);
+      line = u === ' ' ? '' : u;
+    } else {
+      line += u;
+    }
+  }
+  if (line) lines.push(line);
+  if (lines.length <= maxLines) return lines;
+
+  // 超长截断：只留前 maxLines 行，末行补省略号（量宽自适应）。
+  const kept = lines.slice(0, maxLines);
+  let last = kept[maxLines - 1];
+  while (last && ctx.measureText(last + '…').width > maxWidth) last = last.slice(0, -1);
+  kept[maxLines - 1] = last + '…';
+  return kept;
+}
+
 function setFont(ctx: CanvasRenderingContext2D, size: number, bold: boolean): void {
   ctx.font = `${bold ? 'bold ' : ''}${size}px ${FONT_FAMILY}`;
 }

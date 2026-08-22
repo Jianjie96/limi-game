@@ -58,6 +58,7 @@ import {
   drawBoardTile,
   drawPhysicalTile,
   roundRectPath,
+  wrapTextLines,
   type TileRenderOptions,
 } from './renderer';
 import { getScreenInfo, getScreenInfoAfterRotation, applyCanvasSize, type ScreenInfo } from './screen';
@@ -2420,28 +2421,34 @@ export class GameScene {
     ctx.save();
     ctx.globalAlpha = alpha;
     ctx.font = `bold ${FONT_SIZE_LABEL}px ${FONT_FAMILY}`;
-    const tw = ctx.measureText(this.message).width;
-    const msgW = Math.min(this.screenW * 0.86, tw + 40);
-    const msgH = 42;
+    // 长提示（如「出牌」校验报错）自动换行，最多 4 行，超出截断补省略号。
+    const maxW = this.screenW * 0.86;
+    const lines = wrapTextLines(ctx, this.message, maxW - 40);
+    const lineH = 20;
+    const msgW = Math.min(maxW, Math.max(...lines.map((l) => ctx.measureText(l).width)) + 40);
+    const msgH = lines.length * lineH + 12;
     const x = (this.screenW - msgW) / 2;
     const y = this.screenH * 0.45 + (1 - alpha) * 12;
+    const radius = lines.length === 1 ? msgH / 2 : 14;
 
     // 原神式墨玻璃提示条：深色半透明 + 香槟金描边（暖白文字）。
     ctx.fillStyle = 'rgba(6,14,22,0.35)';
-    roundRectPath(ctx, x + 2, y + 3, msgW, msgH, msgH / 2);
+    roundRectPath(ctx, x + 2, y + 3, msgW, msgH, radius);
     ctx.fill();
     ctx.fillStyle = 'rgba(24,40,52,0.92)';
-    roundRectPath(ctx, x, y, msgW, msgH, msgH / 2);
+    roundRectPath(ctx, x, y, msgW, msgH, radius);
     ctx.fill();
     ctx.strokeStyle = GOLD;
     ctx.lineWidth = 1.5;
-    roundRectPath(ctx, x + 1, y + 1, msgW - 2, msgH - 2, (msgH - 2) / 2);
+    roundRectPath(ctx, x + 1, y + 1, msgW - 2, msgH - 2, Math.max(2, radius - 2));
     ctx.stroke();
 
-    this.drawText(this.screenW / 2, y + msgH / 2, this.message, {
-      size: FONT_SIZE_LABEL,
-      color: INK,
-      bold: true,
+    lines.forEach((line, i) => {
+      this.drawText(this.screenW / 2, y + 6 + lineH * i + lineH / 2, line, {
+        size: FONT_SIZE_LABEL,
+        color: INK,
+        bold: true,
+      });
     });
     ctx.restore();
   }
