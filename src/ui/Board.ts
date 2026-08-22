@@ -45,11 +45,13 @@ export interface BoardGapPreview {
   gapIndex: number;
 }
 
-/** 单个牌组占用的高度（含上下内边距） */
+/** 单个牌组占用的高度（单行，含上下内边距；组内多行时高度随行数增长） */
 export const BOARD_ROW_HEIGHT = TILE_HEIGHT + BOARD_GROUP_PADDING * 2;
 
 /**
  * 计算桌面牌组布局（流式布局，自动换行）。
+ * 牌组之间放不下时换行；单个牌组内牌数过多（如 13 张满顺子）超出可用宽度时，
+ * 组内也按可用宽度换行，盒子高度随行数增长。
  *
  * @param scale 牌面缩放系数。当桌面内容超出可视区域时，可按此系数整体缩放，
  *              保证所有牌组都落在可用高度内，避免与牌架重叠。
@@ -74,9 +76,13 @@ export function layoutBoard(
   const gap = TILE_GAP * scale;
   const groupGap = BOARD_GROUP_GAP * scale;
 
+  // 组内每行最多槽位：受可用宽度约束；极端窄屏也至少 1 个（允许单槽溢出）。
+  const availW = Math.max(right - left, tw + pad * 2);
+  const perRow = Math.max(1, Math.floor((availW - pad * 2 + gap) / (tw + gap)));
+
   let curX = left;
   let curY = config.topY + 8;
-  const groupH = th + pad * 2;
+  let rowMaxH = 0; // 当前行内最高组的高度（换行推进用，兼容单行/多行组混排）
 
   for (const group of groups) {
     const gapForGroup = gapPreview && gapPreview.groupId === group.id ? gapPreview : null;
@@ -85,12 +91,19 @@ export function layoutBoard(
       ? group.tiles.filter((lt) => lt.originalTile.id !== gapForGroup.excludeId)
       : group.tiles;
     const total = tiles.length + (gapForGroup ? 1 : 0);
-    const groupW = total * tw + (total - 1) * gap + pad * 2;
 
-    // 放不下则换行（当前行已有内容时才换，避免单组过宽死循环）。
+    // 组内换行：槽位按行折叠，盒子宽高随之变化（单行时与原布局完全一致）。
+    const cols = Math.min(total, perRow);
+    const rows = total > 0 ? Math.ceil(total / perRow) : 1;
+    const groupW = cols * tw + (cols - 1) * gap + pad * 2;
+    const groupH = rows * th + (rows - 1) * gap + pad * 2;
+
+    // 放不下则换行（当前行已有内容时才换，避免单组过宽死循环）；
+    // 按当前行最高组推进纵坐标，避免前一行多行组被新行覆盖。
     if (curX + groupW > right && curX > left) {
       curX = left;
-      curY += groupH + groupGap;
+      curY += Math.max(rowMaxH, groupH) + groupGap;
+      rowMaxH = 0;
     }
 
     const groupBounds = { x: curX, y: curY, w: groupW, h: groupH };
@@ -99,13 +112,15 @@ export function layoutBoard(
     for (let i = 0; i < tiles.length; i++) {
       const lt = tiles[i];
       const v = gapForGroup && i >= gapForGroup.gapIndex ? i + 1 : i; // 虚拟位置（跳过占位槽）
+      const row = Math.floor(v / perRow);
+      const col = v % perRow;
       tileSlots.push({
         logicalTile: lt,
         groupId: group.id,
         index: i, // 排除后序列的索引，与 moveTileWithinGroup 的 toIndex 语义一致
         opts: {
-          x: curX + pad + v * (tw + gap),
-          y: curY + pad,
+          x: curX + pad + col * (tw + gap),
+          y: curY + pad + row * (th + gap),
           scale,
           highlighted: highlightedGroupIds.has(group.id),
         },
@@ -114,6 +129,7 @@ export function layoutBoard(
 
     slots.push({ groupId: group.id, group, bounds: groupBounds, tileSlots });
     curX += groupW + groupGap;
+    rowMaxH = Math.max(rowMaxH, groupH);
   }
 
   return slots;

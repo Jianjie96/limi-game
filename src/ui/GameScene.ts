@@ -54,7 +54,6 @@ import {
   type BoardTileSlot,
 } from './Board';
 import { createButtonStates, hitTestButton, type ButtonState } from './Button';
-import { isDevEnvironment } from './env';
 import {
   drawBoardTile,
   drawPhysicalTile,
@@ -226,8 +225,6 @@ export class GameScene {
   private messageTimer: any = null;
   /** 临时牌组高亮到期句柄（他人出牌落点提示，dispose 时清理）。 */
   private flashGroupTimer: any = null;
-  /** 辅助提示开关：开发版全量展示，线上只保留必要提示。 */
-  private tipsEnabled = isDevEnvironment();
   /** 渲染循环句柄（dispose 时取消） */
   private rafId = 0;
 
@@ -558,7 +555,7 @@ export class GameScene {
         const group = hitTestBoardGroup(t.clientX, this.boardContentY(t.clientY), this.boardSlots);
         this.previewBoardGap =
           group && group.groupId === this.drag.source.sourceGroupId
-            ? { groupId: group.groupId, gapIndex: this.boardGapIndexAt(t.clientX, group) }
+            ? { groupId: group.groupId, gapIndex: this.boardGapIndexAt(t.clientX, this.boardContentY(t.clientY), group) }
             : null;
         this.previewGapIndex = null;
       }
@@ -1916,20 +1913,23 @@ export class GameScene {
   }
 
   /**
-   * 拖拽预览时，由手指横向位置求组内插入索引（排除后序列中的位置）。
+   * 拖拽预览时，由手指位置求组内插入索引（排除后序列中的位置）。
    * 以每张牌实际槽位中心为界累计，跳过被拖牌自身（完整布局首帧），
    * 不受缺口占位造成的槽位偏移影响；末尾缺口（排除后长度）可达。
+   * 多行组按行优先：槽位所在行在指针对上方则整张计入，
+   * 同行再按横向中心比较（单行组退化为纯横向判断）。
    */
-  private boardGapIndexAt(px: number, groupSlot: BoardGroupSlot): number {
+  private boardGapIndexAt(px: number, py: number, groupSlot: BoardGroupSlot): number {
     const ts = groupSlot.tileSlots;
     if (ts.length === 0) return 0;
     const scale = ts[0].opts.scale ?? 1;
     const tw = TILE_WIDTH * scale;
+    const th = TILE_HEIGHT * scale;
     const excludeId = this.drag?.source.kind === 'board' ? this.drag.source.tileId : null;
     let count = 0;
     for (const s of ts) {
       if (excludeId != null && s.logicalTile.originalTile.id === excludeId) continue;
-      if (px > s.opts.x + tw / 2) count++;
+      if (s.opts.y + th <= py || px > s.opts.x + tw / 2) count++;
     }
     return count;
   }
@@ -2222,13 +2222,12 @@ export class GameScene {
   }
 
   /**
-   * 辅助性提示（操作确认/引导）：仅开发版展示。
-   * 线上环境（体验版/正式版）静默，避免频繁打扰玩家；
+   * 辅助性提示（操作确认/引导）：全环境静默（与线上一致），干扰太多没有必要；
    * 错误、失败、阻断类必要提示请继续用 showMessage。
+   * 保留空实现供调用点使用，日后需要时可恢复。
    */
-  showTip(msg: string, duration: number = 2000): void {
-    if (!this.tipsEnabled) return;
-    this.showMessage(msg, duration);
+  showTip(_msg: string, _duration: number = 2000): void {
+    // 静默：不再展示辅助提示。
   }
 
   startGame(playerNames: string[]): void {
